@@ -2,7 +2,7 @@ import { formatDuration } from "@maple/ui/lib/format"
 import { TableSkeleton } from "@maple/ui/components/ui/table-skeleton"
 import * as React from "react"
 import { Result } from "@/lib/effect-atom"
-import { Link, useNavigate } from "@tanstack/react-router"
+import { Link, linkOptions, useNavigate } from "@tanstack/react-router"
 import { ExcludedEmptyHint } from "@maple/ui/components/filters/excluded-empty-hint"
 import { SignalEmptyState } from "@/components/common/signal-empty-state"
 import { traceFilterChips } from "@/lib/traces/trace-filter-chips"
@@ -48,6 +48,21 @@ interface TracesTableViewProps {
 	excludedValues: ReadonlyArray<string>
 	clearExclusions: () => void
 }
+
+/**
+ * Where a row leads. Shared by the row's stretched link, the Trace ID link
+ * and keyboard open so they can never disagree.
+ */
+const traceLink = (trace: Trace) =>
+	linkOptions({
+		to: "/traces/$traceId",
+		params: { traceId: trace.traceId },
+		search: (prev: Record<string, unknown>) => ({
+			...prev,
+			t: trace.startTime,
+			spanId: deepLinkSpanId(trace),
+		}),
+	})
 
 /**
  * The span to pre-select on the detail page. With `rootOnly` off the list shows
@@ -218,15 +233,8 @@ function TracesTableView({
 				size: 100,
 				cell: ({ row }) => (
 					<Link
-						to="/traces/$traceId"
-						params={{ traceId: row.original.traceId }}
-						search={(prev: Record<string, unknown>) => ({
-							...prev,
-							t: row.original.startTime,
-							spanId: deepLinkSpanId(row.original),
-						})}
-						className="font-mono text-xs text-primary underline decoration-primary/30 underline-offset-2 hover:decoration-primary"
-						onClick={(e) => e.stopPropagation()}
+						{...traceLink(row.original)}
+						className="relative z-10 font-mono text-xs text-primary underline decoration-primary/30 underline-offset-2 hover:decoration-primary"
 					>
 						{truncateId(row.original.traceId)}
 					</Link>
@@ -244,6 +252,14 @@ function TracesTableView({
 						screenName && !name.includes(screenName) ? `${name} · ${screenName}` : name
 					return (
 						<div className="flex flex-col min-w-0">
+							{/* Stretched over the <tr> so the whole row is a real anchor: modifier,
+							    middle and right click all behave like any link. */}
+							<Link
+								{...traceLink(row.original)}
+								className="after:absolute after:inset-0 after:content-['']"
+								tabIndex={-1}
+								aria-label={`Open trace ${row.original.traceId}`}
+							/>
 							<HttpSpanLabel
 								spanName={displayName}
 								spanAttributes={row.original.rootSpan.attributes}
@@ -439,9 +455,8 @@ function TracesTableView({
 									ref={virtualizer.measureElement}
 									data-index={virtualRow.index}
 									data-focused={virtualRow.index === focusedIndex || undefined}
-									className="border-b transition-colors hover:bg-muted/50 data-[focused]:bg-muted/70 data-[focused]:ring-1 data-[focused]:ring-ring data-[focused]:ring-inset cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
+									className="relative border-b transition-colors hover:bg-muted/50 data-[focused]:bg-muted/70 data-[focused]:ring-1 data-[focused]:ring-ring data-[focused]:ring-inset cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
 									tabIndex={0}
-									onClick={() => onTraceClick(row.original)}
 									onKeyDown={(e) => {
 										if (e.key === "Enter" || e.key === " ") {
 											e.preventDefault()
@@ -544,20 +559,8 @@ export function TracesTable({ filters }: TracesTableProps) {
 		navigateTraces({ search: (prev) => ({ ...prev, hideNoise: false }) })
 	}, [navigateTraces])
 
-	const onTraceClick = React.useCallback(
-		(trace: Trace) => {
-			navigate({
-				to: "/traces/$traceId",
-				params: { traceId: trace.traceId },
-				search: (prev: Record<string, unknown>) => ({
-					...prev,
-					t: trace.startTime,
-					spanId: deepLinkSpanId(trace),
-				}),
-			})
-		},
-		[navigate],
-	)
+	// Mouse clicks go through the row's real link; this is the keyboard path.
+	const onTraceClick = React.useCallback((trace: Trace) => navigate(traceLink(trace)), [navigate])
 
 	const sortBy = filters?.sortBy ?? "timestamp"
 	const sortDir = filters?.sortDir ?? "desc"
