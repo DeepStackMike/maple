@@ -22,13 +22,16 @@ import { useLocalSessionReplay, type ReplayViewport } from "../hooks/use-local-s
 const SPEEDS = [1, 2, 4, 8] as const
 const DEFAULT_VIEWPORT: ReplayViewport = { width: 1280, height: 720 }
 
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+	value !== null && value !== undefined && Object.getPrototypeOf(value) === Object.prototype
+
 /** `maple.session.recorded` from the session's resource attributes; `undefined` when unknown. */
 export function recordedMarker(resourceAttributes: string | null | undefined): boolean | undefined {
 	if (!resourceAttributes) return undefined
 	try {
 		const parsed: unknown = JSON.parse(resourceAttributes)
-		if (typeof parsed !== "object" || parsed === null) return undefined
-		const marker = (parsed as Record<string, unknown>)["maple.session.recorded"]
+		if (!isPlainObject(parsed)) return undefined
+		const marker = parsed["maple.session.recorded"]
 		return marker === "true" ? true : marker === "false" ? false : undefined
 	} catch {
 		return undefined
@@ -154,7 +157,7 @@ export function ReplayPlayer({ events, viewport, footer }: ReplayPlayerProps) {
 	// Re-fit when the surface changes size.
 	useEffect(() => {
 		const surface = surfaceRef.current
-		if (!surface || typeof ResizeObserver === "undefined") return
+		if (!surface || !globalThis.ResizeObserver) return
 		const observer = new ResizeObserver(() => fit())
 		observer.observe(surface)
 		return () => observer.disconnect()
