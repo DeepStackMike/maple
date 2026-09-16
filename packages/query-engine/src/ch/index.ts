@@ -182,6 +182,14 @@ export {
 	type ProductEventsFilters,
 } from "./queries/web-analytics"
 
+// The sentinel `webAnalyticsBreakdownsQuery` emits for the empty group of an
+// acquisition dimension — "direct" for the referrer, "untagged" for a UTM. It
+// is part of that query's output contract (the branches select it, and it is
+// selectable back as a filter value), so it is re-exported here rather than
+// left to be imported from `@maple/domain` alongside the query: a consumer that
+// decodes these rows should not need a second dependency to label them.
+export { WEB_ANALYTICS_UNSET } from "@maple/domain/query-engine"
+
 // Queries — Product events (funnels over `product_events`)
 export {
 	productEventsFunnelQuery,
