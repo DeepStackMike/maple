@@ -17,6 +17,11 @@ export interface LocalSessionReplay {
 	readonly byteSize: number
 	/** From the last `meta` event in the stream; `undefined` when absent. */
 	readonly viewport: ReplayViewport | undefined
+	/**
+	 * Epoch ms of the first event, which is rrweb's zero on the playback clock.
+	 * Transcript rows carry wall-clock timestamps; subtract this to seek to them.
+	 */
+	readonly baseTimestampMs: number | undefined
 }
 
 /**
@@ -79,7 +84,14 @@ export function assembleReplay(rows: ReadonlyArray<SessionReplayEventsOutput>): 
 		if (Array.isArray(parsed)) events.push(...parsed)
 	}
 	const normalized = normalizeReplayEvents(events)
-	return { events: normalized, chunkCount: rows.length, byteSize, viewport: viewportOf(normalized) }
+	const first = normalized[0]
+	return {
+		events: normalized,
+		chunkCount: rows.length,
+		byteSize,
+		viewport: viewportOf(normalized),
+		baseTimestampMs: hasTimestamp(first) ? first.timestamp : undefined,
+	}
 }
 
 /** Every rrweb chunk for one session, assembled into a playable stream. */

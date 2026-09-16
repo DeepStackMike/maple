@@ -1,4 +1,4 @@
-import type { ReactNode } from "react"
+import { useMemo, useRef, type ReactNode } from "react"
 import { Button } from "@maple/ui/components/ui/button"
 import { Spinner } from "@maple/ui/components/ui/spinner"
 import {
@@ -25,7 +25,14 @@ import { formatRelativeTime } from "../lib/time"
 import { formatSessionDuration, gradientFor, hostFromUrl, isMobileDevice } from "@maple/ui/lib/replay-format"
 import { ErrorState } from "../components/view-states"
 import { RefreshButton } from "../components/toolbar"
-import { SessionReplaySection } from "../components/session-replay-player"
+import {
+	recordedMarker,
+	SessionReplaySection,
+	type ReplayMarker,
+	type ReplayMarkerKind,
+	type ReplayPlayerHandle,
+} from "../components/session-replay-player"
+import { useLocalSessionReplay } from "../hooks/use-local-session-replay"
 
 interface SessionDetailViewProps {
 	sessionId: string
@@ -41,6 +48,41 @@ export function SessionDetailView({ sessionId, onBack, onSelectTrace }: SessionD
 
 	const isActive = session?.status === "active"
 	const hasError = (session?.errorCount ?? 0) > 0
+
+	// Transcript → player. The recording's clock starts at its first rrweb event,
+	// so a transcript row seeks to (row time − first event time). Errors land a
+	// few seconds early so the lead-up is visible. Same query key as the player,
+	// so this is a cache read, not a second fetch.
+	const playerRef = useRef<ReplayPlayerHandle>(null)
+	const replay = useLocalSessionReplay(sessionId, recordedMarker(session?.resourceAttributes) !== false)
+	const baseMs = replay.data?.baseTimestampMs
+	const offsetFor = (event: SessionTranscriptOutput): number | undefined => {
+		if (baseMs === undefined) return undefined
+		const at = parseChTime(event.timestamp)
+		return Number.isNaN(at) ? undefined : Math.max(0, at - baseMs)
+	}
+	const markers = useMemo<ReplayMarker[]>(() => {
+		if (baseMs === undefined) return []
+		return (transcript.data ?? []).flatMap((event) => {
+			const kind = markerKind(event)
+			if (!kind) return []
+			const at = parseChTime(event.timestamp)
+			if (Number.isNaN(at)) return []
+			return [
+				{
+					id: `${event.seq}-${event.timestamp}`,
+					offsetMs: Math.max(0, at - baseMs),
+					kind,
+					label: markerLabel(event),
+				},
+			]
+		})
+	}, [transcript.data, baseMs])
+	const jumpTo = (event: SessionTranscriptOutput) => {
+		const offset = offsetFor(event)
+		if (offset === undefined) return
+		playerRef.current?.seek(offset, isErrorEvent(event) ? ERROR_LEAD_MS : 0)
+	}
 	const label = session?.userId || "Anonymous"
 	const DeviceIcon = session && isMobileDevice(session.deviceType) ? MobileIcon : ComputerIcon
 
@@ -112,9 +154,11 @@ export function SessionDetailView({ sessionId, onBack, onSelectTrace }: SessionD
 						<div className="mt-5">
 							<Card title="Replay">
 								<SessionReplaySection
+									ref={playerRef}
 									sessionId={sessionId}
 									resourceAttributes={session.resourceAttributes}
 									active={isActive}
+									markers={markers}
 								/>
 							</Card>
 						</div>
@@ -204,6 +248,7 @@ export function SessionDetailView({ sessionId, onBack, onSelectTrace }: SessionD
 									<Transcript
 										events={transcript.data ?? []}
 										startTime={session.startTime}
+										onJump={baseMs === undefined ? undefined : jumpTo}
 									/>
 								)}
 							</Card>
@@ -216,6 +261,40 @@ export function SessionDetailView({ sessionId, onBack, onSelectTrace }: SessionD
 }
 
 // Transcript
+
+/** How far before an error the player lands, so the lead-up is visible. */
+const ERROR_LEAD_MS = 3000
+
+function markerKind(event: SessionTranscriptOutput): ReplayMarkerKind | undefined {
+	if (isErrorEvent(event)) return "error"
+	switch (event.type) {
+		case "click":
+			return "click"
+		case "navigation":
+			return "navigation"
+		case "input":
+			return "input"
+		case "custom":
+			return "custom"
+		default:
+			return undefined
+	}
+}
+
+function markerLabel(event: SessionTranscriptOutput): string {
+	switch (event.type) {
+		case "navigation":
+			return `Navigate ${event.url}`
+		case "click":
+			return `Click ${event.targetText || event.targetSelector || "element"}`
+		case "input":
+			return `Input ${event.targetSelector || ""}`.trim()
+		case "network":
+			return `${event.netMethod} ${event.netUrl} → ${event.netStatus}`
+		default:
+			return `${event.type} ${event.message}`.trim()
+	}
+}
 
 function parseChTime(value: string | null | undefined): number {
 	if (!value) return NaN
@@ -261,35 +340,57 @@ function isErrorEvent(event: SessionTranscriptOutput): boolean {
 function Transcript({
 	events,
 	startTime,
+	onJump,
 }: {
 	events: ReadonlyArray<SessionTranscriptOutput>
 	startTime: string
+	/** Present once the recording is loaded; rows then seek the player. */
+	onJump?: (event: SessionTranscriptOutput) => void
 }) {
 	return (
 		<ol className="space-y-3">
 			{events.map((event) => {
 				const danger = isErrorEvent(event)
+				const Row = onJump ? "button" : "div"
 				return (
-					<li key={`${event.seq}-${event.timestamp}`} className="flex gap-3">
-						<span
+					<li key={`${event.seq}-${event.timestamp}`}>
+						<Row
+							{...(onJump
+								? {
+										type: "button" as const,
+										onClick: () => onJump(event),
+										title: danger
+											? "Jump to 3 s before this event in the replay"
+											: "Jump to this event in the replay",
+										"aria-label": `Jump to ${event.type} at ${offsetLabel(startTime, event.timestamp)}`,
+									}
+								: {})}
 							className={cn(
-								"mt-0.5 grid size-6 shrink-0 place-items-center rounded-full",
-								danger
-									? "bg-destructive/10 text-destructive"
-									: "bg-muted text-muted-foreground",
+								"flex w-full gap-3 rounded-md text-left",
+								onJump &&
+									"-mx-1.5 px-1.5 py-0.5 transition-colors hover:bg-accent/40 focus-visible:bg-accent/40 focus-visible:outline-none",
 							)}
 						>
-							<EventIcon event={event} />
-						</span>
-						<div className="min-w-0 flex-1">
-							<div className="flex items-baseline justify-between gap-2">
-								<span className="text-xs font-medium capitalize">{event.type}</span>
-								<span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground">
-									{offsetLabel(startTime, event.timestamp)}
-								</span>
+							<span
+								className={cn(
+									"mt-0.5 grid size-6 shrink-0 place-items-center rounded-full",
+									danger
+										? "bg-destructive/10 text-destructive"
+										: "bg-muted text-muted-foreground",
+								)}
+							>
+								<EventIcon event={event} />
+							</span>
+							<div className="min-w-0 flex-1">
+								<div className="flex items-baseline justify-between gap-2">
+									<span className="text-xs font-medium capitalize">{event.type}</span>
+									<span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground">
+										{offsetLabel(startTime, event.timestamp)}
+									</span>
+								</div>
+								<TranscriptBody event={event} />
 							</div>
-							<TranscriptBody event={event} />
-						</div>
+						</Row>
 					</li>
 				)
 			})}
