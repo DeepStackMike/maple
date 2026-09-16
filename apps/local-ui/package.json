@@ -13,6 +13,8 @@
 		"@maple/infra": "workspace:*",
 		"@maple/query-engine": "workspace:*",
 		"@maple/ui": "workspace:*",
+		"@rrweb/replay": "^2.0.1",
+		"@rrweb/types": "^2.0.1",
 		"@tanstack/react-query": "^5.95.2",
 		"@tanstack/react-virtual": "^3.14.3",
 		"effect": "catalog:effect",

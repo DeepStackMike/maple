@@ -25,6 +25,7 @@ import { formatRelativeTime } from "../lib/time"
 import { formatSessionDuration, gradientFor, hostFromUrl, isMobileDevice } from "@maple/ui/lib/replay-format"
 import { ErrorState } from "../components/view-states"
 import { RefreshButton } from "../components/toolbar"
+import { SessionReplaySection } from "../components/session-replay-player"
 
 interface SessionDetailViewProps {
 	sessionId: string
@@ -106,6 +107,16 @@ export function SessionDetailView({ sessionId, onBack, onSelectTrace }: SessionD
 							<StatTile label="Clicks" value={String(session.clickCount)} />
 							<StatTile label="Errors" value={String(session.errorCount)} danger={hasError} />
 							<StatTile label="Traces" value={String(traceIds.length)} />
+						</div>
+
+						<div className="mt-5">
+							<Card title="Replay">
+								<SessionReplaySection
+									sessionId={sessionId}
+									resourceAttributes={session.resourceAttributes}
+									active={isActive}
+								/>
+							</Card>
 						</div>
 
 						<div className="mt-5 grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
