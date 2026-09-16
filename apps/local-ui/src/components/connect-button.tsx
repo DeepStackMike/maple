@@ -13,6 +13,7 @@ import {
 } from "@maple/ui/components/ui/popover"
 import { Separator } from "@maple/ui/components/ui/separator"
 import { ConnectionIcon } from "@maple/ui/components/icons"
+import { cn } from "@maple/ui/lib/utils"
 import { LOCAL_OTLP_ENDPOINT } from "../lib/constants"
 import { DOCS_LOCAL_MODE_SEND_TELEMETRY } from "../lib/links"
 import { CopyableField } from "@maple/ui/components/ui/copyable-field"
@@ -37,6 +38,29 @@ export function ConnectButton() {
 	)
 }
 
+/**
+ * Where to point an OTLP exporter, and the fact that it needs no credential.
+ *
+ * Shared with Home's "nothing ingested yet" state, which is the other place a
+ * user is looking at an empty Maple and needs exactly this answer. One
+ * definition so the endpoint the popover advertises and the endpoint the empty
+ * state advertises cannot drift — both resolve it from the page origin (see
+ * `localOtlpEndpoint`), so a binary started on a non-default port is right in
+ * both.
+ */
+export function ConnectHint({ className }: { className?: string }) {
+	return (
+		<div className={cn("space-y-4", className)}>
+			<CopyableField label="OTLP/HTTP endpoint" value={LOCAL_OTLP_ENDPOINT} />
+
+			<p className="rounded-md border border-dashed bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+				No API key needed — local mode ingests everything under the{" "}
+				<code className="rounded bg-muted px-1">local</code> org.
+			</p>
+		</div>
+	)
+}
+
 function ConnectPanel() {
 	return (
 		<div className="space-y-4">
@@ -47,12 +71,7 @@ function ConnectPanel() {
 				</PopoverDescription>
 			</div>
 
-			<CopyableField label="OTLP/HTTP endpoint" value={LOCAL_OTLP_ENDPOINT} />
-
-			<p className="rounded-md border border-dashed bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-				No API key needed — local mode ingests everything under the{" "}
-				<code className="rounded bg-muted px-1">local</code> org.
-			</p>
+			<ConnectHint />
 
 			<Separator />
 

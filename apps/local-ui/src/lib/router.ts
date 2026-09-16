@@ -25,7 +25,9 @@ export interface Location {
 
 function parseLocation(hash: string): Location {
 	const [rawPath, rawSearch = ""] = hash.split("?")
-	const path = rawPath && rawPath.startsWith("/") ? rawPath : "/traces"
+	// A bare URL (no fragment at all) is the landing case, and the landing view is
+	// Home — `App`'s `parseRoute` maps both `/` and `/home` to it.
+	const path = rawPath && rawPath.startsWith("/") ? rawPath : "/"
 	return { path, query: new URLSearchParams(rawSearch) }
 }
 

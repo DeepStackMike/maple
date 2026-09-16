@@ -7,10 +7,12 @@ import {
 	CodeIcon,
 	DatabaseIcon,
 	EyeIcon,
+	GaugeIcon,
 	NetworkNodesIcon,
 	PulseIcon,
 	SquareActivityChartIcon,
 } from "@maple/ui/components/icons"
+import { HomeView } from "./views/home-view"
 import { TraceListView } from "./views/trace-list-view"
 import { TraceDetailView } from "./views/trace-detail-view"
 import { LogsView } from "./views/logs-view"
@@ -31,6 +33,7 @@ import { useLocalConnection } from "./hooks/use-local-connection"
 import { highlightJson } from "./lib/highlight"
 
 type Route =
+	| { name: "home" }
 	| { name: "traces" }
 	| { name: "trace-detail"; traceId: string }
 	| { name: "logs" }
@@ -52,25 +55,29 @@ function parseRoute(path: string): Route {
 	if (serviceDetail) return { name: "service-detail", serviceName: decodeURIComponent(serviceDetail[1]) }
 	const sessionDetail = path.match(/^\/sessions\/(.+)$/)
 	if (sessionDetail) return { name: "session-detail", sessionId: decodeURIComponent(sessionDetail[1]) }
+	if (path.startsWith("/traces")) return { name: "traces" }
 	if (path.startsWith("/errors")) return { name: "errors" }
 	if (path.startsWith("/logs")) return { name: "logs" }
 	if (path.startsWith("/metrics")) return { name: "metrics" }
 	if (path.startsWith("/services")) return { name: "services" }
 	if (path.startsWith("/sessions")) return { name: "sessions" }
 	if (path.startsWith("/analytics")) return { name: "analytics" }
-	return { name: "traces" }
+	// `/` and `/home` both land here, and so does anything unrecognized: an
+	// overview is a better answer to a stale bookmark than an empty trace list.
+	return { name: "home" }
 }
 
-type Tab = "traces" | "logs" | "metrics" | "services" | "errors" | "sessions" | "analytics"
+type Tab = "home" | "traces" | "logs" | "metrics" | "services" | "errors" | "sessions" | "analytics"
 
 function activeTab(route: Route): Tab {
+	if (route.name === "traces" || route.name === "trace-detail") return "traces"
 	if (route.name === "errors") return "errors"
 	if (route.name === "logs") return "logs"
 	if (route.name === "metrics" || route.name === "metric-detail") return "metrics"
 	if (route.name === "services" || route.name === "service-detail") return "services"
 	if (route.name === "sessions" || route.name === "session-detail") return "sessions"
 	if (route.name === "analytics") return "analytics"
-	return "traces"
+	return "home"
 }
 
 export function App() {
@@ -104,6 +111,12 @@ export function App() {
 					<div className="flex h-screen flex-col bg-background text-foreground">
 						<header className="flex shrink-0 items-center gap-1 border-b px-4 py-2">
 							<LocalLockup />
+							<NavTab
+								label="Home"
+								icon={<GaugeIcon size={14} />}
+								active={tab === "home"}
+								onClick={() => switchTab("/home")}
+							/>
 							<NavTab
 								label="Traces"
 								icon={<NetworkNodesIcon size={14} />}
@@ -206,12 +219,14 @@ export function App() {
 										navigate(`/sessions/${encodeURIComponent(sessionId)}`, carry())
 									}
 								/>
-							) : (
+							) : route.name === "traces" ? (
 								<TraceListView
 									onSelectTrace={(traceId) =>
 										navigate(`/traces/${encodeURIComponent(traceId)}`, carry())
 									}
 								/>
+							) : (
+								<HomeView />
 							)}
 						</main>
 					</div>

@@ -34,6 +34,17 @@ export interface ServiceCatalogData {
 	envFacets: Array<{ name: string; count: number }>
 	nsFacets: Array<{ name: string; count: number }>
 	totalErrorCount: number
+	/**
+	 * Every byte the usage rollup accounted for in the window, across all
+	 * signals and every service — including the ones absent from `entries`.
+	 *
+	 * `entries` is built from the entry-point span projection, so a Maple that
+	 * has only ever received logs or metrics has none. Home's "nothing ingested
+	 * yet" state is exactly the question this answers, and `serviceUsageQuery`
+	 * is already fetched here for the per-service log counts, so the total is a
+	 * sum over rows this hook was discarding rather than another query.
+	 */
+	totalIngestedBytes: number
 }
 
 /**
@@ -104,6 +115,7 @@ export function useLocalServiceCatalog(filters: ServiceCatalogFilters) {
 				envFacets: countBy((e) => e.deploymentEnvironments),
 				nsFacets: countBy((e) => e.serviceNamespaces),
 				totalErrorCount: entries.reduce((sum, e) => sum + e.errorCount, 0),
+				totalIngestedBytes: usageRows.reduce((sum, row) => sum + Number(row.totalSizeBytes), 0),
 			}
 		},
 	})
