@@ -81,6 +81,7 @@ export {
 	metricsTimeseriesRateQuery,
 	metricsBreakdownQuery,
 	metricsSparklinesQuery,
+	type MetricAttributeEquals,
 	type MetricsSparklinesOpts,
 	type MetricsSparklinesOutput,
 	type MetricsTimeseriesOpts,

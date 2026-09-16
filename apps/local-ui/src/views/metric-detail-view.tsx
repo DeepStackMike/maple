@@ -11,10 +11,19 @@ import {
 	useLocalMetricBreakdown,
 	useLocalMetricEntry,
 	useLocalMetricTimeseries,
+	type MetricExplorerOptions,
 } from "../hooks/use-local-metric-detail"
+import {
+	GROUP_BY_SERVICE,
+	decodeMetricFilters,
+	encodeMetricFilters,
+	parseSeriesLimit,
+	type MetricFilter,
+} from "../lib/metric-explorer"
 import { useQueryParams } from "../lib/router"
 import { DEFAULT_RANGE, formatRelativeTime } from "../lib/time"
 import { RefreshButton, TimeRangeSelect } from "../components/toolbar"
+import { MetricFilterBar } from "../components/metric-filter-bar"
 import { EmptyState, ErrorState } from "../components/view-states"
 
 interface MetricDetailViewProps {
@@ -25,26 +34,67 @@ interface MetricDetailViewProps {
 export function MetricDetailView({ metricName, onBack }: MetricDetailViewProps) {
 	const [query, setParams] = useQueryParams()
 	const range = query.get("range") || DEFAULT_RANGE
+	const where = query.get("where")
+
+	const options: MetricExplorerOptions = useMemo(
+		() => ({
+			groupBy: query.get("groupBy") || GROUP_BY_SERVICE,
+			seriesLimit: parseSeriesLimit(query.get("limit")),
+			filters: decodeMetricFilters(where),
+		}),
+		// `where` is the encoded form, so it's the stable identity of `filters`.
+		[query, where],
+	)
+
+	const setFilters = (filters: ReadonlyArray<MetricFilter>) =>
+		setParams({ where: encodeMetricFilters(filters) || null })
 
 	const entryQuery = useLocalMetricEntry(metricName, range)
 	const entry = entryQuery.data
-	const timeseries = useLocalMetricTimeseries(entry, range)
-	const breakdown = useLocalMetricBreakdown(entry, range)
-
-	// Pivot (bucket, groupName, value) rows into the wide shape the shared
-	// line chart plots: one column per series (service).
-	const chartData = useMemo(() => {
-		const rows = timeseries.data ?? []
-		const byBucket = new Map<string, Record<string, unknown>>()
-		for (const row of rows) {
-			let bucketRow = byBucket.get(row.bucket)
-			if (!bucketRow) byBucket.set(row.bucket, (bucketRow = { bucket: row.bucket }))
-			bucketRow[row.groupName || "value"] = row.value
-		}
-		return [...byBucket.values()]
-	}, [timeseries.data])
+	const timeseries = useLocalMetricTimeseries(entry, range, options)
+	const breakdown = useLocalMetricBreakdown(entry, range, options)
 
 	const isRate = entry?.metricType === "sum" && entry.isMonotonic
+	const groupByLabel = options.groupBy === GROUP_BY_SERVICE ? "service" : options.groupBy
+
+	// Pivot (bucket, groupName, value) rows into the wide shape the shared line
+	// chart plots: one column per series.
+	//
+	// The query groups by service *and* the chosen dimension, so grouping by an
+	// attribute returns one row per service per value and a bucket can hit the
+	// same series twice. Rates add across services; averages are recombined as a
+	// datapoint-weighted mean, which is the same number the ungrouped query
+	// would have produced.
+	const chartData = useMemo(() => {
+		const rows = timeseries.data ?? []
+		const byBucket = new Map<string, Map<string, { value: number; weight: number }>>()
+		for (const row of rows) {
+			let series = byBucket.get(row.bucket)
+			if (!series) byBucket.set(row.bucket, (series = new Map()))
+			// Datapoints missing the group-by label share one named series rather
+			// than an unlabelled one the legend can't explain.
+			const name = row.groupName || "(none)"
+			const existing = series.get(name)
+			if (!existing) series.set(name, { value: row.value, weight: row.count })
+			else if (isRate) {
+				existing.value += row.value
+				existing.weight += row.count
+			} else {
+				const weight = existing.weight + row.count
+				existing.value =
+					weight > 0
+						? (existing.value * existing.weight + row.value * row.count) / weight
+						: existing.value
+				existing.weight = weight
+			}
+		}
+		return [...byBucket.entries()].map(([bucket, series]) =>
+			Object.fromEntries<string | number>([
+				["bucket", bucket],
+				...[...series].map(([name, merged]): [string, number] => [name, merged.value]),
+			]),
+		)
+	}, [timeseries.data, isRate])
 
 	return (
 		<div className="flex h-full flex-col">
@@ -90,10 +140,21 @@ export function MetricDetailView({ metricName, onBack }: MetricDetailViewProps) 
 							<p className="text-sm text-muted-foreground">{entry.metricDescription}</p>
 						) : null}
 
+						<MetricFilterBar
+							entry={entry}
+							range={range}
+							options={options}
+							onGroupByChange={(next) =>
+								setParams({ groupBy: next === GROUP_BY_SERVICE ? null : next })
+							}
+							onSeriesLimitChange={(next) => setParams({ limit: String(next) })}
+							onFiltersChange={setFilters}
+						/>
+
 						<section className="space-y-2">
 							<div className="flex items-baseline justify-between">
 								<h3 className="text-sm font-medium">
-									{isRate ? "Rate (per second)" : "Average value"} by service
+									{isRate ? "Rate (per second)" : "Average value"} by {groupByLabel}
 								</h3>
 								<span className="text-xs text-muted-foreground">
 									{entry.serviceNames.length.toLocaleString()} services ·{" "}
@@ -130,7 +191,7 @@ export function MetricDetailView({ metricName, onBack }: MetricDetailViewProps) 
 						</section>
 
 						<section className="space-y-2">
-							<h3 className="text-sm font-medium">Breakdown by service</h3>
+							<h3 className="text-sm font-medium">Breakdown by {groupByLabel}</h3>
 							{breakdown.isPending ? (
 								<div className="flex h-24 items-center justify-center rounded-md border">
 									<Spinner />
@@ -146,7 +207,9 @@ export function MetricDetailView({ metricName, onBack }: MetricDetailViewProps) 
 									<Table>
 										<TableHeader>
 											<TableRow>
-												<TableHead>Service</TableHead>
+												<TableHead className="font-mono text-xs font-normal">
+													{groupByLabel}
+												</TableHead>
 												<TableHead className="text-right">Avg</TableHead>
 												<TableHead className="text-right">Sum</TableHead>
 												<TableHead className="text-right">Datapoints</TableHead>

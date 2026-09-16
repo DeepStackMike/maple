@@ -110,6 +110,19 @@ describe("metricsTimeseriesQuery", () => {
 		expect(sql).toContain("Attributes['region'] = 'us-east-1'")
 	})
 
+	it("ANDs every attributeFilters entry onto the datapoint Attributes map", () => {
+		const q = metricsTimeseriesQuery({
+			metricType: "sum",
+			attributeFilters: [
+				{ key: "region", value: "us-east-1" },
+				{ key: "http.route", value: "/api/users" },
+			],
+		})
+		const { sql } = compileUnsafe(q, baseParams)
+		expect(sql).toContain("Attributes['region'] = 'us-east-1'")
+		expect(sql).toContain("Attributes['http.route'] = '/api/users'")
+	})
+
 	it("shows empty string as attributeValue when no groupByAttributeKey", () => {
 		const q = metricsTimeseriesQuery({ metricType: "sum" })
 		const { sql } = compileUnsafe(q, baseParams)
@@ -187,6 +200,14 @@ describe("metricsTimeseriesRateQuery", () => {
 		const { sql } = compileUnsafe(q, baseParams)
 		expect(sql).toContain("Attributes['host']")
 		expect(sql).toContain("GROUP BY bucket, serviceName, attributeValue")
+	})
+
+	it("applies attributeFilters in the CTE", () => {
+		const q = metricsTimeseriesRateQuery({
+			attributeFilters: [{ key: "region", value: "us-east-1" }],
+		})
+		const { sql } = compileUnsafe(q, baseParams)
+		expect(sql).toContain("Attributes['region'] = 'us-east-1'")
 	})
 
 	it("applies groupByResourceAttributeKey through the deltas CTE", () => {

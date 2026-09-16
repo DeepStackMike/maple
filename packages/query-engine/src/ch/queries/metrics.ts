@@ -27,6 +27,28 @@ function resourceFilterConditions(
 	return (filters ?? []).map((rf) => buildAttrFilterCondition(rf, "ResourceAttributes"))
 }
 
+/**
+ * Equality predicate on the datapoint `Attributes` map (http.route, region, …).
+ *
+ * `AttributeFilter`/`buildAttrFilterCondition` can't address this map — its
+ * `mapName` union covers the Span/Log/Resource maps and their semconv alias and
+ * index-prefilter tables, none of which exist for metrics datapoints. The
+ * singular `attributeKey`/`attributeValue` pair below is the same predicate for
+ * exactly one key; `attributeFilters` is that generalized to N, AND-ed.
+ */
+export interface MetricAttributeEquals {
+	readonly key: string
+	readonly value: string
+}
+
+function attributeFilterConditions(
+	filters: readonly MetricAttributeEquals[] | undefined,
+	/** `(key) => $.Attributes.get(key)` for the metric table in scope. */
+	attribute: (key: string) => CH.Expr<string>,
+): ReadonlyArray<CH.Condition> {
+	return (filters ?? []).filter((f) => f.key !== "").map((f) => attribute(f.key).eq(f.value))
+}
+
 // Shared options & output types
 
 interface MetricsQueryOpts {
@@ -39,6 +61,8 @@ interface MetricsQueryOpts {
 	groupByResourceAttributeKey?: string
 	attributeKey?: string
 	attributeValue?: string
+	/** Additional `Attributes[key] = value` predicates, AND-ed together. */
+	attributeFilters?: readonly MetricAttributeEquals[]
 	resourceAttributeFilters?: readonly AttributeFilter[]
 	groupBy?: readonly string[]
 	seriesLimit?: number
@@ -104,6 +128,7 @@ export function metricsTimeseriesQuery(opts: MetricsTimeseriesOpts) {
 			opts.environments?.length
 				? CH.inList(deploymentEnvExpr($.ResourceAttributes), opts.environments)
 				: undefined,
+			...attributeFilterConditions(opts.attributeFilters, (k) => $.Attributes.get(k)),
 			...resourceFilterConditions(opts.resourceAttributeFilters),
 		])
 
@@ -133,6 +158,8 @@ export interface MetricsRateTimeseriesOpts {
 	groupByResourceAttributeKey?: string
 	attributeKey?: string
 	attributeValue?: string
+	/** Additional `Attributes[key] = value` predicates, AND-ed together. */
+	attributeFilters?: readonly MetricAttributeEquals[]
 	resourceAttributeFilters?: readonly AttributeFilter[]
 	groupBy?: readonly string[]
 	seriesLimit?: number
@@ -181,6 +208,9 @@ function canUseSpanMetricsCallsHourly(opts: MetricsRateTimeseriesOpts): boolean 
 		// The hourly MV folds ResourceAttributes into a fingerprint — it cannot
 		// serve resource-attribute filters or group-bys, and `deployment.environment`
 		// lives in that same map, so an environment filter also drops to the raw path.
+		// The MV likewise folds datapoint `Attributes` into a fingerprint (only
+		// `SpanKind` survives), so any `attributeFilters` takes the raw path too.
+		(opts.attributeFilters === undefined || opts.attributeFilters.length === 0) &&
 		opts.groupByResourceAttributeKey === undefined &&
 		(opts.resourceAttributeFilters === undefined || opts.resourceAttributeFilters.length === 0) &&
 		(opts.environments === undefined || opts.environments.length === 0)
@@ -368,6 +398,7 @@ export function metricsTimeseriesRateQuery(
 			opts.environments?.length
 				? CH.inList(deploymentEnvExpr($.ResourceAttributes), opts.environments)
 				: undefined,
+			...attributeFilterConditions(opts.attributeFilters, (k) => $.Attributes.get(k)),
 			...resourceFilterConditions(opts.resourceAttributeFilters),
 		])
 
@@ -460,6 +491,8 @@ export interface MetricsBreakdownOpts {
 	groupByAttributeKey?: string
 	/** Break down by a ResourceAttributes key instead of a datapoint Attributes key. */
 	groupByResourceAttributeKey?: string
+	/** Additional `Attributes[key] = value` predicates, AND-ed together. */
+	attributeFilters?: readonly MetricAttributeEquals[]
 	resourceAttributeFilters?: readonly AttributeFilter[]
 	limit?: number
 }
@@ -501,6 +534,7 @@ export function metricsBreakdownQuery(opts: MetricsBreakdownOpts) {
 			// Drop datapoints missing the label so an empty bucket doesn't dominate.
 			CH.when(groupKey, (k: string) => $.Attributes.get(k).neq("")),
 			CH.when(resourceGroupKey, (k: string) => $.ResourceAttributes.get(k).neq("")),
+			...attributeFilterConditions(opts.attributeFilters, (k) => $.Attributes.get(k)),
 			...resourceFilterConditions(opts.resourceAttributeFilters),
 		])
 		.groupBy("name")
