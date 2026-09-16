@@ -9,6 +9,7 @@ import {
 	EyeIcon,
 	NetworkNodesIcon,
 	PulseIcon,
+	SquareActivityChartIcon,
 } from "@maple/ui/components/icons"
 import { TraceListView } from "./views/trace-list-view"
 import { TraceDetailView } from "./views/trace-detail-view"
@@ -20,6 +21,7 @@ import { ServicesListView } from "./views/services-list-view"
 import { ServiceDetailView } from "./views/service-detail-view"
 import { SessionsListView } from "./views/sessions-list-view"
 import { SessionDetailView } from "./views/session-detail-view"
+import { AnalyticsView } from "./views/analytics-view"
 import { navigate, useLocation } from "./lib/router"
 import { ConnectButton } from "./components/connect-button"
 import { LocalLockup } from "./components/local-lockup"
@@ -39,6 +41,7 @@ type Route =
 	| { name: "errors" }
 	| { name: "sessions" }
 	| { name: "session-detail"; sessionId: string }
+	| { name: "analytics" }
 
 function parseRoute(path: string): Route {
 	const traceDetail = path.match(/^\/traces\/(.+)$/)
@@ -54,10 +57,11 @@ function parseRoute(path: string): Route {
 	if (path.startsWith("/metrics")) return { name: "metrics" }
 	if (path.startsWith("/services")) return { name: "services" }
 	if (path.startsWith("/sessions")) return { name: "sessions" }
+	if (path.startsWith("/analytics")) return { name: "analytics" }
 	return { name: "traces" }
 }
 
-type Tab = "traces" | "logs" | "metrics" | "services" | "errors" | "sessions"
+type Tab = "traces" | "logs" | "metrics" | "services" | "errors" | "sessions" | "analytics"
 
 function activeTab(route: Route): Tab {
 	if (route.name === "errors") return "errors"
@@ -65,6 +69,7 @@ function activeTab(route: Route): Tab {
 	if (route.name === "metrics" || route.name === "metric-detail") return "metrics"
 	if (route.name === "services" || route.name === "service-detail") return "services"
 	if (route.name === "sessions" || route.name === "session-detail") return "sessions"
+	if (route.name === "analytics") return "analytics"
 	return "traces"
 }
 
@@ -135,6 +140,12 @@ export function App() {
 								active={tab === "sessions"}
 								onClick={() => switchTab("/sessions")}
 							/>
+							<NavTab
+								label="Analytics"
+								icon={<SquareActivityChartIcon size={14} />}
+								active={tab === "analytics"}
+								onClick={() => switchTab("/analytics")}
+							/>
 							<div className="ml-auto flex items-center gap-3">
 								<IngestStatus />
 								<ConnectButton />
@@ -187,6 +198,8 @@ export function App() {
 								/>
 							) : route.name === "logs" ? (
 								<LogsView />
+							) : route.name === "analytics" ? (
+								<AnalyticsView />
 							) : route.name === "sessions" ? (
 								<SessionsListView
 									onSelectSession={(sessionId) =>

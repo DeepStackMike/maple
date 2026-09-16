@@ -311,6 +311,47 @@ const productEventsFixtures: ReadonlyArray<BuilderFixture> = [
 				window,
 			),
 	},
+	{
+		module: "product-events",
+		name: "productEventTimeseriesQuery",
+		label: "default",
+		compile: () =>
+			CH.compileUnsafe(
+				CH.productEventTimeseriesQuery({ eventName: "signup_completed", bucketSeconds: 3_600 }),
+				window,
+			),
+	},
+	{
+		module: "product-events",
+		name: "productEventTimeseriesQuery",
+		label: "filtered",
+		compile: () =>
+			CH.compileUnsafe(
+				CH.productEventTimeseriesQuery({
+					eventName: "signup_completed",
+					bucketSeconds: 900,
+					filters: WEB_ANALYTICS_ALL_FILTERS,
+				}),
+				window,
+			),
+	},
+	{
+		module: "product-events",
+		name: "productEventPropertyKeysQuery",
+		label: "default",
+		compile: () =>
+			CH.compileUnsafe(CH.productEventPropertyKeysQuery({ eventName: "plan_started" }), window),
+	},
+	{
+		module: "product-events",
+		name: "productEventPropertyValuesQuery",
+		label: "default",
+		compile: () =>
+			CH.compileUnsafe(
+				CH.productEventPropertyValuesQuery({ eventName: "plan_started", propertyKey: "plan" }),
+				window,
+			),
+	},
 ]
 
 export const builderFixtures: ReadonlyArray<BuilderFixture> = [

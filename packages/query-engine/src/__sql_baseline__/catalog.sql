@@ -1035,13 +1035,14 @@ SELECT
         ORDER BY bucket ASC
         FORMAT JSON
 
--- builder:product-events:productEventNamesQuery:default  [7c7336c7]
+-- builder:product-events:productEventNamesQuery:default  [4e7d15bf]
 SELECT
           EventName AS eventName,
           Kind AS kind,
           count() AS count,
           uniqIf(SessionId, SessionId != '') AS sessions,
-          uniq(if(UserId != '', UserId, VisitorId)) AS persons
+          uniqIf(if(UserId != '', UserId, VisitorId), (UserId != '' OR VisitorId != '')) AS persons,
+          max(Timestamp) AS lastSeen
         FROM product_events
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
@@ -1051,13 +1052,14 @@ SELECT
         LIMIT 100
         FORMAT JSON
 
--- builder:product-events:productEventNamesQuery:filtered  [a47865a2]
+-- builder:product-events:productEventNamesQuery:filtered  [d94aa83a]
 SELECT
           EventName AS eventName,
           Kind AS kind,
           count() AS count,
           uniqIf(SessionId, SessionId != '') AS sessions,
-          uniq(if(UserId != '', UserId, VisitorId)) AS persons
+          uniqIf(if(UserId != '', UserId, VisitorId), (UserId != '' OR VisitorId != '')) AS persons,
+          max(Timestamp) AS lastSeen
         FROM product_events
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
@@ -1101,6 +1103,36 @@ SELECT
         GROUP BY eventName, kind
         ORDER BY count DESC, eventName ASC
         LIMIT 100
+        FORMAT JSON
+
+-- builder:product-events:productEventPropertyKeysQuery:default  [93a88dbc]
+SELECT
+          arrayJoin(mapKeys(Attributes)) AS propertyKey,
+          count() AS count
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND EventName = 'plan_started'
+        GROUP BY propertyKey
+        ORDER BY count DESC, propertyKey ASC
+        LIMIT 50
+        FORMAT JSON
+
+-- builder:product-events:productEventPropertyValuesQuery:default  [e0a33825]
+SELECT
+          Attributes['plan'] AS propertyValue,
+          count() AS count,
+          uniqIf(SessionId, SessionId != '') AS sessions
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND EventName = 'plan_started'
+          AND Attributes['plan'] != ''
+        GROUP BY propertyValue
+        ORDER BY count DESC, propertyValue ASC
+        LIMIT 20
         FORMAT JSON
 
 -- builder:product-events:productEventsFunnelBreakdownQuery:attribute-session-step  [ac39fa69]
@@ -1465,6 +1497,70 @@ SELECT
 ) AS funnel_events
         GROUP BY key) AS levels) AS totals
         ORDER BY step ASC
+        FORMAT JSON
+
+-- builder:product-events:productEventTimeseriesQuery:default  [e945306d]
+SELECT
+          toStartOfInterval(Timestamp, INTERVAL 3600 SECOND) AS bucket,
+          count() AS count,
+          uniqIf(SessionId, SessionId != '') AS sessions
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND EventName = 'signup_completed'
+        GROUP BY bucket
+        ORDER BY bucket ASC
+        FORMAT JSON
+
+-- builder:product-events:productEventTimeseriesQuery:filtered  [8a6304ac]
+SELECT
+          toStartOfInterval(Timestamp, INTERVAL 900 SECOND) AS bucket,
+          count() AS count,
+          uniqIf(SessionId, SessionId != '') AS sessions
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Host = 'maple.dev'
+          AND SessionId IN (SELECT
+          SessionId AS sessionId
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND SessionId IN (SELECT
+          SessionId AS sessionId
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Kind = 'navigation'
+          AND PagePath = '/pricing'
+        GROUP BY sessionId)
+          AND ReferrerHost = 't.co'
+          AND Country = 'DE'
+          AND DeviceType = 'desktop'
+          AND BrowserName = 'Chrome'
+          AND OsName = 'macOS'
+          AND Language = 'en-US'
+          AND UtmSource = 'twitter'
+          AND UtmMedium = 'social'
+          AND UtmCampaign = 'launch'
+          AND VisitorIsNew = 1
+          AND SessionId IN (SELECT
+          SessionId AS sessionId
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Kind = 'custom'
+          AND EventName = 'signup_started'
+        GROUP BY sessionId)
+        GROUP BY sessionId)
+          AND EventName = 'signup_completed'
+        GROUP BY bucket
+        ORDER BY bucket ASC
         FORMAT JSON
 
 -- builder:service-endpoints:serviceEndpointsSummaryQuery:default  [3e379104]

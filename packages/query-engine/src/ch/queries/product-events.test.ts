@@ -4,6 +4,9 @@ import {
 	productEventsFunnelQuery,
 	productEventsFunnelBreakdownQuery,
 	productEventNamesQuery,
+	productEventTimeseriesQuery,
+	productEventPropertyKeysQuery,
+	productEventPropertyValuesQuery,
 	ProductEventsFunnelError,
 	type FunnelStep,
 } from "./product-events"
@@ -282,12 +285,12 @@ describe("productEventsFunnelBreakdownQuery", () => {
 // productEventNamesQuery
 
 describe("productEventNamesQuery", () => {
-	it("lists names with counts, sessions and persons, most frequent first", () => {
+	it("lists names with counts, sessions, persons and last seen, most frequent first", () => {
 		const compiled = compileUnsafe(productEventNamesQuery({ limit: 25 }), params)
 		expect(compiled.tenantScope).toBe("single-tenant")
 		const flat = oneLine(compiled.sql)
 		expect(flat).toContain(
-			"SELECT EventName AS eventName, Kind AS kind, count() AS count, uniqIf(SessionId, SessionId != '') AS sessions, uniq(if(UserId != '', UserId, VisitorId)) AS persons FROM product_events",
+			"SELECT EventName AS eventName, Kind AS kind, count() AS count, uniqIf(SessionId, SessionId != '') AS sessions, uniqIf(if(UserId != '', UserId, VisitorId), (UserId != '' OR VisitorId != '')) AS persons, max(Timestamp) AS lastSeen FROM product_events",
 		)
 		expect(flat).toContain("WHERE OrgId = 'org_1'")
 		expect(flat).toContain("GROUP BY eventName, kind ORDER BY count DESC, eventName ASC LIMIT 25")
@@ -308,5 +311,71 @@ describe("productEventNamesQuery", () => {
 		expect(flat).toContain("AND ReferrerHost = 't.co'")
 		// pagePath narrows sessions through the navigation semi-join, not the events.
 		expect(flat).toContain("AND Kind = 'navigation' AND PagePath = '/pricing' GROUP BY sessionId)")
+	})
+})
+
+// Single-event drill-down
+
+describe("productEventTimeseriesQuery", () => {
+	it("counts one event's firings per bucket, org- and range-scoped", () => {
+		const compiled = compileUnsafe(
+			productEventTimeseriesQuery({ eventName: "signup_completed", bucketSeconds: 900 }),
+			params,
+		)
+		expect(compiled.tenantScope).toBe("single-tenant")
+		const flat = oneLine(compiled.sql)
+		expect(flat).toContain(
+			"SELECT toStartOfInterval(Timestamp, INTERVAL 900 SECOND) AS bucket, count() AS count, uniqIf(SessionId, SessionId != '') AS sessions FROM product_events",
+		)
+		expect(flat).toContain("WHERE OrgId = 'org_1'")
+		expect(flat).toContain("AND EventName = 'signup_completed'")
+		expect(flat).toContain("GROUP BY bucket ORDER BY bucket ASC")
+		// Matched on the name alone — `$pageview` is selectable the same way.
+		expect(flat).not.toContain("Kind =")
+	})
+
+	it("narrows through the shared filter surface", () => {
+		const { sql } = compileUnsafe(
+			productEventTimeseriesQuery({
+				eventName: "signup_completed",
+				filters: { host: "maple.dev", country: "DE" },
+			}),
+			params,
+		)
+		const flat = oneLine(sql)
+		expect(flat).toContain("AND Host = 'maple.dev' AND SessionId IN (SELECT SessionId AS sessionId")
+		expect(flat).toContain("AND Country = 'DE'")
+	})
+})
+
+describe("productEventPropertyKeysQuery", () => {
+	it("explodes the Attributes map to one row per key carried", () => {
+		const compiled = compileUnsafe(
+			productEventPropertyKeysQuery({ eventName: "plan_started", limit: 5 }),
+			params,
+		)
+		expect(compiled.tenantScope).toBe("single-tenant")
+		const flat = oneLine(compiled.sql)
+		expect(flat).toContain(
+			"SELECT arrayJoin(mapKeys(Attributes)) AS propertyKey, count() AS count FROM product_events",
+		)
+		expect(flat).toContain("AND EventName = 'plan_started'")
+		expect(flat).toContain("GROUP BY propertyKey ORDER BY count DESC, propertyKey ASC LIMIT 5")
+	})
+})
+
+describe("productEventPropertyValuesQuery", () => {
+	it("ranks values of one key, dropping firings that never set it", () => {
+		const compiled = compileUnsafe(
+			productEventPropertyValuesQuery({ eventName: "plan_started", propertyKey: "plan" }),
+			params,
+		)
+		expect(compiled.tenantScope).toBe("single-tenant")
+		const flat = oneLine(compiled.sql)
+		expect(flat).toContain(
+			"SELECT Attributes['plan'] AS propertyValue, count() AS count, uniqIf(SessionId, SessionId != '') AS sessions FROM product_events",
+		)
+		expect(flat).toContain("AND EventName = 'plan_started' AND Attributes['plan'] != ''")
+		expect(flat).toContain("GROUP BY propertyValue ORDER BY count DESC, propertyValue ASC LIMIT 20")
 	})
 })

@@ -190,6 +190,12 @@ export {
 	productEventsFunnelBreakdownRowSchema,
 	productEventNamesQuery,
 	productEventNamesRowSchema,
+	productEventTimeseriesQuery,
+	productEventTimeseriesRowSchema,
+	productEventPropertyKeysQuery,
+	productEventPropertyKeysRowSchema,
+	productEventPropertyValuesQuery,
+	productEventPropertyValuesRowSchema,
 	ProductEventsFunnelError,
 	FUNNEL_MAX_STEPS,
 	FUNNEL_BREAKDOWN_MAX_GROUPS,
@@ -203,6 +209,12 @@ export {
 	type ProductEventsFunnelBreakdownOutput,
 	type ProductEventNamesOpts,
 	type ProductEventNamesOutput,
+	type ProductEventTimeseriesOpts,
+	type ProductEventTimeseriesOutput,
+	type ProductEventPropertyKeysOpts,
+	type ProductEventPropertyKeysOutput,
+	type ProductEventPropertyValuesOpts,
+	type ProductEventPropertyValuesOutput,
 } from "./queries/product-events"
 
 // Queries — Services

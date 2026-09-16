@@ -156,6 +156,7 @@ export const productEventNamesRowSchema = Schema.Struct({
 	count: CHNumber,
 	sessions: CHNumber,
 	persons: CHNumber,
+	lastSeen: Schema.String,
 })
 export type ProductEventNamesOutput = typeof productEventNamesRowSchema.Type
 
@@ -653,13 +654,48 @@ export function productEventsFunnelBreakdownQuery(
 }
 
 /**
+ * Org / time bounds plus the sidebar filter surface, over a single scan of
+ * `product_events` — the WHERE every flat query in this section shares.
+ *
+ * `host` is a column on the row, so it applies directly; the `session_replays`
+ * dimensions (and `pagePath`, through that table's navigation semi-join) reach
+ * the events as `SessionId IN (…)`. One definition, so the event list, the
+ * per-event timeseries and the property breakdowns are narrowed identically —
+ * a number in the drill-down always sums to the row that opened it.
+ */
+function productEventsWhere(
+	$: EventsAccessor,
+	filters: ProductEventsFilters,
+): Array<CH.Condition | undefined> {
+	return [
+		$.OrgId.eq(param.string("orgId")),
+		$.Timestamp.gte(param.dateTimeString("startTime")),
+		$.Timestamp.lte(param.dateTimeString("endTime")),
+		CH.when(filters.host, (v: string) => $.Host.eq(v)),
+		needsSessionSemiJoin(filters) || filters.pagePath !== undefined
+			? inSubquery(
+					$.SessionId,
+					from(SessionReplays)
+						.select(($s) => ({ sessionId: $s.SessionId }))
+						.where(($s) => replaysWhere($s, { ...filters, host: undefined }))
+						.groupBy("sessionId"),
+				)
+			: undefined,
+	]
+}
+
+/**
  * Event names in range for the step picker: `{ eventName, kind, count,
- * sessions, persons }`, most frequent first.
+ * sessions, persons, lastSeen }`, most frequent first.
  *
  * `persons` is the unstitched `if(UserId != '', UserId, VisitorId)` — a cheap
  * approximation that needs no `identity_links` join; the funnel itself does the
- * stitching. Sidebar filters narrow by `SessionId`, so under an active filter
- * server-side events (which carry no session) are not listed.
+ * stitching. It counts only rows that carry one of the two ids, the same
+ * `key != ''` gate the funnel applies: `uniq()` over the bare expression scores
+ * a feed with no identity at all as **one person** (the `''` key), which reads
+ * on screen as "1 visitor" for every event rather than as "none identified".
+ * Sidebar filters narrow by `SessionId`, so under an active filter server-side
+ * events (which carry no session) are not listed.
  */
 export function productEventNamesQuery(
 	opts: ProductEventNamesOpts = {},
@@ -672,25 +708,148 @@ export function productEventNamesQuery(
 			kind: $.Kind,
 			count: CH.count(),
 			sessions: CH.uniqIf($.SessionId, $.SessionId.neq("")),
-			persons: CH.uniq(CH.if_($.UserId.neq(""), $.UserId, $.VisitorId)),
+			persons: CH.uniqIf(
+				CH.if_($.UserId.neq(""), $.UserId, $.VisitorId),
+				$.UserId.neq("").or($.VisitorId.neq("")),
+			),
+			lastSeen: CH.max_($.Timestamp),
 		}))
-		.where(($) => [
-			$.OrgId.eq(param.string("orgId")),
-			$.Timestamp.gte(param.dateTimeString("startTime")),
-			$.Timestamp.lte(param.dateTimeString("endTime")),
-			CH.when(filters.host, (v: string) => $.Host.eq(v)),
-			needsSessionSemiJoin(filters) || filters.pagePath !== undefined
-				? inSubquery(
-						$.SessionId,
-						from(SessionReplays)
-							.select(($s) => ({ sessionId: $s.SessionId }))
-							.where(($s) => replaysWhere($s, { ...filters, host: undefined }))
-							.groupBy("sessionId"),
-					)
-				: undefined,
-		])
+		.where(($) => productEventsWhere($, filters))
 		.groupBy("eventName", "kind")
 		.orderBy(["count", "desc"], ["eventName", "asc"])
 		.limit(limit)
+		.format("JSON")
+}
+
+// Single-event drill-down
+//
+// `productEventNamesQuery` above answers "which events fired"; these three
+// answer "and what does one of them look like". Nothing in `web-analytics.ts`
+// covers them — its timeseries are session- and page-view-shaped
+// (`Kind = 'navigation'`), and its breakdowns fan out over `session_replays`
+// dimensions, never over an event's own `Attributes` map. They mirror
+// `metricScopedAttributeKeysQuery` / `…ValuesQuery`: a flat scan of the one
+// table, scoped to a single name, under the shared filter surface.
+
+export interface ProductEventTimeseriesOpts {
+	/** The `track()` (or directly ingested) event name to count. */
+	readonly eventName: string
+	/** Bucket width. Default 3600, matching the page-view timeseries. */
+	readonly bucketSeconds?: number
+	readonly filters?: ProductEventsFilters
+}
+
+export const productEventTimeseriesRowSchema = Schema.Struct({
+	bucket: Schema.String,
+	count: CHNumber,
+	sessions: CHNumber,
+})
+export type ProductEventTimeseriesOutput = typeof productEventTimeseriesRowSchema.Type
+
+/**
+ * One event's firings per bucket: a plain `count()` of its rows, plus the
+ * distinct sessions behind them.
+ *
+ * Matched on `EventName` alone, with no `Kind` predicate: a page view reaches
+ * this table as `$pageview`, and a customer is free to `track('$pageview')`
+ * too, so the row the event list showed and the series drawn for it are
+ * selected by exactly the same thing the user clicked — the name.
+ *
+ * Empty buckets are absent rather than zero, as everywhere else in the engine;
+ * the caller fills the gaps it wants to draw.
+ */
+export function productEventTimeseriesQuery(
+	opts: ProductEventTimeseriesOpts,
+): CHQuery<any, ProductEventTimeseriesOutput, any> {
+	const filters: ProductEventsFilters = { ...opts.filters, useProductEvents: true }
+	return from(ProductEvents)
+		.select(($) => ({
+			bucket: CH.toStartOfInterval($.Timestamp, opts.bucketSeconds ?? 3600),
+			count: CH.count(),
+			sessions: CH.uniqIf($.SessionId, $.SessionId.neq("")),
+		}))
+		.where(($) => [...productEventsWhere($, filters), $.EventName.eq(opts.eventName)])
+		.groupBy("bucket")
+		.orderBy(["bucket", "asc"])
+		.format("JSON")
+}
+
+export interface ProductEventPropertyKeysOpts {
+	readonly eventName: string
+	/** Default 50. */
+	readonly limit?: number
+	readonly filters?: ProductEventsFilters
+}
+
+export const productEventPropertyKeysRowSchema = Schema.Struct({
+	propertyKey: Schema.String,
+	count: CHNumber,
+})
+export type ProductEventPropertyKeysOutput = typeof productEventPropertyKeysRowSchema.Type
+
+/**
+ * The property keys one event actually carries, most common first — the picker
+ * a value breakdown is chosen from.
+ *
+ * `arrayJoin(mapKeys(Attributes))` explodes each row to one row per key it
+ * carries, so `count()` is "events carrying this key", not "events". A key
+ * every firing sets therefore reports the event's own total, which is the
+ * number that makes a partially-set key legible next to it.
+ */
+export function productEventPropertyKeysQuery(
+	opts: ProductEventPropertyKeysOpts,
+): CHQuery<any, ProductEventPropertyKeysOutput, any> {
+	const filters: ProductEventsFilters = { ...opts.filters, useProductEvents: true }
+	return from(ProductEvents)
+		.select(($) => ({
+			propertyKey: CH.arrayJoin(CH.mapKeys($.Attributes)),
+			count: CH.count(),
+		}))
+		.where(($) => [...productEventsWhere($, filters), $.EventName.eq(opts.eventName)])
+		.groupBy("propertyKey")
+		.orderBy(["count", "desc"], ["propertyKey", "asc"])
+		.limit(opts.limit ?? 50)
+		.format("JSON")
+}
+
+export interface ProductEventPropertyValuesOpts extends ProductEventPropertyKeysOpts {
+	/** The `Attributes` key to break down. */
+	readonly propertyKey: string
+}
+
+export const productEventPropertyValuesRowSchema = Schema.Struct({
+	propertyValue: Schema.String,
+	count: CHNumber,
+	sessions: CHNumber,
+})
+export type ProductEventPropertyValuesOutput = typeof productEventPropertyValuesRowSchema.Type
+
+/**
+ * Top values of one property on one event, with the sessions behind each.
+ *
+ * Firings that never set the key are dropped (`Attributes[k] != ''`) rather
+ * than piled into an empty group — the same rule `metricScopedAttributeValuesQuery`
+ * applies, and without it the unset bucket is usually the largest bar and
+ * dominates a breakdown that was asked for the set ones. `productEventPropertyKeysQuery`
+ * is where the coverage gap shows: its per-key count against the event's total.
+ */
+export function productEventPropertyValuesQuery(
+	opts: ProductEventPropertyValuesOpts,
+): CHQuery<any, ProductEventPropertyValuesOutput, any> {
+	const filters: ProductEventsFilters = { ...opts.filters, useProductEvents: true }
+	return from(ProductEvents)
+		.select(($) => ({
+			propertyValue: $.Attributes.get(opts.propertyKey),
+			count: CH.count(),
+			sessions: CH.uniqIf($.SessionId, $.SessionId.neq("")),
+		}))
+		.where(($) => [
+			...productEventsWhere($, filters),
+			$.EventName.eq(opts.eventName),
+			$.Attributes.get(opts.propertyKey).neq(""),
+		])
+		.groupBy("propertyValue")
+		.orderBy(["count", "desc"], ["propertyValue", "asc"])
+		.limit(opts.limit ?? 20)
 		.format("JSON")
 }
