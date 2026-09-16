@@ -56,6 +56,32 @@ const MARKER_STYLES = {
 	custom: "bg-violet-400 ring-violet-400/30",
 } satisfies Record<ReplayMarkerKind, string>
 
+export const MARKER_LABELS = {
+	error: "Error",
+	click: "Click",
+	navigation: "Navigation",
+	input: "Input",
+	custom: "Custom event",
+} satisfies Record<ReplayMarkerKind, string>
+
+const MARKER_ORDER: ReadonlyArray<ReplayMarkerKind> = ["error", "click", "navigation", "input", "custom"]
+
+/** The coloured dot for a marker kind, shared by the scrubber, the legend and the transcript. */
+export function MarkerDot({ kind, className }: { kind: ReplayMarkerKind; className?: string }) {
+	return (
+		<span
+			aria-hidden
+			className={cn("inline-block size-2 shrink-0 rounded-full", MARKER_STYLES[kind], className)}
+		/>
+	)
+}
+
+/** Which marker is pointed at, and by which surface, so the other one can respond without scrolling itself. */
+export interface ActiveMarker {
+	readonly id: string
+	readonly source: "scrubber" | "transcript"
+}
+
 /** Imperative surface the session view uses to jump the player from the transcript. */
 export interface ReplayPlayerHandle {
 	/**
@@ -73,11 +99,16 @@ interface SessionReplaySectionProps {
 	resourceAttributes: string | null | undefined
 	active: boolean
 	markers?: ReadonlyArray<ReplayMarker>
+	activeMarker?: ActiveMarker | null
+	onActiveMarkerChange?: (active: ActiveMarker | null) => void
 }
 
 /** Loads the recording and picks the right empty/loading/player state. */
 export const SessionReplaySection = forwardRef<ReplayPlayerHandle, SessionReplaySectionProps>(
-	function SessionReplaySection({ sessionId, resourceAttributes, active, markers }, ref) {
+	function SessionReplaySection(
+		{ sessionId, resourceAttributes, active, markers, activeMarker, onActiveMarkerChange },
+		ref,
+	) {
 		const recorded = recordedMarker(resourceAttributes)
 		const replay = useLocalSessionReplay(sessionId, recorded !== false)
 
@@ -111,6 +142,8 @@ export const SessionReplaySection = forwardRef<ReplayPlayerHandle, SessionReplay
 				events={replay.data.events}
 				viewport={replay.data.viewport ?? DEFAULT_VIEWPORT}
 				markers={markers ?? []}
+				activeMarker={activeMarker}
+				onActiveMarkerChange={onActiveMarkerChange}
 				footer={`${replay.data.chunkCount} chunk${replay.data.chunkCount === 1 ? "" : "s"} · ${formatBytes(replay.data.byteSize)}`}
 			/>
 		)
@@ -127,11 +160,13 @@ interface ReplayPlayerProps {
 	events: ReadonlyArray<unknown>
 	viewport: ReplayViewport
 	markers?: ReadonlyArray<ReplayMarker>
+	activeMarker?: ActiveMarker | null
+	onActiveMarkerChange?: (active: ActiveMarker | null) => void
 	footer?: string
 }
 
 export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(function ReplayPlayer(
-	{ events, viewport, markers = [], footer },
+	{ events, viewport, markers = [], activeMarker = null, onActiveMarkerChange, footer },
 	ref,
 ) {
 	const surfaceRef = useRef<HTMLDivElement>(null)
@@ -267,6 +302,10 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
 	const aspect =
 		viewport.width > 0 && viewport.height > 0 ? `${viewport.width} / ${viewport.height}` : "16 / 9"
 	const visibleMarkers = totalMs > 0 ? markers.filter((m) => m.offsetMs >= 0 && m.offsetMs <= totalMs) : []
+	const hovered = activeMarker ? visibleMarkers.find((m) => m.id === activeMarker.id) : undefined
+	const legendKinds = MARKER_ORDER.filter((kind) => visibleMarkers.some((m) => m.kind === kind))
+	const setHover = (marker: ReplayMarker | null) =>
+		onActiveMarkerChange?.(marker ? { id: marker.id, source: "scrubber" } : null)
 
 	return (
 		<div className="flex flex-col gap-2">
@@ -305,22 +344,51 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
 						className="pointer-events-none absolute inset-x-0 -top-2 h-2"
 						aria-hidden={visibleMarkers.length === 0}
 					>
-						{visibleMarkers.map((marker) => (
-							<button
-								key={marker.id}
-								type="button"
-								onClick={() => seek(marker.offsetMs)}
-								title={`${formatClock(marker.offsetMs)} · ${marker.label}`}
-								aria-label={`Jump to ${marker.kind} at ${formatClock(marker.offsetMs)}`}
-								data-marker-kind={marker.kind}
-								className={cn(
-									"pointer-events-auto absolute top-0 size-2 -translate-x-1/2 rounded-full ring-2 transition-transform hover:scale-150",
-									MARKER_STYLES[marker.kind],
-								)}
-								style={{ left: `${(marker.offsetMs / totalMs) * 100}%` }}
-							/>
-						))}
+						{visibleMarkers.map((marker) => {
+							const isActive = activeMarker?.id === marker.id
+							return (
+								<button
+									key={marker.id}
+									type="button"
+									onClick={() => seek(marker.offsetMs)}
+									onMouseEnter={() => setHover(marker)}
+									onMouseLeave={() => setHover(null)}
+									onFocus={() => setHover(marker)}
+									onBlur={() => setHover(null)}
+									aria-label={`Jump to ${MARKER_LABELS[marker.kind].toLowerCase()} at ${formatClock(marker.offsetMs)}: ${marker.label}`}
+									data-marker-kind={marker.kind}
+									data-marker-id={marker.id}
+									className={cn(
+										"pointer-events-auto absolute top-0 size-2 -translate-x-1/2 rounded-full ring-2 transition-transform",
+										MARKER_STYLES[marker.kind],
+										isActive ? "z-10 scale-[1.75]" : "hover:scale-150",
+									)}
+									style={{ left: `${(marker.offsetMs / totalMs) * 100}%` }}
+								/>
+							)
+						})}
 					</div>
+					{hovered ? (
+						<div
+							role="tooltip"
+							data-marker-tooltip
+							className="pointer-events-none absolute bottom-full z-20 mb-3 max-w-72 -translate-x-1/2 rounded-md border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-md"
+							style={{
+								left: `clamp(6rem, ${(hovered.offsetMs / totalMs) * 100}%, calc(100% - 6rem))`,
+							}}
+						>
+							<span className="flex items-center gap-1.5">
+								<MarkerDot kind={hovered.kind} />
+								<span className="font-mono tabular-nums text-muted-foreground">
+									{formatClock(hovered.offsetMs)}
+								</span>
+								<span className="font-medium">{MARKER_LABELS[hovered.kind]}</span>
+							</span>
+							<span className="mt-0.5 block truncate text-muted-foreground">
+								{hovered.label}
+							</span>
+						</div>
+					) : null}
 					<input
 						type="range"
 						min={0}
@@ -352,6 +420,21 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
 				</fieldset>
 				{footer ? <span className="ml-auto text-xs text-muted-foreground">{footer}</span> : null}
 			</div>
+			{legendKinds.length > 0 ? (
+				<div
+					className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground"
+					aria-label="Marker legend"
+				>
+					<span>Markers from the event transcript:</span>
+					{legendKinds.map((kind) => (
+						<span key={kind} className="inline-flex items-center gap-1">
+							<MarkerDot kind={kind} />
+							{MARKER_LABELS[kind]}
+						</span>
+					))}
+					<span className="ml-auto">Click a marker or a transcript row to jump there.</span>
+				</div>
+			) : null}
 		</div>
 	)
 })

@@ -1,4 +1,4 @@
-import { useMemo, useRef, type ReactNode } from "react"
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { Button } from "@maple/ui/components/ui/button"
 import { Spinner } from "@maple/ui/components/ui/spinner"
 import {
@@ -26,8 +26,10 @@ import { formatSessionDuration, gradientFor, hostFromUrl, isMobileDevice } from 
 import { ErrorState } from "../components/view-states"
 import { RefreshButton } from "../components/toolbar"
 import {
+	MarkerDot,
 	recordedMarker,
 	SessionReplaySection,
+	type ActiveMarker,
 	type ReplayMarker,
 	type ReplayMarkerKind,
 	type ReplayPlayerHandle,
@@ -54,6 +56,8 @@ export function SessionDetailView({ sessionId, onBack, onSelectTrace }: SessionD
 	// few seconds early so the lead-up is visible. Same query key as the player,
 	// so this is a cache read, not a second fetch.
 	const playerRef = useRef<ReplayPlayerHandle>(null)
+	// Hovering a scrubber marker highlights its transcript row and vice versa.
+	const [activeMarker, setActiveMarker] = useState<ActiveMarker | null>(null)
 	const replay = useLocalSessionReplay(sessionId, recordedMarker(session?.resourceAttributes) !== false)
 	const baseMs = replay.data?.baseTimestampMs
 	const offsetFor = (event: SessionTranscriptOutput): number | undefined => {
@@ -159,6 +163,8 @@ export function SessionDetailView({ sessionId, onBack, onSelectTrace }: SessionD
 									resourceAttributes={session.resourceAttributes}
 									active={isActive}
 									markers={markers}
+									activeMarker={activeMarker}
+									onActiveMarkerChange={setActiveMarker}
 								/>
 							</Card>
 						</div>
@@ -249,6 +255,8 @@ export function SessionDetailView({ sessionId, onBack, onSelectTrace }: SessionD
 										events={transcript.data ?? []}
 										startTime={session.startTime}
 										onJump={baseMs === undefined ? undefined : jumpTo}
+										activeMarker={activeMarker}
+										onActiveMarkerChange={setActiveMarker}
 									/>
 								)}
 							</Card>
@@ -337,24 +345,52 @@ function isErrorEvent(event: SessionTranscriptOutput): boolean {
 	)
 }
 
+const transcriptRowId = (event: SessionTranscriptOutput) => `${event.seq}-${event.timestamp}`
+
 function Transcript({
 	events,
 	startTime,
 	onJump,
+	activeMarker,
+	onActiveMarkerChange,
 }: {
 	events: ReadonlyArray<SessionTranscriptOutput>
 	startTime: string
 	/** Present once the recording is loaded; rows then seek the player. */
 	onJump?: (event: SessionTranscriptOutput) => void
+	activeMarker?: ActiveMarker | null
+	onActiveMarkerChange?: (active: ActiveMarker | null) => void
 }) {
+	const listRef = useRef<HTMLOListElement>(null)
+	// A marker hovered on the scrubber brings its row into view; a hovered row never scrolls itself.
+	useEffect(() => {
+		if (activeMarker?.source !== "scrubber" || !listRef.current) return
+		const row = listRef.current.querySelector<HTMLElement>(
+			`[data-transcript-id="${CSS.escape(activeMarker.id)}"]`,
+		)
+		row?.scrollIntoView({ block: "nearest", behavior: "smooth" })
+	}, [activeMarker])
+
 	return (
-		<ol className="space-y-3">
+		<ol ref={listRef} className="space-y-3">
 			{events.map((event) => {
 				const danger = isErrorEvent(event)
+				const id = transcriptRowId(event)
+				const kind = markerKind(event)
+				const highlighted = activeMarker?.id === id
 				const Row = onJump ? "button" : "div"
+				const hover =
+					kind && onActiveMarkerChange
+						? {
+								onMouseEnter: () =>
+									onActiveMarkerChange({ id, source: "transcript" as const }),
+								onMouseLeave: () => onActiveMarkerChange(null),
+							}
+						: {}
 				return (
-					<li key={`${event.seq}-${event.timestamp}`}>
+					<li key={id} data-transcript-id={id}>
 						<Row
+							{...hover}
 							{...(onJump
 								? {
 										type: "button" as const,
@@ -369,6 +405,7 @@ function Transcript({
 								"flex w-full gap-3 rounded-md text-left",
 								onJump &&
 									"-mx-1.5 px-1.5 py-0.5 transition-colors hover:bg-accent/40 focus-visible:bg-accent/40 focus-visible:outline-none",
+								highlighted && "bg-accent/60 ring-1 ring-primary/40",
 							)}
 						>
 							<span
@@ -384,7 +421,8 @@ function Transcript({
 							<div className="min-w-0 flex-1">
 								<div className="flex items-baseline justify-between gap-2">
 									<span className="text-xs font-medium capitalize">{event.type}</span>
-									<span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground">
+									<span className="inline-flex shrink-0 items-center gap-1.5 font-mono text-[11px] tabular-nums text-muted-foreground">
+										{kind ? <MarkerDot kind={kind} className="size-1.5" /> : null}
 										{offsetLabel(startTime, event.timestamp)}
 									</span>
 								</div>
