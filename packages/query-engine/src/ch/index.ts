@@ -136,6 +136,7 @@ export {
 	sessionReplayEventsQuery,
 	sessionsForTraceQuery,
 	sessionTraceSummariesQuery,
+	sessionSpansQuery,
 	type SessionReplaysListOpts,
 	type SessionReplaysListOutput,
 	type SessionReplaysFacetsOpts,
@@ -151,6 +152,8 @@ export {
 	type SessionsForTraceOutput,
 	type SessionTraceSummariesOpts,
 	type SessionTraceSummaryOutput,
+	type SessionSpansOpts,
+	type SessionSpanOutput,
 } from "./queries/session-replays"
 
 // Queries — Session Events (distilled stream)

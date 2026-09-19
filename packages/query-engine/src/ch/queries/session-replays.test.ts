@@ -9,6 +9,7 @@ import {
 	sessionReplayEventsQuery,
 	sessionsForTraceQuery,
 	sessionTraceSummariesQuery,
+	sessionSpansQuery,
 } from "./session-replays"
 
 const baseParams = { orgId: "org_1" }
@@ -566,5 +567,79 @@ describe("sessionResourceAttributeBreakdownQuery", () => {
 		const q = sessionResourceAttributeBreakdownQuery({ key: "geo.locality.name", limit: 12 })
 		const { sql } = compileUnsafe(q, { ...baseParams, ...WINDOW })
 		expect(sql).toContain("LIMIT 12")
+	})
+})
+
+// sessionSpansQuery
+//
+// The session→backend link that does not depend on a trace id: every span
+// carrying this session's `session.id` attribute, per-span rather than
+// aggregated, so the page can both list the session's traces and work out
+// which span a given transcript row was.
+
+describe("sessionSpansQuery", () => {
+	it("selects spans by the session.id attribute, scoped to the org", () => {
+		const { sql } = compileUnsafe(sessionSpansQuery(), sessionParams)
+		expect(sql).toContain("FROM trace_detail_spans")
+		expect(sql).toContain("OrgId = 'org_1'")
+		expect(sql).toContain("SpanAttributes['session.id'] = 'sess_1'")
+	})
+
+	// The whole point of the query. A `groupUniqArray(TraceId)` would answer
+	// "which traces" and leave "which span was THIS request" unanswerable, which
+	// is the half the transcript needs.
+	it("returns one row per span, with the ids and the http shape the matcher keys on", () => {
+		const { sql } = compileUnsafe(sessionSpansQuery(), sessionParams)
+		expect(sql).toContain("TraceId AS traceId")
+		expect(sql).toContain("SpanId AS spanId")
+		expect(sql).toContain("SpanKind AS kind")
+		expect(sql).toContain("StatusCode AS statusCode")
+		expect(sql).toContain("SpanAttributes['http.route'] AS httpRoute")
+		expect(sql).toContain("SpanAttributes['server.address'] AS serverAddress")
+		expect(sql).not.toContain("GROUP BY")
+	})
+
+	// Current semconv first, the pre-1.23 spelling second. A backend on an older
+	// OTel SDK emits only the deprecated keys, and a matcher handed '' for the
+	// method rejects every candidate it should have matched.
+	it("coalesces both spellings of the http method and url", () => {
+		const { sql } = compileUnsafe(sessionSpansQuery(), sessionParams)
+		expect(sql).toContain(
+			"coalesce(nullIf(SpanAttributes['http.request.method'], ''), SpanAttributes['http.method']) AS httpMethod",
+		)
+		expect(sql).toContain(
+			"coalesce(nullIf(SpanAttributes['url.full'], ''), SpanAttributes['http.url']) AS httpUrl",
+		)
+	})
+
+	// 1.7e18 nanoseconds is far above 2^53: as a JS number it rounds to the
+	// nearest ~256ns, and the catalog sweep rejects an unwrapped 64-bit integer.
+	it("returns the span start as a toString-wrapped nanosecond epoch", () => {
+		const { sql } = compileUnsafe(sessionSpansQuery(), sessionParams)
+		expect(sql).toContain("toString(toUnixTimestamp64Nano(Timestamp)) AS startTimeNs")
+	})
+
+	it("orders by start time, tie-broken by span id so the page order is stable", () => {
+		const { sql } = compileUnsafe(sessionSpansQuery(), sessionParams)
+		expect(sql).toContain("ORDER BY startTime ASC, spanId ASC")
+	})
+
+	// There is no index on a map key, so the predicate is a scan either way;
+	// the bounds are what keep it to the session's own daily partitions.
+	it("adds the session window as a partition-pruning predicate when provided", () => {
+		const { sql } = compileUnsafe(sessionSpansQuery(WINDOW), sessionParams)
+		expect(sql).toContain("Timestamp >= '2026-06-24 04:00:00'")
+		expect(sql).toContain("Timestamp <= '2026-06-25 06:00:00'")
+	})
+
+	it("omits the window when absent (deep-link path, full scan)", () => {
+		const { sql } = compileUnsafe(sessionSpansQuery(), sessionParams)
+		expect(sql).not.toContain("Timestamp >=")
+		expect(sql).not.toContain("Timestamp <=")
+	})
+
+	it("caps rows at 500 by default and honours an explicit limit", () => {
+		expect(compileUnsafe(sessionSpansQuery(), sessionParams).sql).toContain("LIMIT 500")
+		expect(compileUnsafe(sessionSpansQuery({ limit: 50 }), sessionParams).sql).toContain("LIMIT 50")
 	})
 })

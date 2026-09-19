@@ -111,6 +111,31 @@ export function App() {
 	// so opening an item and returning preserves the list's filters.
 	const carry = () => new URLSearchParams(query)
 
+	// Where a trace was opened from. A trace reached from a session is the one
+	// case where "back" does not mean the list: the reader was watching a
+	// recording, and sending them to /traces loses the session, the playhead and
+	// the row they clicked. `from=session:<id>` rides along on the link and the
+	// trace page's back button honours it; `jump` rides with it so returning
+	// lands on the same event rather than at the top of the transcript.
+	const traceOrigin = query.get("from")
+	const originSessionId = traceOrigin?.startsWith("session:")
+		? traceOrigin.slice("session:".length)
+		: undefined
+	const openTraceFromSession = (sessionId: string, traceId: string) => {
+		const next = carry()
+		next.set("from", `session:${sessionId}`)
+		navigate(`/traces/${encodeURIComponent(traceId)}`, next)
+	}
+	const leaveTraceDetail = () => {
+		const next = carry()
+		next.delete("from")
+		if (originSessionId) {
+			navigate(`/sessions/${encodeURIComponent(originSessionId)}`, next)
+			return
+		}
+		navigate("/traces", next)
+	}
+
 	// Switching top-level tabs keeps the cross-cutting filters (service, range
 	// and project). `ns` belongs here for a stronger reason than the other two:
 	// it is a standing choice made in the header, not in the view being left, so
@@ -201,14 +226,15 @@ export function App() {
 							) : route.name === "trace-detail" ? (
 								<TraceDetailView
 									traceId={route.traceId}
-									onBack={() => navigate("/traces", carry())}
+									onBack={leaveTraceDetail}
+									backLabel={originSessionId ? "Session" : "Traces"}
 								/>
 							) : route.name === "session-detail" ? (
 								<SessionDetailView
 									sessionId={route.sessionId}
 									onBack={() => navigate("/sessions", carry())}
 									onSelectTrace={(traceId) =>
-										navigate(`/traces/${encodeURIComponent(traceId)}`)
+										openTraceFromSession(route.sessionId, traceId)
 									}
 								/>
 							) : route.name === "metric-detail" ? (

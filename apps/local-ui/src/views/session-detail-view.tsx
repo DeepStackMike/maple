@@ -29,15 +29,20 @@ import {
 } from "@maple/ui/components/icons"
 import { cn } from "@maple/ui/lib/utils"
 import { formatDuration } from "@maple/ui/lib/format"
-import type { SessionReplayDetailOutput, SessionTranscriptOutput } from "@maple/query-engine/ch"
+import type {
+	SessionReplayDetailOutput,
+	SessionSpanOutput,
+	SessionTranscriptOutput,
+} from "@maple/query-engine/ch"
 import {
 	useLocalSessionDetail,
+	useLocalSessionSpans,
 	useLocalSessionTraces,
 	useLocalSessionTranscript,
 } from "../hooks/use-local-session-detail"
 import { parseAttributes } from "@maple/ui/lib/span-tree"
 import { formatLocation, type FormattedLocation } from "../lib/geo"
-import { formatRelativeTime } from "../lib/time"
+import { formatRelativeTime, toClickHouseDateTime } from "../lib/time"
 import { formatSessionDuration, gradientFor, hostFromUrl, isMobileDevice } from "@maple/ui/lib/replay-format"
 import { ErrorState } from "../components/view-states"
 import { RefreshButton } from "../components/toolbar"
@@ -61,11 +66,17 @@ import {
 	isErrorEvent,
 	offsetLabel,
 	parseChTime,
+	recoverTraceLinks,
 	SESSION_EVENT_TAB_LABELS,
 	SESSION_EVENT_TABS,
+	sessionSpanWindow,
 	tabCounts,
+	traceLinkFor,
+	transcriptRowId,
+	unionTraceIds,
 	urlAt,
 	type SessionEventTab,
+	type TraceLink,
 } from "../lib/session-detail"
 
 interface SessionDetailViewProps {
@@ -79,10 +90,37 @@ const ERROR_LEAD_MS = 3000
 
 export function SessionDetailView({ sessionId, onBack, onSelectTrace }: SessionDetailViewProps) {
 	const { data: session, isPending, isError, error } = useLocalSessionDetail(sessionId)
-	const traceIds = session?.traceIds ?? []
-	const traces = useLocalSessionTraces(traceIds)
 	const transcript = useLocalSessionTranscript(sessionId)
 	const events = useMemo(() => transcript.data ?? [], [transcript.data])
+
+	// The session's spans, found by their `session.id` attribute rather than by
+	// a trace id. `session_replays.TraceIds` is written by the unload beacon, so
+	// an active session correlates to nothing without this; and the distilled
+	// `network` rows lose their own trace id whenever the SDK's fetch tracing is
+	// on (its capture wrapper sits outside the OTel one and reads the active
+	// trace id before the fetch span exists), so this is also what the transcript
+	// matches those rows against.
+	const spanWindow = useMemo(() => (session ? sessionSpanWindow(session) : undefined), [session])
+	const spansQuery = useLocalSessionSpans(
+		sessionId,
+		spanWindow
+			? {
+					startTime: toClickHouseDateTime(spanWindow.startMs),
+					endTime: toClickHouseDateTime(spanWindow.endMs),
+				}
+			: undefined,
+	)
+	const spans = useMemo(() => spansQuery.data ?? [], [spansQuery.data])
+	const recordedTraceIds = useMemo(() => session?.traceIds ?? [], [session?.traceIds])
+	const traceIds = useMemo(() => unionTraceIds(recordedTraceIds, spans), [recordedTraceIds, spans])
+	// Which of the card's traces the ended row never named — a "matched" hint,
+	// not a different link: the trace is the same trace either way.
+	const recoveredTraceIds = useMemo(
+		() => new Set(traceIds.filter((id) => !recordedTraceIds.includes(id))),
+		[traceIds, recordedTraceIds],
+	)
+	const traces = useLocalSessionTraces(traceIds)
+	const traceLinks = useMemo(() => recoverTraceLinks(events, spans), [events, spans])
 
 	const isActive = session?.status === "active"
 	const hasError = (session?.errorCount ?? 0) > 0
@@ -273,7 +311,9 @@ export function SessionDetailView({ sessionId, onBack, onSelectTrace }: SessionD
 								<Card title={`Correlated traces · ${traceIds.length}`}>
 									{traceIds.length === 0 ? (
 										<p className="text-sm text-muted-foreground">
-											No backend traces correlated.
+											{spansQuery.isPending
+												? "Looking for backend traces…"
+												: "No backend traces correlated."}
 										</p>
 									) : traces.isPending ? (
 										<Spinner className="size-4" />
@@ -295,9 +335,14 @@ export function SessionDetailView({ sessionId, onBack, onSelectTrace }: SessionD
 															)}
 														/>
 														<span className="min-w-0 flex-1">
-															<span className="block truncate text-sm">
-																{trace.rootSpanName ||
-																	trace.traceId.slice(0, 12)}
+															<span className="flex min-w-0 items-baseline gap-1.5">
+																<span className="truncate text-sm">
+																	{trace.rootSpanName ||
+																		trace.traceId.slice(0, 12)}
+																</span>
+																{recoveredTraceIds.has(trace.traceId) ? (
+																	<MatchedHint />
+																) : null}
 															</span>
 															<span className="block truncate text-xs text-muted-foreground">
 																{trace.rootServiceName || "unknown"} ·{" "}
@@ -330,6 +375,8 @@ export function SessionDetailView({ sessionId, onBack, onSelectTrace }: SessionD
 								playheadMs={playheadMs}
 								activeMarker={activeMarker}
 								onActiveMarkerChange={setActiveMarker}
+								traceLinks={traceLinks}
+								onSelectTrace={onSelectTrace}
 							/>
 						</div>
 					</div>
@@ -354,6 +401,9 @@ interface EventPanelProps {
 	playheadMs: number
 	activeMarker: ActiveMarker | null
 	onActiveMarkerChange: (active: ActiveMarker | null) => void
+	/** Row id → the span a trace-id-less row was matched to. See `recoverTraceLinks`. */
+	traceLinks: ReadonlyMap<string, SessionSpanOutput>
+	onSelectTrace: (traceId: string) => void
 }
 
 function EventPanel({
@@ -367,6 +417,8 @@ function EventPanel({
 	playheadMs,
 	activeMarker,
 	onActiveMarkerChange,
+	traceLinks,
+	onSelectTrace,
 }: EventPanelProps) {
 	const [tab, setTab] = useState<SessionEventTab>("all")
 	const counts = useMemo(() => tabCounts(events), [events])
@@ -453,6 +505,8 @@ function EventPanel({
 								current={index === currentIndex}
 								hovered={activeMarker?.id === id}
 								onActiveMarkerChange={onActiveMarkerChange}
+								traceLink={traceLinkFor(event, traceLinks)}
+								onSelectTrace={onSelectTrace}
 							/>
 						)
 					})}
@@ -470,6 +524,8 @@ function EventRow({
 	current,
 	hovered,
 	onActiveMarkerChange,
+	traceLink,
+	onSelectTrace,
 }: {
 	event: SessionTranscriptOutput
 	index: number
@@ -480,6 +536,9 @@ function EventRow({
 	/** A scrubber marker or this row itself is under the pointer. */
 	hovered: boolean
 	onActiveMarkerChange: (active: ActiveMarker | null) => void
+	/** The backend trace this row happened under, recorded or recovered. */
+	traceLink?: TraceLink
+	onSelectTrace: (traceId: string) => void
 }) {
 	const danger = isErrorEvent(event)
 	const id = transcriptRowId(event)
@@ -492,8 +551,22 @@ function EventRow({
 			}
 		: {}
 
+	// The trace link is a SIBLING of the row, not a child: the row is itself a
+	// button that seeks the player, and a button inside a button is invalid HTML
+	// that browsers resolve by dropping one of them.
 	return (
-		<li data-transcript-id={id} data-row-index={index}>
+		<li
+			data-transcript-id={id}
+			data-row-index={index}
+			// The row's state lives on the <li> rather than on the button, so the
+			// tint reaches the trace link beside it instead of stopping short of it.
+			className={cn(
+				"flex w-full items-start transition-colors",
+				onJump && "hover:bg-accent/40",
+				current && "bg-primary/5 shadow-[inset_2px_0_0_0_var(--primary)]",
+				hovered && "bg-accent/60",
+			)}
+		>
 			<Row
 				{...hover}
 				{...(onJump
@@ -508,10 +581,9 @@ function EventRow({
 					: {})}
 				aria-current={current ? "true" : undefined}
 				className={cn(
-					"flex w-full gap-2.5 px-3 py-2 text-left transition-colors",
-					onJump && "hover:bg-accent/40 focus-visible:bg-accent/40 focus-visible:outline-none",
-					current && "bg-primary/5 shadow-[inset_2px_0_0_0_var(--primary)]",
-					hovered && "bg-accent/60",
+					"flex min-w-0 flex-1 gap-2.5 py-2 pl-3 text-left transition-colors",
+					traceLink ? "pr-1" : "pr-3",
+					onJump && "focus-visible:bg-accent/40 focus-visible:outline-none",
 				)}
 			>
 				<span className="w-12 shrink-0 pt-0.5 text-right font-mono text-[11px] tabular-nums text-muted-foreground">
@@ -530,7 +602,52 @@ function EventRow({
 				</div>
 				{kind ? <MarkerDot kind={kind} className="mt-1.5 size-1.5" /> : null}
 			</Row>
+			{traceLink ? <TraceLinkButton link={traceLink} onSelect={onSelectTrace} /> : null}
 		</li>
+	)
+}
+
+/**
+ * The row's way into the backend trace it caused.
+ *
+ * Two provenances, one link. A `network` or `error` row that kept its
+ * `TraceId` names the trace outright; one that lost it — which is every network
+ * row while the SDK's own fetch tracing is on — was matched to a span of this
+ * session by method, URL and time. Both open the same page, so the difference
+ * is a hint rather than a different affordance: a dotted underline and a word,
+ * so a reader can tell a recorded fact from an inferred one before trusting it.
+ */
+function TraceLinkButton({ link, onSelect }: { link: TraceLink; onSelect: (traceId: string) => void }) {
+	return (
+		<button
+			type="button"
+			onClick={() => onSelect(link.traceId)}
+			title={
+				link.matched ? "Matched by session, URL and time" : `Open trace ${link.traceId.slice(0, 12)}`
+			}
+			aria-label={
+				link.matched
+					? "Open the matched backend trace (matched by session, URL and time)"
+					: "Open the backend trace"
+			}
+			className="mr-2 mt-2 flex shrink-0 items-center gap-1 self-start rounded-md px-1.5 py-0.5 text-[10px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:outline-none"
+		>
+			<span className={cn(link.matched && "border-b border-dotted border-current")}>trace</span>
+			{link.matched ? <span className="uppercase tracking-wide opacity-60">matched</span> : null}
+			<ArrowRightIcon size={10} className="shrink-0" />
+		</button>
+	)
+}
+
+/** The same "this was inferred, not recorded" hint, on a correlated-traces row. */
+function MatchedHint() {
+	return (
+		<span
+			title="Matched by session, URL and time"
+			className="shrink-0 rounded bg-muted px-1 py-px text-[9px] uppercase tracking-wide text-muted-foreground"
+		>
+			matched
+		</span>
 	)
 }
 
@@ -716,8 +833,6 @@ function markerLabel(event: SessionTranscriptOutput): string {
 			return `${event.type} ${event.message}`.trim()
 	}
 }
-
-const transcriptRowId = (event: SessionTranscriptOutput) => `${event.seq}-${event.timestamp}`
 
 function EventIcon({ event }: { event: SessionTranscriptOutput }) {
 	const className = "size-3"

@@ -1057,3 +1057,103 @@ export function sessionTraceSummariesQuery(opts: SessionTraceSummariesOpts) {
 		.limit(limit)
 		.format("JSON")
 }
+
+// Every span a session touched, found by attribute rather than by trace id
+//
+// `session_replays.TraceIds` is the SDK's own record of the traces a session
+// produced, and it is written by the **ended** metadata row — so a session
+// still open, or one whose unload beacon never landed, correlates to nothing.
+// Worse, the distilled `network` events that would carry the link per-request
+// arrive with an EMPTY `TraceId` whenever the browser SDK's own fetch tracing
+// is on: `installNetworkCapture` wraps `window.fetch` AFTER
+// `registerInstrumentations` has already wrapped it (`init.ts` calls
+// `setupTracing` synchronously and loads the replay chunk through a dynamic
+// import), which makes the capture wrapper the OUTER one — it reads
+// `activeTraceId()` before the fetch span it wants the id of has been created.
+//
+// The link that survives both is `session.id`. The browser SDK's
+// `TraceIdCollector.onStart` stamps it on every span it starts, and a backend
+// that copies the header onto its server span inherits it down the tree — so
+// "the spans of this session" is an attribute predicate, and the trace ids fall
+// out of it. That makes this query both the reverse link (which traces did this
+// session cause?) and the raw material for recovering the forward one (which
+// span was THIS request?), which is why it returns per-span rows and not a
+// `groupUniqArray(TraceId)`: a client that only knows trace ids cannot tell
+// which of a session's forty requests a given transcript row was.
+//
+// Reads `trace_detail_spans` — the same projection `sessionTraceSummariesQuery`
+// uses, carrying every span of every trace (its MV is an unfiltered re-sort of
+// `traces`). There is no index on a map key, so the predicate is a scan either
+// way; the startTime/endTime bounds are what keeps it to the one or two daily
+// partitions the session spans.
+
+export interface SessionSpansOpts {
+	/** Optional session time window — prunes daily partitions. Omit to scan all. */
+	startTime?: string
+	endTime?: string
+	/** Page size. A busy session is hundreds of spans; the matcher needs breadth, not all of it. */
+	limit?: number
+}
+
+export interface SessionSpanOutput {
+	readonly traceId: string
+	readonly spanId: string
+	readonly name: string
+	readonly kind: string
+	readonly serviceName: string
+	/** ClickHouse's own DateTime64(9) rendering — for display. */
+	readonly startTime: string
+	/**
+	 * Nanoseconds since the epoch, as a STRING.
+	 *
+	 * 1.7e18 is far above 2^53, so this can never be a JS number — the value
+	 * would round to the nearest ~256 ns and the catalog sweep rejects an
+	 * unwrapped 64-bit integer for exactly that reason. Callers that want
+	 * milliseconds take the leading digits; they never `Number()` the whole
+	 * string and divide.
+	 */
+	readonly startTimeNs: string
+	readonly durationMs: number
+	readonly statusCode: string
+	/** `http.request.method`, falling back to the pre-1.23 `http.method`. */
+	readonly httpMethod: string
+	/** `url.full`, falling back to the pre-1.23 `http.url`. */
+	readonly httpUrl: string
+	readonly httpRoute: string
+	readonly serverAddress: string
+}
+
+export function sessionSpansQuery(opts: SessionSpansOpts = {}) {
+	return from(TraceDetailSpans)
+		.select(($) => {
+			const attr = (key: string) => $.SpanAttributes.get(key)
+			return {
+				traceId: $.TraceId,
+				spanId: $.SpanId,
+				name: $.SpanName,
+				kind: $.SpanKind,
+				serviceName: $.ServiceName,
+				startTime: $.Timestamp,
+				startTimeNs: CH.toString_(CH.toUnixTimestamp64Nano($.Timestamp)),
+				durationMs: $.Duration.div(1000000),
+				statusCode: $.StatusCode,
+				// Both spellings of each key: the browser SDK emits current semconv,
+				// but a backend on an older OTel SDK (or a span replayed from before
+				// the 1.23 rename) emits the deprecated one, and a matcher handed ''
+				// for the method rejects every candidate it should have matched.
+				httpMethod: CH.coalesce(CH.nullIf(attr("http.request.method"), ""), attr("http.method")),
+				httpUrl: CH.coalesce(CH.nullIf(attr("url.full"), ""), attr("http.url")),
+				httpRoute: attr("http.route"),
+				serverAddress: attr("server.address"),
+			}
+		})
+		.where(($) => [
+			$.OrgId.eq(param.string("orgId")),
+			$.SpanAttributes.get("session.id").eq(param.string("sessionId")),
+			CH.when(opts.startTime, (v: string) => $.Timestamp.gte(v)),
+			CH.when(opts.endTime, (v: string) => $.Timestamp.lte(v)),
+		])
+		.orderBy(["startTime", "asc"], ["spanId", "asc"])
+		.limit(opts.limit ?? 500)
+		.format("JSON")
+}
