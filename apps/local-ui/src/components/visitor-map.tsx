@@ -26,7 +26,8 @@ import { formatNumber } from "@maple/ui/lib/format"
 import { cn } from "@maple/ui/lib/utils"
 import atlasUrl from "../assets/countries-110m.json?url"
 import { formatPercent } from "../lib/product-analytics"
-import { countryLabel, type BreakdownRow } from "../lib/web-analytics"
+import { countryLabel } from "../lib/geo"
+import type { BreakdownRow } from "../lib/web-analytics"
 import {
 	ANTARCTICA_ID,
 	MAP_EMPTY_FILL_CLASS,
