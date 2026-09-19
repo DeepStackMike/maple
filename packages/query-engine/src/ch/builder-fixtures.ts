@@ -504,6 +504,31 @@ export const builderFixtures: ReadonlyArray<BuilderFixture> = [
 				{ orgId: ORG_ID },
 			),
 	},
+	{
+		// local-ui use-local-session-detail.ts useLocalSessionSpans — the spans a
+		// session's own `session.id` attribute names, which is how the page
+		// recovers the request→trace links the browser SDK dropped.
+		module: "session-replays",
+		name: "sessionSpansQuery",
+		label: "default",
+		compile: () =>
+			CH.compileUnsafe(CH.sessionSpansQuery({ startTime: START_TIME, endTime: END_TIME }), {
+				orgId: ORG_ID,
+				sessionId: SESSION_ID,
+			}),
+	},
+	{
+		// The deep-link shape: no window at all, so the partition-pruning
+		// predicates drop out and the SQL is a different statement.
+		module: "session-replays",
+		name: "sessionSpansQuery",
+		label: "unbounded",
+		compile: () =>
+			CH.compileUnsafe(CH.sessionSpansQuery({ limit: 50 }), {
+				orgId: ORG_ID,
+				sessionId: SESSION_ID,
+			}),
+	},
 
 	// Session event fixtures used by the replay routes.
 	{

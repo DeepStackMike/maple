@@ -3752,6 +3752,52 @@ SELECT
         OFFSET 0
         FORMAT JSON
 
+-- builder:session-replays:sessionSpansQuery:default  [6b677e3f]
+SELECT
+          TraceId AS traceId,
+          SpanId AS spanId,
+          SpanName AS name,
+          SpanKind AS kind,
+          ServiceName AS serviceName,
+          Timestamp AS startTime,
+          toString(toUnixTimestamp64Nano(Timestamp)) AS startTimeNs,
+          Duration / 1000000 AS durationMs,
+          StatusCode AS statusCode,
+          coalesce(nullIf(SpanAttributes['http.request.method'], ''), SpanAttributes['http.method']) AS httpMethod,
+          coalesce(nullIf(SpanAttributes['url.full'], ''), SpanAttributes['http.url']) AS httpUrl,
+          SpanAttributes['http.route'] AS httpRoute,
+          SpanAttributes['server.address'] AS serverAddress
+        FROM trace_detail_spans
+        WHERE OrgId = 'org_sql_catalog'
+          AND SpanAttributes['session.id'] = 'sess_0af7651916cd43dd'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+        ORDER BY startTime ASC, spanId ASC
+        LIMIT 500
+        FORMAT JSON
+
+-- builder:session-replays:sessionSpansQuery:unbounded  [b9721de7]
+SELECT
+          TraceId AS traceId,
+          SpanId AS spanId,
+          SpanName AS name,
+          SpanKind AS kind,
+          ServiceName AS serviceName,
+          Timestamp AS startTime,
+          toString(toUnixTimestamp64Nano(Timestamp)) AS startTimeNs,
+          Duration / 1000000 AS durationMs,
+          StatusCode AS statusCode,
+          coalesce(nullIf(SpanAttributes['http.request.method'], ''), SpanAttributes['http.method']) AS httpMethod,
+          coalesce(nullIf(SpanAttributes['url.full'], ''), SpanAttributes['http.url']) AS httpUrl,
+          SpanAttributes['http.route'] AS httpRoute,
+          SpanAttributes['server.address'] AS serverAddress
+        FROM trace_detail_spans
+        WHERE OrgId = 'org_sql_catalog'
+          AND SpanAttributes['session.id'] = 'sess_0af7651916cd43dd'
+        ORDER BY startTime ASC, spanId ASC
+        LIMIT 50
+        FORMAT JSON
+
 -- builder:session-replays:sessionTraceSummariesQuery:default  [cd6dac42]
 SELECT
           TraceId AS traceId,

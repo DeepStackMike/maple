@@ -12,9 +12,16 @@ import { RefreshButton } from "../components/toolbar"
 interface TraceDetailViewProps {
 	traceId: string
 	onBack: () => void
+	/**
+	 * What `onBack` actually returns to. "Traces" for the ordinary path; a trace
+	 * opened from a session replay goes back to that session, and a button
+	 * labelled "Traces" that lands somewhere else is a lie the reader only
+	 * discovers by pressing it.
+	 */
+	backLabel?: string
 }
 
-export function TraceDetailView({ traceId, onBack }: TraceDetailViewProps) {
+export function TraceDetailView({ traceId, onBack, backLabel = "Traces" }: TraceDetailViewProps) {
 	const { data, isPending, isError, error } = useLocalTraceDetail(traceId)
 	const [selectedSpan, setSelectedSpan] = useState<SpanNode | undefined>(undefined)
 	const [panelTab, setPanelTab] = useState<SpanPanelTab>("details")
@@ -36,7 +43,7 @@ export function TraceDetailView({ traceId, onBack }: TraceDetailViewProps) {
 			<div className="flex shrink-0 items-center gap-3 border-b px-4 py-2">
 				<Button variant="ghost" size="sm" onClick={onBack} className="gap-1.5">
 					<ArrowLeftIcon size={14} />
-					Traces
+					{backLabel}
 				</Button>
 				<span className="truncate font-mono text-xs text-muted-foreground" title={traceId}>
 					{traceId}
