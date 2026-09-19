@@ -1,6 +1,7 @@
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { CircleWarningIcon, ChevronDownIcon } from "@maple/ui/components/icons"
 import { Badge } from "@maple/ui/components/ui/badge"
+import { StatSparkline } from "@maple/ui/components/charts/sparkline/stat-sparkline"
 import { Spinner } from "@maple/ui/components/ui/spinner"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@maple/ui/components/ui/table"
 import { formatDuration, formatErrorRate, formatNumber } from "@maple/ui/lib/format"
@@ -22,11 +23,13 @@ import {
 	useLocalErrorTraces,
 	useLocalErrorVersions,
 	useLocalErrorsByType,
+	useLocalErrorsSpark,
 	useLocalErrorsFacets,
 	useLocalErrorsSummary,
 	type ErrorsFilters,
 } from "../hooks/use-local-errors"
 import { introducedVersion, versionsByRecency } from "../lib/error-versions"
+import { denseCounts, sparkWindow, type SparkPoint } from "../lib/error-spark"
 import { useQueryParams } from "../lib/router"
 import { DEFAULT_RANGE, formatRelativeTime } from "../lib/time"
 import { PageShell } from "../components/page-shell"
@@ -39,7 +42,7 @@ interface ErrorsViewProps {
 }
 
 /** Columns in the "Errors by Type" table — the colSpan an expanded row has to cover. */
-const TABLE_COLUMNS = 7
+const TABLE_COLUMNS = 8
 
 /** What a `ServiceVersion` of `''` reads as: the exporter never set one. */
 const UNVERSIONED = "unversioned"
@@ -131,10 +134,9 @@ export function ErrorsView({ onSelectTrace }: ErrorsViewProps) {
 	const rows = byType.data ?? []
 	// One query for the whole page. Built off the rendered rows so it re-runs
 	// when the list does, and skipped entirely while the list is still empty.
-	const versions = useLocalErrorVersions(
-		rows.map((row) => row.fingerprintHash),
-		filters,
-	)
+	const fingerprints = rows.map((row) => row.fingerprintHash)
+	const versions = useLocalErrorVersions(fingerprints, filters)
+	const spark = useLocalErrorsSpark(fingerprints, filters)
 
 	return (
 		<PageShell sidebar={sidebar} toolbar={toolbar}>
@@ -165,6 +167,7 @@ export function ErrorsView({ onSelectTrace }: ErrorsViewProps) {
 										<TableHead className="w-8" />
 										<TableHead>Error Type</TableHead>
 										<TableHead className="text-right">Count</TableHead>
+										<TableHead className="w-28">Trend</TableHead>
 										<TableHead className="text-right">Affected Services</TableHead>
 										<TableHead className="text-right">First Seen</TableHead>
 										<TableHead className="text-right">Last Seen</TableHead>
@@ -177,6 +180,8 @@ export function ErrorsView({ onSelectTrace }: ErrorsViewProps) {
 											key={row.fingerprintHash}
 											row={row}
 											versions={versions.data?.get(row.fingerprintHash) ?? []}
+											spark={spark.data?.get(row.fingerprintHash) ?? []}
+											range={range}
 											filters={filters}
 											onSelectTrace={onSelectTrace}
 										/>
@@ -263,11 +268,15 @@ function KpiCard({
 function ErrorTypeRow({
 	row,
 	versions,
+	spark,
+	range,
 	filters,
 	onSelectTrace,
 }: {
 	row: CH.ErrorsByTypeOutput
 	versions: ReadonlyArray<CH.ErrorVersionsOutput>
+	spark: ReadonlyArray<SparkPoint>
+	range: string
 	filters: ErrorsFilters
 	onSelectTrace: (traceId: string) => void
 }) {
@@ -310,6 +319,9 @@ function ErrorTypeRow({
 					<Badge variant="error" className="tabular-nums">
 						{formatNumber(row.count)}
 					</Badge>
+				</TableCell>
+				<TableCell>
+					<OccurrenceSpark points={spark} range={range} />
 				</TableCell>
 				<TableCell className="text-right tabular-nums">
 					{formatNumber(row.affectedServicesCount)}
@@ -409,6 +421,38 @@ function ErrorTypeDetail({
 				</ul>
 			)}
 		</div>
+	)
+}
+
+/**
+ * When this error fired, across the selected range.
+ *
+ * A count and a "last seen" describe two instants and say nothing about the
+ * shape between them: 412 occurrences in one minute of an outage and 412 spread
+ * evenly over a week are the same two numbers and completely different
+ * problems. Forty buckets of one query — `errorsSparkQuery` runs once for the
+ * whole page, not once per row — is enough to tell those apart at a glance.
+ *
+ * The empty buckets are filled in before drawing. `StatSparkline` plots a
+ * sequence with no time axis, so without them an error that fired twice a week
+ * apart draws the same flat line as one firing steadily, and the gap — the most
+ * informative thing on the chart — disappears.
+ */
+function OccurrenceSpark({ points, range }: { points: ReadonlyArray<SparkPoint>; range: string }) {
+	const counts = useMemo(() => denseCounts(points, sparkWindow(range)), [points, range])
+	const total = counts.reduce((sum, value) => sum + value, 0)
+
+	// `StatSparkline` draws nothing below two points, and a row of pure zeroes is
+	// a straight line that says "no data" while looking like "no errors". Both
+	// cases leave the cell empty rather than drawing something untrue.
+	if (total === 0) return null
+
+	return (
+		<StatSparkline
+			data={counts.map((value) => ({ value }))}
+			color="var(--destructive)"
+			className="h-6 w-24"
+		/>
 	)
 }
 

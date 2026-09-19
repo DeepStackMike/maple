@@ -4,6 +4,7 @@ import { Option } from "effect"
 import { executeLocalCompiledFirstRow, executeLocalCompiledQuery } from "@/lib/query"
 import { LOCAL_ORG_ID } from "../lib/constants"
 import { boundsForRange } from "../lib/time"
+import { groupSparkPoints, sparkWindow, type SparkPoint } from "../lib/error-spark"
 
 export interface ErrorsFilters {
 	/** Exact service name match. */
@@ -107,6 +108,41 @@ export function useLocalErrorVersions(fingerprintHashes: ReadonlyArray<string>, 
 				else byFingerprint.set(row.fingerprintHash, [row])
 			}
 			return byFingerprint
+		},
+	})
+}
+
+/**
+ * Bucketed occurrence counts for every fingerprint on the page, in one scan.
+ *
+ * `errorsSparkQuery` exists for exactly this and predates the local UI: it is
+ * fingerprint-filtered, so it rides `error_events`' (OrgId, FingerprintHash,
+ * Timestamp) key instead of scanning the window, and it returns rows tall
+ * (fingerprint x bucket) rather than as a wide `groupArray`, because aggregate
+ * state merge order is not input order and the client would have to re-sort
+ * anyway.
+ *
+ * The compile window stays `boundsForRange`'s — padded an hour ahead so a
+ * clock-skewed exporter's rows are not filtered out — while `sparkWindow`
+ * decides what is *drawn*. The two differ on purpose; see `error-spark.ts`.
+ */
+export function useLocalErrorsSpark(fingerprintHashes: ReadonlyArray<string>, filters: ErrorsFilters) {
+	const key = [...fingerprintHashes].sort().join(",")
+	return useQuery({
+		queryKey: ["local", "errors", "spark", key, filters],
+		enabled: fingerprintHashes.length > 0,
+		placeholderData: keepPreviousData,
+		queryFn: async (): Promise<Map<string, Array<SparkPoint>>> => {
+			const { startTime, endTime } = boundsForRange(filters.range)
+			const rows = await executeLocalCompiledQuery(
+				CH.compile(CH.errorsSparkQuery({ ...commonOpts(filters), fingerprintHashes }), {
+					orgId: LOCAL_ORG_ID,
+					startTime,
+					endTime,
+					bucketSeconds: sparkWindow(filters.range).bucketSeconds,
+				}),
+			)
+			return groupSparkPoints(rows)
 		},
 	})
 }

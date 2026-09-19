@@ -350,6 +350,13 @@ export function errorsTimeseriesQuery(opts: ErrorsTimeseriesOpts) {
 
 export interface ErrorsSparkOpts extends ErrorsSharedFilters {
 	fingerprintHashes: readonly string[]
+	/**
+	 * Restrict to root-span occurrences, matching the list the spark is drawn
+	 * beside. Unset — which is every caller that predates it — leaves the
+	 * compiled SQL byte-identical; a trend that counts occurrences the row's own
+	 * count excluded is a chart that contradicts the number next to it.
+	 */
+	rootOnly?: boolean
 }
 
 export const ErrorsSparkOutputSchema = Schema.Struct({
@@ -372,6 +379,7 @@ export function errorsSparkQuery(opts: ErrorsSparkOpts) {
 			fingerprintHashIn($.FingerprintHash, opts.fingerprintHashes),
 			$.Timestamp.gte(param.dateTimeSeconds("startTime")),
 			$.Timestamp.lte(param.dateTimeSeconds("endTime")),
+			CH.whenTrue(!!opts.rootOnly, () => $.ParentSpanId.eq("")),
 			...sharedFilterConditions($, opts),
 		])
 		.groupBy("fingerprintHash", "bucket")

@@ -37,6 +37,24 @@ describe("errorsSparkQuery synthetic fingerprints", () => {
 		expect(sql).toContain("toUInt64('456')")
 	})
 
+	it("adds nothing to the compiled SQL until rootOnly is asked for", () => {
+		// Every caller that predates the option must keep its exact SQL — it is in
+		// the catalog baseline.
+		const base = compileUnsafe(errorsSparkQuery({ fingerprintHashes: ["123"] }), baseParams).sql
+		const unset = compileUnsafe(
+			errorsSparkQuery({ fingerprintHashes: ["123"], rootOnly: false }),
+			baseParams,
+		).sql
+		expect(unset).toBe(base)
+		expect(base).not.toContain("ParentSpanId")
+
+		const rootOnly = compileUnsafe(
+			errorsSparkQuery({ fingerprintHashes: ["123"], rootOnly: true }),
+			baseParams,
+		).sql
+		expect(rootOnly).toContain("ParentSpanId = ''")
+	})
+
 	it("matches nothing when every fingerprint is synthetic", () => {
 		// Must not emit `IN ()`, which is a ClickHouse syntax error.
 		const q = errorsSparkQuery({ fingerprintHashes: ["alert:abc:all", "planetscale:maple:oom"] })
