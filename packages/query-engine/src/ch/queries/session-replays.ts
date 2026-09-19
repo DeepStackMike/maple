@@ -735,6 +735,33 @@ export interface SessionReplayDetailOutput {
 	readonly traceIds: ReadonlyArray<string>
 	readonly resourceAttributes: string
 	readonly version: number
+	// Analytics dimensions (migration 0011). The SELECT below has carried every
+	// one of these since that migration; this interface did not, so a caller
+	// typed against it could not read the identity the query already paid for.
+	// Declaring them is type-only — the SQL is byte-identical and the baseline
+	// unchanged.
+	/** Persistent per-browser id; equal across a visitor's marketing and app sessions. */
+	readonly visitorId: string
+	/** `1` when the SDK believed this browser had not been seen before. */
+	readonly visitorIsNew: number
+	readonly userEmail: string
+	readonly userName: string
+	readonly groupId: string
+	readonly groupName: string
+	/** `Map(String, String)` serialized as JSON — `identify()`'s arbitrary traits. */
+	readonly userTraits: string
+	readonly referrer: string
+	readonly referrerHost: string
+	readonly utmSource: string
+	readonly utmMedium: string
+	readonly utmCampaign: string
+	readonly utmTerm: string
+	readonly utmContent: string
+	readonly host: string
+	readonly entryPath: string
+	readonly exitPath: string
+	readonly language: string
+	readonly lastActivityAt: string | null
 }
 
 export function getSessionReplayQuery(opts: SessionReplayDetailOpts = {}) {

@@ -1,17 +1,31 @@
+// Session Replay — the local-mode counterpart of the hosted replay page.
+//
+// The shape is the hosted one: an identity row and a stats strip, a metadata
+// line, then the recording on the left inside a browser frame with a tabbed
+// console/network/errors panel beside it. Everything in the panel is keyed to
+// the playback clock in both directions — a row seeks the player, and the
+// player highlights the row it is currently inside — which is the whole point
+// of putting them side by side rather than one under the other.
+//
+// The arithmetic (active/idle, which row the playhead is in, which page the
+// address bar shows) is in `lib/session-detail.ts` and tested there.
+
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { Button } from "@maple/ui/components/ui/button"
 import { Spinner } from "@maple/ui/components/ui/spinner"
+import { CopyableBadge } from "@maple/ui/components/ui/copyable-badge"
+import { Tabs, TabsList, TabsTrigger } from "@maple/ui/components/ui/tabs"
 import {
 	ArrowLeftIcon,
 	ArrowRightIcon,
 	CircleWarningIcon,
-	ClockIcon,
 	CodeIcon,
 	ComputerIcon,
 	GlobeIcon,
 	MobileIcon,
 	NetworkNodesIcon,
 	PulseIcon,
+	SparkleIcon,
 } from "@maple/ui/components/icons"
 import { cn } from "@maple/ui/lib/utils"
 import { formatDuration } from "@maple/ui/lib/format"
@@ -38,6 +52,21 @@ import {
 } from "../components/session-replay-player"
 import { useLocalSessionReplay } from "../hooks/use-local-session-replay"
 import { StackTrace } from "../components/stack-trace"
+import { useLocation } from "../lib/router"
+import {
+	computeActivity,
+	currentIndexAt,
+	customProperties,
+	eventsForTab,
+	isErrorEvent,
+	offsetLabel,
+	parseChTime,
+	SESSION_EVENT_TAB_LABELS,
+	SESSION_EVENT_TABS,
+	tabCounts,
+	urlAt,
+	type SessionEventTab,
+} from "../lib/session-detail"
 
 interface SessionDetailViewProps {
 	sessionId: string
@@ -45,11 +74,15 @@ interface SessionDetailViewProps {
 	onSelectTrace: (traceId: string) => void
 }
 
+/** How far before an error the player lands, so the lead-up is visible. */
+const ERROR_LEAD_MS = 3000
+
 export function SessionDetailView({ sessionId, onBack, onSelectTrace }: SessionDetailViewProps) {
 	const { data: session, isPending, isError, error } = useLocalSessionDetail(sessionId)
 	const traceIds = session?.traceIds ?? []
 	const traces = useLocalSessionTraces(traceIds)
 	const transcript = useLocalSessionTranscript(sessionId)
+	const events = useMemo(() => transcript.data ?? [], [transcript.data])
 
 	const isActive = session?.status === "active"
 	const hasError = (session?.errorCount ?? 0) > 0
@@ -61,6 +94,10 @@ export function SessionDetailView({ sessionId, onBack, onSelectTrace }: SessionD
 	const playerRef = useRef<ReplayPlayerHandle>(null)
 	// Hovering a scrubber marker highlights its transcript row and vice versa.
 	const [activeMarker, setActiveMarker] = useState<ActiveMarker | null>(null)
+	// The playhead, pushed up by the player so the address bar and the panel's
+	// highlighted row can follow it.
+	const [playheadMs, setPlayheadMs] = useState(0)
+	const [playerReady, setPlayerReady] = useState(false)
 	const replay = useLocalSessionReplay(sessionId, recordedMarker(session?.resourceAttributes) !== false)
 	const baseMs = replay.data?.baseTimestampMs
 	const offsetFor = (event: SessionTranscriptOutput): number | undefined => {
@@ -70,27 +107,60 @@ export function SessionDetailView({ sessionId, onBack, onSelectTrace }: SessionD
 	}
 	const markers = useMemo<ReplayMarker[]>(() => {
 		if (baseMs === undefined) return []
-		return (transcript.data ?? []).flatMap((event) => {
+		return events.flatMap((event) => {
 			const kind = markerKind(event)
 			if (!kind) return []
 			const at = parseChTime(event.timestamp)
 			if (Number.isNaN(at)) return []
 			return [
 				{
-					id: `${event.seq}-${event.timestamp}`,
+					id: transcriptRowId(event),
 					offsetMs: Math.max(0, at - baseMs),
 					kind,
 					label: markerLabel(event),
 				},
 			]
 		})
-	}, [transcript.data, baseMs])
+	}, [events, baseMs])
 	const jumpTo = (event: SessionTranscriptOutput) => {
 		const offset = offsetFor(event)
 		if (offset === undefined) return
 		playerRef.current?.seek(offset, isErrorEvent(event) ? ERROR_LEAD_MS : 0)
 	}
-	const label = session?.userId || "Anonymous"
+
+	// `#/sessions/<id>?jump=<seq>` — a deep link from anywhere that knows a
+	// single distilled event (an error list, an agent's answer). Applied once the
+	// recording is ready, because seeking a player that has no replayer yet is a
+	// no-op that looks like the link silently not working.
+	const { query } = useLocation()
+	const jumpSeq = query.get("jump")
+	const jumpedRef = useRef<string | null>(null)
+	useEffect(() => {
+		if (jumpSeq === null || !playerReady || baseMs === undefined) return
+		if (jumpedRef.current === jumpSeq) return
+		const target = events.find((event) => String(event.seq) === jumpSeq)
+		if (!target) return
+		jumpedRef.current = jumpSeq
+		const at = parseChTime(target.timestamp)
+		if (Number.isNaN(at)) return
+		playerRef.current?.seek(Math.max(0, at - baseMs), isErrorEvent(target) ? ERROR_LEAD_MS : 0)
+		// Light the row up too: the link named an event, not a timestamp.
+		setActiveMarker({ id: transcriptRowId(target), source: "scrubber" })
+	}, [jumpSeq, playerReady, baseMs, events])
+
+	const activity = useMemo(() => computeActivity(events), [events])
+	const navigations = useMemo(() => {
+		if (baseMs === undefined) return []
+		return events.flatMap((event) => {
+			if (event.type !== "navigation") return []
+			const at = parseChTime(event.timestamp)
+			if (Number.isNaN(at)) return []
+			return [{ offsetMs: Math.max(0, at - baseMs), url: event.url }]
+		})
+	}, [events, baseMs])
+	const chromeUrl = urlAt(navigations, playheadMs, session?.urlInitial ?? "")
+
+	const identity = session ? displayName(session, sessionId) : sessionId
 	const DeviceIcon = session && isMobileDevice(session.deviceType) ? MobileIcon : ComputerIcon
 	const location = useMemo(() => (session ? sessionLocation(session) : undefined), [session])
 	const locationLabel = location ? [location.flag, location.label].filter(Boolean).join(" ") : ""
@@ -120,48 +190,71 @@ export function SessionDetailView({ sessionId, onBack, onSelectTrace }: SessionD
 						Session not found.
 					</div>
 				) : (
-					<div className="mx-auto max-w-5xl px-4 py-5">
-						{/* Hero */}
-						<div className="flex flex-wrap items-center gap-4 border-b pb-5">
-							<div
-								className={`grid size-12 shrink-0 place-items-center rounded-full bg-gradient-to-br ${gradientFor(sessionId)} text-base font-semibold text-white shadow-sm`}
-							>
-								{(label[0] ?? "?").toUpperCase()}
-							</div>
-							<div className="min-w-0 flex-1">
-								<div className="flex items-center gap-2">
-									<h1 className="truncate text-xl font-semibold tracking-tight">{label}</h1>
-									<StatusBadge active={isActive} />
+					<div className="mx-auto max-w-[100rem] px-4 py-5">
+						<h1 className="text-sm font-medium text-muted-foreground">Session Replay</h1>
+
+						{/* Identity + stats */}
+						<div className="mt-2 flex flex-wrap items-start justify-between gap-x-8 gap-y-4 border-b pb-5">
+							<div className="flex min-w-0 flex-1 items-center gap-4">
+								<div
+									className={`grid size-12 shrink-0 place-items-center rounded-full bg-gradient-to-br ${gradientFor(sessionId)} text-base font-semibold text-white shadow-sm`}
+								>
+									{(identity[0] ?? "?").toUpperCase()}
 								</div>
-								<div className="mt-1 flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
-									<span className="font-mono text-xs">{sessionId.slice(0, 8)}</span>
-									<span className="inline-flex items-center gap-1.5">
-										<DeviceIcon className="size-3.5 opacity-60" />
-										{session.browserName || "Unknown"}
-										{session.osName ? ` · ${session.osName}` : ""}
-									</span>
-									<span className="inline-flex items-center gap-1.5">
-										<ClockIcon className="size-3.5 opacity-60" />
-										started {formatRelativeTime(session.startTime)}
-									</span>
+								<div className="min-w-0 flex-1">
+									<div className="flex flex-wrap items-center gap-2">
+										<h2 className="truncate text-xl font-semibold tracking-tight">
+											{identity}
+										</h2>
+										<StatusBadge active={isActive} />
+									</div>
+									<div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
+										<span
+											className="max-w-80 truncate"
+											title={session.urlInitial || undefined}
+										>
+											{hostFromUrl(session.urlInitial) || "—"}
+										</span>
+										<span>{formatRelativeTime(session.startTime)}</span>
+										<CopyableBadge
+											value={sessionId}
+											label="session ID"
+											className="font-mono text-[11px]"
+										>
+											{sessionId.slice(0, 8)}
+										</CopyableBadge>
+									</div>
 								</div>
 							</div>
+
+							<dl className="grid grid-cols-3 gap-x-6 gap-y-3 sm:grid-cols-6">
+								<Stat
+									label="Duration"
+									value={isActive ? "Live" : formatSessionDuration(session.durationMs)}
+								/>
+								<Stat label="Active" value={statDuration(activity.activeMs)} />
+								<Stat label="Idle" value={statDuration(activity.idleMs)} />
+								<Stat label="Clicks" value={String(session.clickCount)} />
+								<Stat label="Pages" value={String(session.pageViews)} />
+								<Stat label="Errors" value={String(session.errorCount)} danger={hasError} />
+							</dl>
 						</div>
 
-						{/* Stat tiles */}
-						<div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-5">
-							<StatTile
-								label="Duration"
-								value={isActive ? "Live" : formatSessionDuration(session.durationMs)}
+						{/* Metadata */}
+						<dl className="grid grid-cols-2 gap-x-6 gap-y-3 border-b py-4 sm:grid-cols-4">
+							<Meta
+								label="Browser"
+								value={[session.browserName, session.osName].filter(Boolean).join(" · ")}
+								icon={<DeviceIcon className="size-3.5 opacity-60" />}
 							/>
-							<StatTile label="Page views" value={String(session.pageViews)} />
-							<StatTile label="Clicks" value={String(session.clickCount)} />
-							<StatTile label="Errors" value={String(session.errorCount)} danger={hasError} />
-							<StatTile label="Traces" value={String(traceIds.length)} />
-						</div>
+							<Meta label="Device" value={session.deviceType} />
+							<Meta label="Location" value={locationLabel} title={location?.title} />
+							<Meta label="Service" value={session.serviceName} />
+						</dl>
 
-						<div className="mt-5">
-							<Card title="Replay">
+						{/* Player + event panel */}
+						<div className="mt-5 grid grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+							<div className="flex min-w-0 flex-col gap-5">
 								<SessionReplaySection
 									ref={playerRef}
 									sessionId={sessionId}
@@ -170,37 +263,12 @@ export function SessionDetailView({ sessionId, onBack, onSelectTrace }: SessionD
 									markers={markers}
 									activeMarker={activeMarker}
 									onActiveMarkerChange={setActiveMarker}
+									chromeUrl={chromeUrl}
+									onTimeChange={setPlayheadMs}
+									onReady={() => setPlayerReady(true)}
 								/>
-							</Card>
-						</div>
 
-						<div className="mt-5 grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
-							<div className="flex flex-col gap-5">
-								<Card title="Client">
-									<dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
-										<Field label="User" value={label} />
-										<Field label="Browser" value={session.browserName} />
-										<Field label="OS" value={session.osName} />
-										<Field label="Device" value={session.deviceType} />
-										<Field
-											label="Location"
-											value={locationLabel}
-											title={location?.title}
-										/>
-										<Field label="Service" value={session.serviceName} />
-										<Field
-											label="Entry URL"
-											value={hostFromUrl(session.urlInitial)}
-											title={session.urlInitial}
-											className="col-span-2"
-										/>
-										<Field
-											label="User agent"
-											value={session.userAgent}
-											className="col-span-2"
-										/>
-									</dl>
-								</Card>
+								<UserCard session={session} />
 
 								<Card title={`Correlated traces · ${traceIds.length}`}>
 									{traceIds.length === 0 ? (
@@ -251,25 +319,18 @@ export function SessionDetailView({ sessionId, onBack, onSelectTrace }: SessionD
 								</Card>
 							</div>
 
-							<Card title="Event transcript">
-								{transcript.isPending ? (
-									<Spinner className="size-4" />
-								) : transcript.isError ? (
-									<ErrorState label="transcript" error={transcript.error} />
-								) : (transcript.data?.length ?? 0) === 0 ? (
-									<p className="text-sm text-muted-foreground">
-										No distilled events for this session.
-									</p>
-								) : (
-									<Transcript
-										events={transcript.data ?? []}
-										startTime={session.startTime}
-										onJump={baseMs === undefined ? undefined : jumpTo}
-										activeMarker={activeMarker}
-										onActiveMarkerChange={setActiveMarker}
-									/>
-								)}
-							</Card>
+							<EventPanel
+								events={events}
+								startTime={session.startTime}
+								isPending={transcript.isPending}
+								isError={transcript.isError}
+								error={transcript.error}
+								onJump={baseMs === undefined ? undefined : jumpTo}
+								baseMs={baseMs}
+								playheadMs={playheadMs}
+								activeMarker={activeMarker}
+								onActiveMarkerChange={setActiveMarker}
+							/>
 						</div>
 					</div>
 				)}
@@ -278,10 +339,352 @@ export function SessionDetailView({ sessionId, onBack, onSelectTrace }: SessionD
 	)
 }
 
-// Transcript
+// The event panel
 
-/** How far before an error the player lands, so the lead-up is visible. */
-const ERROR_LEAD_MS = 3000
+interface EventPanelProps {
+	events: ReadonlyArray<SessionTranscriptOutput>
+	startTime: string
+	isPending: boolean
+	isError: boolean
+	error: unknown
+	/** Present once the recording is loaded; rows then seek the player. */
+	onJump?: (event: SessionTranscriptOutput) => void
+	/** rrweb's zero on the playback clock; `undefined` until the recording loads. */
+	baseMs: number | undefined
+	playheadMs: number
+	activeMarker: ActiveMarker | null
+	onActiveMarkerChange: (active: ActiveMarker | null) => void
+}
+
+function EventPanel({
+	events,
+	startTime,
+	isPending,
+	isError,
+	error,
+	onJump,
+	baseMs,
+	playheadMs,
+	activeMarker,
+	onActiveMarkerChange,
+}: EventPanelProps) {
+	const [tab, setTab] = useState<SessionEventTab>("all")
+	const counts = useMemo(() => tabCounts(events), [events])
+	const rows = useMemo(() => eventsForTab(events, tab), [events, tab])
+
+	// Which row the playhead is inside. Offsets are derived here rather than
+	// stored on the rows: the transcript can arrive before the recording does,
+	// and until it does every offset is `NaN` and nothing is highlighted.
+	const offsets = useMemo(
+		() =>
+			rows.map((event) =>
+				baseMs === undefined ? Number.NaN : Math.max(0, parseChTime(event.timestamp) - baseMs),
+			),
+		[rows, baseMs],
+	)
+	const currentIndex = currentIndexAt(offsets, playheadMs)
+
+	// Following the playhead must not fight the pointer: a list that scrolls
+	// itself out from under a hovering cursor is unclickable.
+	const listRef = useRef<HTMLOListElement>(null)
+	const [hovering, setHovering] = useState(false)
+	useEffect(() => {
+		if (hovering || currentIndex < 0 || !listRef.current) return
+		listRef.current
+			.querySelector<HTMLElement>(`[data-row-index="${currentIndex}"]`)
+			?.scrollIntoView({ block: "nearest" })
+	}, [currentIndex, hovering, tab])
+
+	// A marker hovered on the scrubber brings its row into view; a hovered row never scrolls itself.
+	useEffect(() => {
+		if (activeMarker?.source !== "scrubber" || !listRef.current) return
+		listRef.current
+			.querySelector<HTMLElement>(`[data-transcript-id="${CSS.escape(activeMarker.id)}"]`)
+			?.scrollIntoView({ block: "nearest", behavior: "smooth" })
+	}, [activeMarker])
+
+	return (
+		<section className="flex min-w-0 flex-col rounded-xl border bg-card">
+			<Tabs
+				className="gap-0 border-b px-2 pt-1.5"
+				value={tab}
+				onValueChange={(next) => setTab(next as SessionEventTab)}
+			>
+				<TabsList variant="underline" className="w-full justify-start gap-0.5">
+					{SESSION_EVENT_TABS.map((key) => (
+						<TabsTrigger key={key} value={key} className="h-8 grow-0 px-2 text-xs">
+							{SESSION_EVENT_TAB_LABELS[key]}
+							<span className="ml-1 tabular-nums text-muted-foreground">({counts[key]})</span>
+						</TabsTrigger>
+					))}
+				</TabsList>
+			</Tabs>
+
+			{isPending ? (
+				<div className="p-4">
+					<Spinner className="size-4" />
+				</div>
+			) : isError ? (
+				<div className="p-4">
+					<ErrorState label="transcript" error={error} />
+				</div>
+			) : rows.length === 0 ? (
+				<p className="p-4 text-sm text-muted-foreground">
+					{events.length === 0
+						? "No distilled events for this session."
+						: `No ${SESSION_EVENT_TAB_LABELS[tab].toLowerCase()} events in this session.`}
+				</p>
+			) : (
+				<ol
+					ref={listRef}
+					onMouseEnter={() => setHovering(true)}
+					onMouseLeave={() => setHovering(false)}
+					className="max-h-[36rem] min-h-0 divide-y overflow-auto lg:max-h-[calc(100vh-14rem)]"
+				>
+					{rows.map((event, index) => {
+						const id = transcriptRowId(event)
+						return (
+							<EventRow
+								key={id}
+								event={event}
+								index={index}
+								startTime={startTime}
+								onJump={onJump}
+								current={index === currentIndex}
+								hovered={activeMarker?.id === id}
+								onActiveMarkerChange={onActiveMarkerChange}
+							/>
+						)
+					})}
+				</ol>
+			)}
+		</section>
+	)
+}
+
+function EventRow({
+	event,
+	index,
+	startTime,
+	onJump,
+	current,
+	hovered,
+	onActiveMarkerChange,
+}: {
+	event: SessionTranscriptOutput
+	index: number
+	startTime: string
+	onJump?: (event: SessionTranscriptOutput) => void
+	/** The playhead is inside this row. */
+	current: boolean
+	/** A scrubber marker or this row itself is under the pointer. */
+	hovered: boolean
+	onActiveMarkerChange: (active: ActiveMarker | null) => void
+}) {
+	const danger = isErrorEvent(event)
+	const id = transcriptRowId(event)
+	const kind = markerKind(event)
+	const Row = onJump ? "button" : "div"
+	const hover = kind
+		? {
+				onMouseEnter: () => onActiveMarkerChange({ id, source: "transcript" as const }),
+				onMouseLeave: () => onActiveMarkerChange(null),
+			}
+		: {}
+
+	return (
+		<li data-transcript-id={id} data-row-index={index}>
+			<Row
+				{...hover}
+				{...(onJump
+					? {
+							type: "button" as const,
+							onClick: () => onJump(event),
+							title: danger
+								? "Jump to 3 s before this event in the replay"
+								: "Jump to this event in the replay",
+							"aria-label": `Jump to ${event.type} at ${offsetLabel(startTime, event.timestamp)}`,
+						}
+					: {})}
+				aria-current={current ? "true" : undefined}
+				className={cn(
+					"flex w-full gap-2.5 px-3 py-2 text-left transition-colors",
+					onJump && "hover:bg-accent/40 focus-visible:bg-accent/40 focus-visible:outline-none",
+					current && "bg-primary/5 shadow-[inset_2px_0_0_0_var(--primary)]",
+					hovered && "bg-accent/60",
+				)}
+			>
+				<span className="w-12 shrink-0 pt-0.5 text-right font-mono text-[11px] tabular-nums text-muted-foreground">
+					{offsetLabel(startTime, event.timestamp)}
+				</span>
+				<span
+					className={cn(
+						"mt-0.5 grid size-5 shrink-0 place-items-center rounded-full",
+						danger ? "bg-destructive/10 text-destructive" : "bg-muted text-muted-foreground",
+					)}
+				>
+					<EventIcon event={event} />
+				</span>
+				<div className="min-w-0 flex-1">
+					<EventBody event={event} />
+				</div>
+				{kind ? <MarkerDot kind={kind} className="mt-1.5 size-1.5" /> : null}
+			</Row>
+		</li>
+	)
+}
+
+function EventBody({ event }: { event: SessionTranscriptOutput }) {
+	switch (event.type) {
+		case "navigation":
+			return (
+				<p className="truncate text-xs text-muted-foreground" title={event.url}>
+					<span className="mr-1.5 font-medium text-foreground">Navigate</span>
+					{event.url || "—"}
+				</p>
+			)
+		case "click":
+			return (
+				<p className="truncate text-xs text-muted-foreground">
+					<span className="mr-1.5 font-medium text-foreground">Click</span>
+					{event.targetText || event.targetSelector || "element"}
+				</p>
+			)
+		case "input":
+			return (
+				<p className="truncate font-mono text-xs text-muted-foreground">
+					{event.targetSelector || "input"}
+				</p>
+			)
+		case "console":
+			return (
+				<p className="break-words text-xs text-muted-foreground">
+					<span
+						className={cn(
+							"mr-1.5 font-medium uppercase",
+							event.level === "error"
+								? "text-destructive"
+								: event.level === "warn"
+									? "text-amber-500"
+									: "text-foreground",
+						)}
+					>
+						{event.level || "log"}
+					</span>
+					{event.message}
+				</p>
+			)
+		case "network":
+			return (
+				<p className="flex min-w-0 items-baseline gap-1.5 text-xs text-muted-foreground">
+					<span className="shrink-0 font-medium text-foreground">{event.netMethod}</span>
+					<span
+						className={cn(
+							"shrink-0 font-mono tabular-nums",
+							event.netStatus === 0
+								? "text-destructive"
+								: event.netStatus >= 400
+									? "text-destructive"
+									: "text-success",
+						)}
+					>
+						{event.netStatus || "ERR"}
+					</span>
+					<span className="min-w-0 flex-1 truncate" title={event.netUrl}>
+						{event.netUrl}
+					</span>
+					<span className="shrink-0 tabular-nums">{Math.round(event.netDurationMs)}ms</span>
+				</p>
+			)
+		case "error":
+			return (
+				<div>
+					<p className="break-words text-xs text-destructive">{event.message}</p>
+					{event.errorStack ? (
+						// `showHeader` off: the message is already the line above, and a
+						// browser `Error.stack` repeats it as its own first line. `nested`
+						// because the row itself is a button that seeks the player, so the
+						// toggles cannot be buttons — and a click on one is not a seek.
+						<StackTrace
+							className="mt-1"
+							stack={event.errorStack}
+							showHeader={false}
+							compact
+							collapsible
+							nested
+						/>
+					) : null}
+				</div>
+			)
+		case "custom":
+			return <CustomEventBody event={event} />
+		default:
+			return <p className="truncate text-xs text-muted-foreground">{event.message}</p>
+	}
+}
+
+/** `MapleBrowser.track(name, props)` — the name is `Message`, the props are `Attributes`. */
+function CustomEventBody({ event }: { event: SessionTranscriptOutput }) {
+	const properties = customProperties(event)
+	return (
+		<div className="min-w-0">
+			<p className="truncate text-xs font-medium">{event.message || "custom event"}</p>
+			{properties.length > 0 ? (
+				<dl className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+					{properties.map(([key, value]) => (
+						<div key={key} className="flex min-w-0 gap-1 font-mono text-[11px]">
+							<dt className="shrink-0 text-muted-foreground">{key}</dt>
+							<dd className="truncate" title={value}>
+								{value}
+							</dd>
+						</div>
+					))}
+				</dl>
+			) : null}
+		</div>
+	)
+}
+
+// The user card
+
+function UserCard({ session }: { session: SessionReplayDetailOutput }) {
+	const traits = useMemo(() => Object.entries(parseAttributes(session.userTraits)), [session.userTraits])
+	const group = session.groupName || session.groupId
+	return (
+		<Card title="User">
+			<dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm sm:grid-cols-4">
+				<Field label="User ID" value={session.userId} />
+				<Field label="Name" value={session.userName} />
+				<Field label="Email" value={session.userEmail} />
+				<Field
+					label="Group"
+					value={group}
+					title={session.groupId && session.groupName ? session.groupId : undefined}
+				/>
+			</dl>
+			{traits.length === 0 ? (
+				<p className="mt-3 border-t pt-3 text-xs text-muted-foreground">
+					No traits. The browser SDK writes these from `identify(userId, traits)`.
+				</p>
+			) : (
+				<dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 border-t pt-3 sm:grid-cols-4">
+					{traits.map(([key, value]) => (
+						<div key={key} className="min-w-0">
+							<dt className="truncate font-mono text-[11px] text-muted-foreground" title={key}>
+								{key}
+							</dt>
+							<dd className="truncate text-sm" title={value}>
+								{value || "—"}
+							</dd>
+						</div>
+					))}
+				</dl>
+			)}
+		</Card>
+	)
+}
+
+// Bits
 
 function markerKind(event: SessionTranscriptOutput): ReplayMarkerKind | undefined {
 	if (isErrorEvent(event)) return "error"
@@ -314,22 +717,10 @@ function markerLabel(event: SessionTranscriptOutput): string {
 	}
 }
 
-function parseChTime(value: string | null | undefined): number {
-	if (!value) return NaN
-	return Date.parse(`${value.replace(" ", "T")}Z`)
-}
-
-function offsetLabel(startTime: string, ts: string): string {
-	const start = parseChTime(startTime)
-	const at = parseChTime(ts)
-	if (Number.isNaN(start) || Number.isNaN(at)) return ""
-	const deltaMs = Math.max(0, at - start)
-	if (deltaMs < 1000) return `+${deltaMs}ms`
-	return `+${(deltaMs / 1000).toFixed(1)}s`
-}
+const transcriptRowId = (event: SessionTranscriptOutput) => `${event.seq}-${event.timestamp}`
 
 function EventIcon({ event }: { event: SessionTranscriptOutput }) {
-	const className = "size-3.5"
+	const className = "size-3"
 	switch (event.type) {
 		case "navigation":
 			return <GlobeIcon className={className} />
@@ -342,163 +733,27 @@ function EventIcon({ event }: { event: SessionTranscriptOutput }) {
 			return <NetworkNodesIcon className={className} />
 		case "error":
 			return <CircleWarningIcon className={className} />
+		case "custom":
+			return <SparkleIcon className={className} />
 		default:
 			return <CodeIcon className={className} />
 	}
 }
 
-function isErrorEvent(event: SessionTranscriptOutput): boolean {
-	return (
-		event.type === "error" ||
-		(event.type === "console" && event.level === "error") ||
-		(event.type === "network" && event.netStatus >= 400)
-	)
+/**
+ * The stats strip's duration cells. `formatSessionDuration` renders zero as
+ * "—" because an unmeasured session is not an instantaneous one; here zero idle
+ * is a measurement, so it keeps its own cell and only `null` reads as unknown.
+ */
+function statDuration(ms: number | null): string {
+	if (ms === null) return "—"
+	return ms === 0 ? "0s" : formatSessionDuration(ms)
 }
 
-const transcriptRowId = (event: SessionTranscriptOutput) => `${event.seq}-${event.timestamp}`
-
-function Transcript({
-	events,
-	startTime,
-	onJump,
-	activeMarker,
-	onActiveMarkerChange,
-}: {
-	events: ReadonlyArray<SessionTranscriptOutput>
-	startTime: string
-	/** Present once the recording is loaded; rows then seek the player. */
-	onJump?: (event: SessionTranscriptOutput) => void
-	activeMarker?: ActiveMarker | null
-	onActiveMarkerChange?: (active: ActiveMarker | null) => void
-}) {
-	const listRef = useRef<HTMLOListElement>(null)
-	// A marker hovered on the scrubber brings its row into view; a hovered row never scrolls itself.
-	useEffect(() => {
-		if (activeMarker?.source !== "scrubber" || !listRef.current) return
-		const row = listRef.current.querySelector<HTMLElement>(
-			`[data-transcript-id="${CSS.escape(activeMarker.id)}"]`,
-		)
-		row?.scrollIntoView({ block: "nearest", behavior: "smooth" })
-	}, [activeMarker])
-
-	return (
-		<ol ref={listRef} className="space-y-3">
-			{events.map((event) => {
-				const danger = isErrorEvent(event)
-				const id = transcriptRowId(event)
-				const kind = markerKind(event)
-				const highlighted = activeMarker?.id === id
-				const Row = onJump ? "button" : "div"
-				const hover =
-					kind && onActiveMarkerChange
-						? {
-								onMouseEnter: () =>
-									onActiveMarkerChange({ id, source: "transcript" as const }),
-								onMouseLeave: () => onActiveMarkerChange(null),
-							}
-						: {}
-				return (
-					<li key={id} data-transcript-id={id}>
-						<Row
-							{...hover}
-							{...(onJump
-								? {
-										type: "button" as const,
-										onClick: () => onJump(event),
-										title: danger
-											? "Jump to 3 s before this event in the replay"
-											: "Jump to this event in the replay",
-										"aria-label": `Jump to ${event.type} at ${offsetLabel(startTime, event.timestamp)}`,
-									}
-								: {})}
-							className={cn(
-								"flex w-full gap-3 rounded-md text-left",
-								onJump &&
-									"-mx-1.5 px-1.5 py-0.5 transition-colors hover:bg-accent/40 focus-visible:bg-accent/40 focus-visible:outline-none",
-								highlighted && "bg-accent/60 ring-1 ring-primary/40",
-							)}
-						>
-							<span
-								className={cn(
-									"mt-0.5 grid size-6 shrink-0 place-items-center rounded-full",
-									danger
-										? "bg-destructive/10 text-destructive"
-										: "bg-muted text-muted-foreground",
-								)}
-							>
-								<EventIcon event={event} />
-							</span>
-							<div className="min-w-0 flex-1">
-								<div className="flex items-baseline justify-between gap-2">
-									<span className="text-xs font-medium capitalize">{event.type}</span>
-									<span className="inline-flex shrink-0 items-center gap-1.5 font-mono text-[11px] tabular-nums text-muted-foreground">
-										{kind ? <MarkerDot kind={kind} className="size-1.5" /> : null}
-										{offsetLabel(startTime, event.timestamp)}
-									</span>
-								</div>
-								<TranscriptBody event={event} />
-							</div>
-						</Row>
-					</li>
-				)
-			})}
-		</ol>
-	)
+/** The name at the top of the page: whoever `identify()` named, else the session id. */
+function displayName(session: SessionReplayDetailOutput, sessionId: string): string {
+	return session.userName || session.userEmail || session.userId || sessionId
 }
-
-function TranscriptBody({ event }: { event: SessionTranscriptOutput }) {
-	switch (event.type) {
-		case "navigation":
-			return <p className="truncate text-xs text-muted-foreground">{event.url || "—"}</p>
-		case "click":
-			return (
-				<p className="truncate text-xs text-muted-foreground">
-					{event.targetText || event.targetSelector || "element"}
-				</p>
-			)
-		case "input":
-			return (
-				<p className="truncate font-mono text-xs text-muted-foreground">
-					{event.targetSelector || "input"}
-				</p>
-			)
-		case "console":
-			return <p className="break-words text-xs text-muted-foreground">{event.message}</p>
-		case "network":
-			return (
-				<p className="truncate text-xs text-muted-foreground">
-					<span className="font-medium text-foreground">{event.netMethod}</span> {event.netUrl}
-					<span className={cn("ml-1.5 tabular-nums", event.netStatus >= 400 && "text-destructive")}>
-						{event.netStatus || "—"} · {Math.round(event.netDurationMs)}ms
-					</span>
-				</p>
-			)
-		case "error":
-			return (
-				<div>
-					<p className="break-words text-xs text-destructive">{event.message}</p>
-					{event.errorStack ? (
-						// `showHeader` off: the message is already the line above, and a
-						// browser `Error.stack` repeats it as its own first line. `nested`
-						// because the row itself is a button that seeks the player, so the
-						// toggles cannot be buttons — and a click on one is not a seek.
-						<StackTrace
-							className="mt-1"
-							stack={event.errorStack}
-							showHeader={false}
-							compact
-							collapsible
-							nested
-						/>
-					) : null}
-				</div>
-			)
-		default:
-			return <p className="truncate text-xs text-muted-foreground">{event.message}</p>
-	}
-}
-
-// Bits
 
 function StatusBadge({ active }: { active: boolean }) {
 	if (active) {
@@ -519,18 +774,40 @@ function StatusBadge({ active }: { active: boolean }) {
 	)
 }
 
-function StatTile({ label, value, danger }: { label: string; value: string; danger?: boolean }) {
+function Stat({ label, value, danger }: { label: string; value: string; danger?: boolean }) {
 	return (
-		<div className="rounded-xl border bg-card px-3 py-2.5">
-			<p className="text-xs text-muted-foreground">{label}</p>
-			<p
+		<div className="min-w-0">
+			<dt className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{label}</dt>
+			<dd
 				className={cn(
-					"mt-1 text-2xl font-semibold tabular-nums tracking-tight",
+					"mt-0.5 text-lg font-semibold tabular-nums tracking-tight",
 					danger && "text-destructive",
 				)}
 			>
 				{value}
-			</p>
+			</dd>
+		</div>
+	)
+}
+
+function Meta({
+	label,
+	value,
+	title,
+	icon,
+}: {
+	label: string
+	value: string
+	title?: string
+	icon?: ReactNode
+}) {
+	return (
+		<div className="min-w-0">
+			<dt className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{label}</dt>
+			<dd className="mt-0.5 flex items-center gap-1.5 truncate text-sm" title={title ?? value}>
+				{icon}
+				<span className="truncate">{value || "—"}</span>
+			</dd>
 		</div>
 	)
 }

@@ -22,6 +22,9 @@ import { useLocalSessionReplay, type ReplayViewport } from "../hooks/use-local-s
 const SPEEDS = [1, 2, 4, 8] as const
 const DEFAULT_VIEWPORT: ReplayViewport = { width: 1280, height: 720 }
 
+/** Resolution of the playhead reported to `onTimeChange` — see the effect that emits it. */
+const PLAYHEAD_TICK_MS = 200
+
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
 	value !== null && value !== undefined && Object.getPrototypeOf(value) === Object.prototype
 
@@ -91,6 +94,10 @@ export interface ReplayPlayerHandle {
 	 * last frame still lands on the final seconds of footage.
 	 */
 	seek(offsetMs: number, leadMs?: number): void
+	/** Playhead position in ms. `0` before the replayer exists. */
+	currentTime(): number
+	/** Recording length in ms. `0` before the replayer exists. */
+	duration(): number
 }
 
 interface SessionReplaySectionProps {
@@ -101,12 +108,38 @@ interface SessionReplaySectionProps {
 	markers?: ReadonlyArray<ReplayMarker>
 	activeMarker?: ActiveMarker | null
 	onActiveMarkerChange?: (active: ActiveMarker | null) => void
+	/**
+	 * The page the recording is on at the playhead, drawn into the frame's fake
+	 * address bar. The caller resolves it from the transcript's navigations
+	 * (`urlAt`), because rrweb's stream carries the DOM, not the location.
+	 */
+	chromeUrl?: string
+	/**
+	 * Playhead position in ms, on every frame while playing and on every seek.
+	 *
+	 * The surfaces that follow the playhead — the address bar, the highlighted
+	 * row in the right-hand panel — live outside this component, and polling a
+	 * ref would make them a frame behind whatever they are following.
+	 */
+	onTimeChange?: (ms: number) => void
+	/** Fired once the replayer is built and its first frame drawn, with the recording length. */
+	onReady?: (totalMs: number) => void
 }
 
 /** Loads the recording and picks the right empty/loading/player state. */
 export const SessionReplaySection = forwardRef<ReplayPlayerHandle, SessionReplaySectionProps>(
 	function SessionReplaySection(
-		{ sessionId, resourceAttributes, active, markers, activeMarker, onActiveMarkerChange },
+		{
+			sessionId,
+			resourceAttributes,
+			active,
+			markers,
+			activeMarker,
+			onActiveMarkerChange,
+			chromeUrl,
+			onTimeChange,
+			onReady,
+		},
 		ref,
 	) {
 		const recorded = recordedMarker(resourceAttributes)
@@ -144,11 +177,40 @@ export const SessionReplaySection = forwardRef<ReplayPlayerHandle, SessionReplay
 				markers={markers ?? []}
 				activeMarker={activeMarker}
 				onActiveMarkerChange={onActiveMarkerChange}
+				chromeUrl={chromeUrl}
+				onTimeChange={onTimeChange}
+				onReady={onReady}
 				footer={`${replay.data.chunkCount} chunk${replay.data.chunkCount === 1 ? "" : "s"} · ${formatBytes(replay.data.byteSize)}`}
 			/>
 		)
 	},
 )
+
+/**
+ * Three window dots and a fake address bar above the footage.
+ *
+ * Decoration with a job: rrweb replays a DOM, not a browser, so nothing inside
+ * the frame says which page you are looking at — and a single-page app that
+ * navigates five times looks like one page the whole way through. The bar is
+ * the only place the current URL appears while the recording plays.
+ */
+function BrowserChrome({ url }: { url: string }) {
+	return (
+		<div className="flex items-center gap-2 border-b bg-muted/60 px-3 py-2">
+			<span aria-hidden className="flex shrink-0 items-center gap-1.5">
+				<span className="size-2.5 rounded-full bg-red-400/70" />
+				<span className="size-2.5 rounded-full bg-amber-400/70" />
+				<span className="size-2.5 rounded-full bg-emerald-400/70" />
+			</span>
+			<span
+				className="min-w-0 flex-1 truncate rounded-md bg-background/70 px-2.5 py-1 text-center font-mono text-xs text-muted-foreground"
+				title={url || undefined}
+			>
+				{url || "—"}
+			</span>
+		</div>
+	)
+}
 
 function formatBytes(bytes: number): string {
 	if (bytes < 1024) return `${bytes} B`
@@ -162,11 +224,25 @@ interface ReplayPlayerProps {
 	markers?: ReadonlyArray<ReplayMarker>
 	activeMarker?: ActiveMarker | null
 	onActiveMarkerChange?: (active: ActiveMarker | null) => void
+	/** URL for the frame's address bar; the chrome is omitted when unset. */
+	chromeUrl?: string
+	onTimeChange?: (ms: number) => void
+	onReady?: (totalMs: number) => void
 	footer?: string
 }
 
 export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(function ReplayPlayer(
-	{ events, viewport, markers = [], activeMarker = null, onActiveMarkerChange, footer },
+	{
+		events,
+		viewport,
+		markers = [],
+		activeMarker = null,
+		onActiveMarkerChange,
+		chromeUrl,
+		onTimeChange,
+		onReady,
+		footer,
+	},
 	ref,
 ) {
 	const surfaceRef = useRef<HTMLDivElement>(null)
@@ -180,6 +256,27 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
 	const [currentMs, setCurrentMs] = useState(0)
 	const [totalMs, setTotalMs] = useState(0)
 	playingRef.current = playing
+
+	// The playhead notifications go out through a ref so a caller that passes an
+	// inline arrow — every caller — doesn't re-subscribe on every render and
+	// doesn't make the per-frame effect below depend on its identity. Declared
+	// first so it is committed before the effects that read it.
+	const callbacks = useRef({ onTimeChange, onReady })
+	useEffect(() => {
+		callbacks.current = { onTimeChange, onReady }
+	})
+	// Quantized, and floored so the reported playhead is never ahead of the
+	// footage. What listens to it resolves to a transcript row and a URL, neither
+	// of which can change faster than this, and re-rendering the page sixty times
+	// a second to move a highlight is a cost with no visible return. The scrubber
+	// keeps the unquantized `currentMs`.
+	const tick = Math.floor(currentMs / PLAYHEAD_TICK_MS)
+	useEffect(() => {
+		callbacks.current.onTimeChange?.(tick * PLAYHEAD_TICK_MS)
+	}, [tick])
+	useEffect(() => {
+		if (ready) callbacks.current.onReady?.(totalMs)
+	}, [ready, totalMs])
 
 	// Letterbox the recorded viewport inside the surface, centred — the same
 	// transform the cloud engine applies, keyed on the iframe rrweb built.
@@ -290,6 +387,8 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
 				seek(Math.min(offsetMs, totalMs) - leadMs)
 				surfaceRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" })
 			},
+			currentTime: () => replayerRef.current?.getCurrentTime() ?? 0,
+			duration: () => totalMs,
 		}),
 		[seek, totalMs],
 	)
@@ -310,19 +409,27 @@ export const ReplayPlayer = forwardRef<ReplayPlayerHandle, ReplayPlayerProps>(fu
 	return (
 		<div className="flex flex-col gap-2">
 			<div
-				ref={surfaceRef}
-				className="relative w-full overflow-hidden rounded-lg border bg-muted/30"
-				style={{ aspectRatio: aspect, maxHeight: "70vh" }}
+				className={cn(
+					"w-full overflow-hidden bg-muted/30",
+					chromeUrl === undefined ? "rounded-lg border" : "rounded-xl border shadow-sm",
+				)}
 			>
+				{chromeUrl === undefined ? null : <BrowserChrome url={chromeUrl} />}
 				<div
-					ref={mountRef}
-					className="absolute inset-0 [&_iframe]:border-0 [&_.replayer-wrapper]:absolute [&_.replayer-wrapper]:left-0 [&_.replayer-wrapper]:top-0"
-				/>
-				{!ready ? (
-					<div className="absolute inset-0 grid place-items-center">
-						<Spinner className="size-5" />
-					</div>
-				) : null}
+					ref={surfaceRef}
+					className="relative w-full overflow-hidden"
+					style={{ aspectRatio: aspect, maxHeight: "70vh" }}
+				>
+					<div
+						ref={mountRef}
+						className="absolute inset-0 [&_iframe]:border-0 [&_.replayer-wrapper]:absolute [&_.replayer-wrapper]:left-0 [&_.replayer-wrapper]:top-0"
+					/>
+					{!ready ? (
+						<div className="absolute inset-0 grid place-items-center">
+							<Spinner className="size-5" />
+						</div>
+					) : null}
+				</div>
 			</div>
 			<div className="flex flex-wrap items-center gap-2">
 				<Button
