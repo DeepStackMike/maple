@@ -1218,6 +1218,15 @@ export const builderFixtures: ReadonlyArray<BuilderFixture> = [
 			),
 	},
 
+	{
+		// The local dashboard's project selector. Grouped over raw `traces` on
+		// purpose — see the builder for why the cheaper MV cannot answer it.
+		module: "traces",
+		name: "resourceNamespacesQuery",
+		label: "default",
+		compile: () => CH.compileUnsafe(CH.resourceNamespacesQuery(), window),
+	},
+
 	// ----- activity: the only deliberately cross-org builders in the product.
 	// ----- Fixtured so the catalog's tenant-scope test actually exercises the
 	// ----- cross-org branch, rather than asserting a rule nothing exemplifies.

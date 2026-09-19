@@ -9,6 +9,7 @@ import { cn } from "@maple/ui/lib/utils"
 import { useLocalTraces, type TraceFilters } from "../hooks/use-local-traces"
 import { useLocalTraceFacets } from "../hooks/use-local-trace-facets"
 import { useHideHealthChecks } from "../hooks/use-hide-health-checks"
+import { useNamespace } from "../hooks/use-namespace"
 import { useQueryParams } from "../lib/router"
 import { DEFAULT_RANGE } from "../lib/time"
 import { DurationRangeFilter } from "@maple/ui/components/filters/duration-range-filter"
@@ -51,6 +52,11 @@ export function TraceListView({ onSelectTrace }: TraceListViewProps) {
 	const range = query.get("range") || DEFAULT_RANGE
 	const search = query.get("q") || undefined
 	const [hideHealthChecks, setHideHealthChecks] = useHideHealthChecks()
+	// The header's project selection and this sidebar's Namespace facet are the
+	// same filter under two controls — both are the `ns` param — so the list
+	// reads the resolved value rather than the raw one, and a project remembered
+	// from the last session shows here as a ticked facet.
+	const [namespace, setNamespace] = useNamespace()
 
 	const filters: TraceFilters = {
 		range,
@@ -62,7 +68,7 @@ export function TraceListView({ onSelectTrace }: TraceListViewProps) {
 		method: query.get("method") || undefined,
 		status: query.get("status") || undefined,
 		env: query.get("env") || undefined,
-		ns: query.get("ns") || undefined,
+		ns: namespace,
 		minDurationMs: parseNonNegativeInt(query.get("minDur")),
 		maxDurationMs: parseNonNegativeInt(query.get("maxDur")),
 	}
@@ -90,7 +96,11 @@ export function TraceListView({ onSelectTrace }: TraceListViewProps) {
 		<FilterSidebarFrame className="w-56 shrink-0 px-4" waiting={facets.isFetching}>
 			<FilterSidebarHeader
 				canClear={hasActiveFilters}
-				onClear={() =>
+				onClear={() => {
+					// Through the setter, not `setParams`: clearing the facet has to
+					// clear the remembered project as well, or the next render would
+					// resolve it straight back out of `localStorage`.
+					setNamespace(undefined)
 					setParams({
 						service: null,
 						span: null,
@@ -98,11 +108,10 @@ export function TraceListView({ onSelectTrace }: TraceListViewProps) {
 						method: null,
 						status: null,
 						env: null,
-						ns: null,
 						minDur: null,
 						maxDur: null,
 					})
-				}
+				}}
 			/>
 			<FilterSidebarBody>
 				<SingleCheckboxFilter
@@ -121,7 +130,7 @@ export function TraceListView({ onSelectTrace }: TraceListViewProps) {
 					title="Namespace"
 					options={facets.data?.namespaces ?? []}
 					selected={filters.ns ? [filters.ns] : []}
-					onChange={facetSelect("ns")}
+					onChange={(vals) => setNamespace(vals.at(-1))}
 				/>
 				<SearchableFilterSection
 					title="Service"

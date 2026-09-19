@@ -3562,6 +3562,20 @@ SELECT
         LIMIT 200
         FORMAT JSON
 
+-- builder:traces:resourceNamespacesQuery:default  [1ea89a80]
+SELECT
+          ResourceAttributes['service.namespace'] AS namespace,
+          count() AS spanCount
+        FROM traces
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND ResourceAttributes['service.namespace'] != ''
+        GROUP BY namespace
+        ORDER BY spanCount DESC, namespace ASC
+        LIMIT 100
+        FORMAT JSON
+
 -- builder:traces:traceListQuery:default  [b47ce2af]
 SELECT
           TraceId AS traceId,
