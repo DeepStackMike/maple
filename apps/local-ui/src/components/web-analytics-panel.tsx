@@ -27,11 +27,11 @@ import {
 	useLocalWebPageviewsTimeseries,
 	useLocalWebSessionsTimeseries,
 } from "../hooks/use-local-web-analytics"
+import { countryLabel } from "../lib/geo"
 import { formatPercent } from "../lib/product-analytics"
 import { navigate } from "../lib/router"
 import {
 	bounceRate,
-	countryLabel,
 	hasVisitorCoverage,
 	referrerLabel,
 	totalPageViews,

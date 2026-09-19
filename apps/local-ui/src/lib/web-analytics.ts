@@ -234,29 +234,3 @@ export function referrerLabel(host: string): string {
 export function utmLabel(value: string): string {
 	return value === WEB_ANALYTICS_UNSET ? "Not set" : value
 }
-
-let regionNames: Intl.DisplayNames | undefined | null = null
-
-/**
- * `DE` → `🇩🇪 Germany`, falling back to the raw value for anything that is not a
- * two-letter region code.
- *
- * `Intl.DisplayNames` is the whole implementation: the browser already ships
- * the CLDR region table, and our own map would be a few KB that goes stale.
- * Constructed once, because constructing one per row is the expensive part.
- */
-export function countryLabel(code: string): string {
-	if (!/^[A-Za-z]{2}$/.test(code)) return code
-	const upper = code.toUpperCase()
-	if (regionNames === null) {
-		try {
-			regionNames = new Intl.DisplayNames(undefined, { type: "region", fallback: "none" })
-		} catch {
-			regionNames = undefined
-		}
-	}
-	const flag = String.fromCodePoint(
-		...[...upper].map((char) => 0x1f1e6 + (char.charCodeAt(0) - "A".charCodeAt(0))),
-	)
-	return `${flag} ${regionNames?.of(upper) ?? upper}`
-}

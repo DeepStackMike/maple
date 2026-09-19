@@ -4,7 +4,6 @@ import {
 	DEFAULT_ANALYTICS_SECTION,
 	TRAFFIC_SERIES,
 	bounceRate,
-	countryLabel,
 	groupFacets,
 	hasVisitorCoverage,
 	referrerLabel,
@@ -165,14 +164,5 @@ describe("dimension labels", () => {
 		expect(referrerLabel("news.ycombinator.com")).toBe("news.ycombinator.com")
 		expect(utmLabel(WEB_ANALYTICS_UNSET)).toBe("Not set")
 		expect(utmLabel("launch-week")).toBe("launch-week")
-	})
-
-	it("flags a region code and passes anything else through untouched", () => {
-		expect(countryLabel("DE")).toContain("🇩🇪")
-		expect(countryLabel("de")).toContain("🇩🇪")
-		// The gateway rejects non-region values, but a stray one must render as
-		// itself rather than as mojibake.
-		expect(countryLabel("")).toBe("")
-		expect(countryLabel("unknown")).toBe("unknown")
 	})
 })

@@ -15,12 +15,14 @@ import {
 } from "@maple/ui/components/icons"
 import { cn } from "@maple/ui/lib/utils"
 import { formatDuration } from "@maple/ui/lib/format"
-import type { SessionTranscriptOutput } from "@maple/query-engine/ch"
+import type { SessionReplayDetailOutput, SessionTranscriptOutput } from "@maple/query-engine/ch"
 import {
 	useLocalSessionDetail,
 	useLocalSessionTraces,
 	useLocalSessionTranscript,
 } from "../hooks/use-local-session-detail"
+import { parseAttributes } from "@maple/ui/lib/span-tree"
+import { formatLocation, type FormattedLocation } from "../lib/geo"
 import { formatRelativeTime } from "../lib/time"
 import { formatSessionDuration, gradientFor, hostFromUrl, isMobileDevice } from "@maple/ui/lib/replay-format"
 import { ErrorState } from "../components/view-states"
@@ -89,6 +91,8 @@ export function SessionDetailView({ sessionId, onBack, onSelectTrace }: SessionD
 	}
 	const label = session?.userId || "Anonymous"
 	const DeviceIcon = session && isMobileDevice(session.deviceType) ? MobileIcon : ComputerIcon
+	const location = useMemo(() => (session ? sessionLocation(session) : undefined), [session])
+	const locationLabel = location ? [location.flag, location.label].filter(Boolean).join(" ") : ""
 
 	return (
 		<div className="flex h-full flex-col">
@@ -177,6 +181,11 @@ export function SessionDetailView({ sessionId, onBack, onSelectTrace }: SessionD
 										<Field label="Browser" value={session.browserName} />
 										<Field label="OS" value={session.osName} />
 										<Field label="Device" value={session.deviceType} />
+										<Field
+											label="Location"
+											value={locationLabel}
+											title={location?.title}
+										/>
 										<Field label="Service" value={session.serviceName} />
 										<Field
 											label="Entry URL"
@@ -514,6 +523,24 @@ function StatTile({ label, value, danger }: { label: string; value: string; dang
 			</p>
 		</div>
 	)
+}
+
+/**
+ * Where the visitor was, over two sources: `Country` is a `session_replays`
+ * column the gateway resolves from an edge header, and the region and city only
+ * exist as `geo.*` keys the ingest sidecar writes into `ResourceAttributes`.
+ * The column wins when both name a country — it is the one every other surface
+ * (the list card, the Countries breakdown, the facet) groups by, so a detail
+ * page disagreeing with it would be the bug.
+ */
+function sessionLocation(session: SessionReplayDetailOutput): FormattedLocation | undefined {
+	const attributes = parseAttributes(session.resourceAttributes)
+	return formatLocation({
+		country: session.country || attributes["geo.country.iso_code"],
+		regionCode: attributes["geo.region.iso_code"],
+		regionName: attributes["geo.region.name"],
+		city: attributes["geo.locality.name"],
+	})
 }
 
 function Card({ title, children }: { title: string; children: ReactNode }) {

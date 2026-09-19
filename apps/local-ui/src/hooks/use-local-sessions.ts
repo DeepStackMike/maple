@@ -11,6 +11,8 @@ export interface SessionFilters {
 	service?: string
 	browser?: string
 	device?: string
+	/** ISO 3166-1 alpha-2, as the `Country` column stores it. */
+	country?: string
 	/** Only sessions with at least one recorded error. */
 	errorsOnly?: boolean
 	/** Substring match on the initial page URL. */
@@ -33,6 +35,7 @@ export function useLocalSessions(filters: SessionFilters) {
 					serviceName: filters.service,
 					browser: filters.browser,
 					deviceType: filters.device,
+					country: filters.country,
 					hasErrors: filters.errorsOnly,
 					search: filters.search,
 				}),
@@ -49,6 +52,8 @@ export interface SessionFacets {
 	readonly service: ReadonlyArray<FilterOption>
 	readonly browser: ReadonlyArray<FilterOption>
 	readonly device: ReadonlyArray<FilterOption>
+	/** Option names are ISO country codes — labelled for display, filtered by code. */
+	readonly country: ReadonlyArray<FilterOption>
 	/** Distinct sessions with at least one error, for the toggle count. */
 	readonly errorCount: number
 }
@@ -57,6 +62,7 @@ const EMPTY_FACETS: SessionFacets = {
 	service: [],
 	browser: [],
 	device: [],
+	country: [],
 	errorCount: 0,
 }
 
@@ -76,6 +82,7 @@ export function useLocalSessionFacets(filters: SessionFilters) {
 					serviceName: filters.service,
 					browser: filters.browser,
 					deviceType: filters.device,
+					country: filters.country,
 					hasErrors: filters.errorsOnly,
 					search: filters.search,
 				}),
@@ -92,6 +99,7 @@ export function useLocalSessionFacets(filters: SessionFilters) {
 				service: pick("service"),
 				browser: pick("browser"),
 				device: pick("device"),
+				country: pick("country"),
 				errorCount: rows.find((row) => row.facetType === "error")?.count ?? 0,
 			}
 		},

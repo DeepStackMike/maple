@@ -12,6 +12,7 @@ import {
 import { Button } from "@maple/ui/components/ui/button"
 import type { SessionReplaysListOutput } from "@maple/query-engine/ch"
 import { useLocalSessions, useLocalSessionFacets } from "../hooks/use-local-sessions"
+import { countryLabel, countryName, flagEmoji } from "../lib/geo"
 import { useQueryParams } from "../lib/router"
 import { DEFAULT_RANGE, formatRelativeTime } from "../lib/time"
 import { formatSessionDuration, gradientFor, hostFromUrl, isMobileDevice } from "@maple/ui/lib/replay-format"
@@ -54,24 +55,27 @@ export function SessionsListView({ onSelectSession }: SessionsListViewProps) {
 	const service = query.get("service") || undefined
 	const browser = query.get("browser") || undefined
 	const device = query.get("device") || undefined
+	const country = query.get("country") || undefined
 	const errorsOnly = query.get("errors") === "1"
 	const search = query.get("q") || undefined
 
-	const filters = { service, browser, device, errorsOnly, search, range }
+	const filters = { service, browser, device, country, errorsOnly, search, range }
 	const facets = useLocalSessionFacets(filters)
 	const { data, isPending, isError, error, refetch, fetchNextPage, hasNextPage, isFetchingNextPage } =
 		useLocalSessions(filters)
 	const sessions = data?.pages.flat() ?? []
 
 	const setSingle = (key: string, vals: string[]) => setParams({ [key]: vals.at(-1) ?? null })
-	const hasActiveFilters = !!service || !!browser || !!device || errorsOnly
+	const hasActiveFilters = !!service || !!browser || !!device || !!country || errorsOnly
 	const facetData = facets.data
 
 	const sidebar = (
 		<FilterSidebarFrame className="w-56 shrink-0 px-4" waiting={facets.isFetching}>
 			<FilterSidebarHeader
 				canClear={hasActiveFilters}
-				onClear={() => setParams({ service: null, browser: null, device: null, errors: null })}
+				onClear={() =>
+					setParams({ service: null, browser: null, device: null, country: null, errors: null })
+				}
 			/>
 			<FilterSidebarBody>
 				<SingleCheckboxFilter
@@ -97,6 +101,16 @@ export function SessionsListView({ onSelectSession }: SessionsListViewProps) {
 					options={facetData ? withSelected(facetData.device, device) : []}
 					selected={device ? [device] : []}
 					onChange={(vals) => setSingle("device", vals)}
+				/>
+				<SearchableFilterSection
+					title="Country"
+					options={facetData ? withSelected(facetData.country, country) : []}
+					selected={country ? [country] : []}
+					onChange={(vals) => setSingle("country", vals)}
+					// The facet groups by the `Country` column, so the option value has
+					// to stay the ISO code the query filters on; only its label is the
+					// readable form.
+					getOptionLabel={countryLabel}
 				/>
 			</FilterSidebarBody>
 		</FilterSidebarFrame>
@@ -218,6 +232,14 @@ function SessionCard({ session, onSelect }: { session: SessionReplaysListOutput;
 							{session.osName ? ` · ${session.osName}` : ""}
 						</span>
 					</span>
+					{session.country ? (
+						<span className="hidden items-center gap-1.5 sm:flex" title={session.country}>
+							<span aria-hidden>{flagEmoji(session.country)}</span>
+							<span className="truncate">
+								{countryName(session.country) ?? session.country}
+							</span>
+						</span>
+					) : null}
 				</div>
 			</div>
 
