@@ -356,9 +356,27 @@ describe("matchNetworkSpan", () => {
 		expect(matchNetworkSpan(request(0, { netUrl: "/api/users" }), [spanAt(0)])).toBeUndefined()
 	})
 
-	it("returns nothing when the nearest candidate is outside the window", () => {
+	// The row's timestamp is the flush's, not the request's: the browser SDK
+	// builds a whole batch of rows in one `toRow` pass up to 5 s after the events
+	// happened. So a span may start a batch's worth BEFORE its row, and only a
+	// clock skew's worth after it.
+	it("reaches a flush interval back for a span, and barely forward", () => {
+		// 4.5 s before the row — inside a 5 s batch, and the case the old
+		// symmetric 2 s window threw away.
+		expect(matchNetworkSpan(request(10), [spanAt(5.5)])?.spanId).toBe("span-a")
+		// 8 s before: older than any batch that could have carried this row.
+		expect(matchNetworkSpan(request(10), [spanAt(2)])).toBeUndefined()
+		// 1.5 s after: clock skew.
+		expect(matchNetworkSpan(request(10), [spanAt(11.5)])?.spanId).toBe("span-a")
+		// 3 s after: nothing in the flush story puts a span's start there.
+		expect(matchNetworkSpan(request(10), [spanAt(13)])).toBeUndefined()
+	})
+
+	it("takes an explicit window", () => {
 		expect(matchNetworkSpan(request(0), [spanAt(3)])).toBeUndefined()
-		expect(matchNetworkSpan(request(0), [spanAt(3)], 4000)?.spanId).toBe("span-a")
+		expect(matchNetworkSpan(request(0), [spanAt(3)], { beforeMs: 7000, afterMs: 4000 })?.spanId).toBe(
+			"span-a",
+		)
 	})
 
 	// An INTERNAL span named after the same route is not the request.
@@ -382,6 +400,15 @@ describe("matchErrorSpan", () => {
 		const ok = spanAt(10, { spanId: "ok" })
 		const failed = spanAt(11, { spanId: "failed", statusCode: "Error" })
 		expect(matchErrorSpan(thrown(10), [ok, failed])?.spanId).toBe("failed")
+	})
+
+	// Same asymmetry as the network matcher: the exception row is stamped by the
+	// flush that carried it, so the span that caused it started earlier.
+	it("reaches a flush interval back for a failing span, and barely forward", () => {
+		expect(matchErrorSpan(thrown(10), [spanAt(5.5, { statusCode: "Error" })])?.spanId).toBe("span-a")
+		expect(matchErrorSpan(thrown(10), [spanAt(2, { statusCode: "Error" })])).toBeUndefined()
+		expect(matchErrorSpan(thrown(10), [spanAt(11.5, { statusCode: "Error" })])?.spanId).toBe("span-a")
+		expect(matchErrorSpan(thrown(10), [spanAt(13, { statusCode: "Error" })])).toBeUndefined()
 	})
 
 	it("returns nothing when every failing span is outside the window", () => {

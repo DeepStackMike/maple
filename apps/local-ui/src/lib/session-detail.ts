@@ -222,18 +222,56 @@ export function customProperties(event: SessionTranscriptOutput): ReadonlyArray<
 export const transcriptRowId = (event: SessionTranscriptOutput): string => `${event.seq}-${event.timestamp}`
 
 /**
- * How far either side of a transcript row a span may start and still be the
- * same request.
+ * How far BEFORE a transcript row a span may start and still be the same
+ * request.
  *
- * `session_events.Timestamp` is stamped by `Date.now()` in the page at the
- * moment the row is emitted, and the span's start comes off the exporter's
- * clock on another machine — so the two disagree by the page's own clock skew
- * plus however long the request spent in flight. Two seconds covers both
- * without reaching the next request to the same endpoint in any interaction a
- * human performs; widening it is how you get a click's fetch matched to the
- * poll that fired before it.
+ * `session_events.Timestamp` is not stamped when the event happens. The browser
+ * SDK buffers events and builds their rows at flush time — `toRow` in
+ * `packages/browser-session/src/events/events-sink.ts` does
+ * `formatCHDateTime(new Date(ev.timestamp ?? Date.now()))`, the collectors
+ * never set `ev.timestamp`, and the whole batch goes through that call in one
+ * pass. So every row in a batch carries the flush's clock reading, which is
+ * anywhere from 0 to `FLUSH_INTERVAL_MS` (5 s) AFTER the thing it describes.
+ *
+ * One flush interval plus slack, then: the batch's age, the time the request
+ * spent in flight, and the page's clock skew against the exporter's, all of
+ * which push the span's start earlier than the row. The old symmetric 2 s
+ * window missed every request that happened more than 2 s before its flush —
+ * which, for a 5 s batch, is most of them.
  */
-export const SPAN_MATCH_WINDOW_MS = 2000
+export const SPAN_MATCH_BEFORE_MS = 7000
+
+/**
+ * How far AFTER a transcript row a span may start.
+ *
+ * Nothing in the flush story moves a span's start later than its row, so this
+ * side covers clock skew alone and stays where the symmetric window was.
+ * Widening it is how you get a click's fetch matched to the poll that fired
+ * after it.
+ */
+export const SPAN_MATCH_AFTER_MS = 2000
+
+export interface SpanMatchWindow {
+	/** How far before the row's timestamp a span may start. */
+	readonly beforeMs: number
+	/** How far after it. */
+	readonly afterMs: number
+}
+
+export const SPAN_MATCH_WINDOW: SpanMatchWindow = {
+	beforeMs: SPAN_MATCH_BEFORE_MS,
+	afterMs: SPAN_MATCH_AFTER_MS,
+}
+
+/**
+ * Whether a span's start is inside a row's recovery window. `Δt` is measured
+ * row-minus-span, so a positive value is a span that started before the row was
+ * flushed — the normal direction.
+ */
+function withinWindow(startMs: number, rowMs: number, window: SpanMatchWindow): boolean {
+	const delta = rowMs - startMs
+	return delta <= window.beforeMs && delta >= -window.afterMs
+}
 
 /**
  * A span's start as epoch milliseconds.
@@ -319,21 +357,26 @@ function compareRanks(a: ReadonlyArray<number>, b: ReadonlyArray<number>): numbe
  * id.
  *
  * Three facts have to agree: the method, the URL (exactly, or on its path), and
- * the time to within {@link SPAN_MATCH_WINDOW_MS}. Among the spans that satisfy
- * all three the browser's own CLIENT span wins, because it is the top of the
- * trace and the one the request actually *is*; a SERVER span is the fallback
- * for a request whose client span was never exported (fetch instrumentation
- * off, or a `sendBeacon`). Kinds other than those two are not requests and are
- * never candidates.
+ * the time to within {@link SPAN_MATCH_WINDOW} — mostly before the row, barely
+ * after it, for the flush-time reason on {@link SPAN_MATCH_BEFORE_MS}. Among
+ * the spans that satisfy all three the browser's own CLIENT span wins, because
+ * it is the top of the trace and the one the request actually *is*; a SERVER
+ * span is the fallback for a request whose client span was never exported
+ * (fetch instrumentation off, or a `sendBeacon`). Kinds other than those two are
+ * not requests and are never candidates.
  *
- * Ties break towards the exact URL, then the closest start, then the earliest —
- * so a page that polls one endpoint resolves to a stable answer rather than
- * whichever row the warehouse happened to return first.
+ * Ties break towards the exact URL, then the smallest |Δt|, then the earliest
+ * start — so a page that polls one endpoint resolves to a stable answer rather
+ * than whichever row the warehouse happened to return first. Read |Δt| as "how
+ * far before the flush this span started": with several identical requests
+ * inside one batch, every row carries the same flush timestamp, so the closest
+ * candidate is the one nearest the flush — the LAST of them. The row holds no
+ * information that would let it pick any other.
  */
 export function matchNetworkSpan(
 	event: SessionTranscriptOutput,
 	spans: ReadonlyArray<SessionSpanOutput>,
-	windowMs: number = SPAN_MATCH_WINDOW_MS,
+	window: SpanMatchWindow = SPAN_MATCH_WINDOW,
 ): SessionSpanOutput | undefined {
 	const at = parseChTime(event.timestamp)
 	if (Number.isNaN(at) || !event.netUrl) return undefined
@@ -349,9 +392,8 @@ export function matchNetworkSpan(
 		if (url === undefined) continue
 		const start = spanStartMs(span)
 		if (Number.isNaN(start)) continue
-		const delta = Math.abs(start - at)
-		if (delta > windowMs) continue
-		candidates.push({ span, rank: [kindRank, url, delta, start] })
+		if (!withinWindow(start, at, window)) continue
+		candidates.push({ span, rank: [kindRank, url, Math.abs(start - at), start] })
 	}
 	return best(candidates)
 }
@@ -371,7 +413,7 @@ export function matchNetworkSpan(
 export function matchErrorSpan(
 	event: SessionTranscriptOutput,
 	spans: ReadonlyArray<SessionSpanOutput>,
-	windowMs: number = SPAN_MATCH_WINDOW_MS,
+	window: SpanMatchWindow = SPAN_MATCH_WINDOW,
 ): SessionSpanOutput | undefined {
 	const at = parseChTime(event.timestamp)
 	if (Number.isNaN(at)) return undefined
@@ -381,9 +423,8 @@ export function matchErrorSpan(
 		if (span.statusCode !== "Error") continue
 		const start = spanStartMs(span)
 		if (Number.isNaN(start)) continue
-		const delta = Math.abs(start - at)
-		if (delta > windowMs) continue
-		candidates.push({ span, rank: [delta, start] })
+		if (!withinWindow(start, at, window)) continue
+		candidates.push({ span, rank: [Math.abs(start - at), start] })
 	}
 	return best(candidates)
 }
@@ -399,7 +440,7 @@ export function matchErrorSpan(
 export function recoverTraceLinks(
 	events: ReadonlyArray<SessionTranscriptOutput>,
 	spans: ReadonlyArray<SessionSpanOutput>,
-	windowMs: number = SPAN_MATCH_WINDOW_MS,
+	window: SpanMatchWindow = SPAN_MATCH_WINDOW,
 ): ReadonlyMap<string, SessionSpanOutput> {
 	const links = new Map<string, SessionSpanOutput>()
 	if (spans.length === 0) return links
@@ -407,9 +448,9 @@ export function recoverTraceLinks(
 		if (event.traceId) continue
 		const span =
 			event.type === "network"
-				? matchNetworkSpan(event, spans, windowMs)
+				? matchNetworkSpan(event, spans, window)
 				: event.type === "error"
-					? matchErrorSpan(event, spans, windowMs)
+					? matchErrorSpan(event, spans, window)
 					: undefined
 		if (span) links.set(transcriptRowId(event), span)
 	}
