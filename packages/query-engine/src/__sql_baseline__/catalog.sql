@@ -514,6 +514,20 @@ SELECT
         LIMIT 100
         FORMAT JSON
 
+-- builder:errors:errorSampleStackQuery:default  [b8532cbc]
+SELECT
+          argMax(ExceptionType, Timestamp) AS exceptionType,
+          argMax(ExceptionMessage, Timestamp) AS exceptionMessage,
+          argMax(ExceptionStacktrace, Timestamp) AS exceptionStacktrace,
+          argMax(TopFrame, Timestamp) AS topFrame,
+          max(Timestamp) AS lastSeen
+        FROM error_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND FingerprintHash IN (toUInt64('11640393269246331608'))
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+        FORMAT JSON
+
 -- builder:errors:errorsSparkQuery:default  [89ec2bb4]
 SELECT
           toString(FingerprintHash) AS fingerprintHash,

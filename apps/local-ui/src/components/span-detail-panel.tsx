@@ -24,10 +24,53 @@ import { useLocalSpanLogs } from "../hooks/use-local-span-logs"
 import { ErrorSection } from "@maple/ui/components/error-section"
 import type { LocalLog } from "../lib/log-shape"
 import { LogDetailSheet } from "./log-detail-sheet"
+import { StackTrace } from "./stack-trace"
 
 interface SpanDetailPanelProps {
 	span: SpanNode
 	onClose: () => void
+}
+
+/**
+ * The span exception, read off the attribute map.
+ *
+ * `spanDetailQuery` reads `trace_detail_spans`, which carries no event columns
+ * — the `exception` span event only survives as the `error_events` row the MV
+ * materializes from it. What the panel *does* have is the attribute map, and
+ * our own SDKs (and plenty of OTel instrumentations) set `exception.type` and
+ * `exception.stacktrace` there as well. The `error.*` spellings are the fallback
+ * some libraries use instead.
+ *
+ * Returns the keys it consumed so the generic attributes table can drop them: a
+ * stacktrace in a value cell is unreadable, and showing it twice makes the panel
+ * look like it found two errors.
+ */
+function readSpanException(attributes: Record<string, string>) {
+	const pick = (...keys: ReadonlyArray<string>) => {
+		for (const key of keys) {
+			const value = attributes[key]
+			if (value) return { value, key }
+		}
+		return null
+	}
+	const type = pick("exception.type", "error.type")
+	const message = pick("exception.message", "error.message")
+	const stack = pick("exception.stacktrace")
+	if (!type && !message && !stack) return null
+
+	return {
+		type: type?.value ?? "",
+		message: message?.value ?? "",
+		stack: stack?.value ?? "",
+		consumedKeys: [type?.key, message?.key, stack?.key].filter((key) => key !== undefined),
+	}
+}
+
+function withoutKeys(attributes: Record<string, string>, keys: ReadonlyArray<string>) {
+	if (keys.length === 0) return attributes
+	const rest = { ...attributes }
+	for (const key of keys) delete rest[key]
+	return rest
 }
 
 export function SpanDetailPanel({ span, onClose }: SpanDetailPanelProps) {
@@ -45,6 +88,11 @@ export function SpanDetailPanel({ span, onClose }: SpanDetailPanelProps) {
 		span.isMissing ? undefined : span.traceId,
 		span.isMissing ? undefined : span.spanId,
 	)
+
+	// The lazy map once it lands, the tree's trimmed one until then — and for a
+	// missing span, which has no row to look up, permanently.
+	const spanAttributes = detail.data?.spanAttributes ?? span.spanAttributes ?? {}
+	const exception = readSpanException(spanAttributes)
 
 	return (
 		<aside className="flex h-full w-[28rem] shrink-0 flex-col overflow-hidden border-l bg-background">
@@ -132,6 +180,20 @@ export function SpanDetailPanel({ span, onClose }: SpanDetailPanelProps) {
 				<TabsContent value="details" className="mt-0 min-h-0 flex-1">
 					<ScrollArea className="h-full">
 						<div className="space-y-3 p-3">
+							{/* Above Timing: on an errored span this is the whole reason the
+							    panel is open, and it is the only block whose height depends on
+							    the data rather than on the layout. */}
+							{exception ? (
+								<div className="space-y-1">
+									<h4 className="text-xs font-medium text-muted-foreground">Exception</h4>
+									<StackTrace
+										stack={exception.stack}
+										exceptionType={exception.type}
+										exceptionMessage={exception.message}
+									/>
+								</div>
+							) : null}
+
 							<div className="space-y-1">
 								<h4 className="text-xs font-medium text-muted-foreground">Timing</h4>
 								<div className="space-y-1 rounded-md border p-2 text-xs">
@@ -184,7 +246,7 @@ export function SpanDetailPanel({ span, onClose }: SpanDetailPanelProps) {
 
 							{span.isMissing ? (
 								<AttributesSection
-									attributes={span.spanAttributes ?? {}}
+									attributes={withoutKeys(spanAttributes, exception?.consumedKeys ?? [])}
 									title="Span Attributes"
 									groupByNamespace
 								/>
@@ -198,7 +260,10 @@ export function SpanDetailPanel({ span, onClose }: SpanDetailPanelProps) {
 							) : (
 								<>
 									<AttributesSection
-										attributes={detail.data?.spanAttributes ?? span.spanAttributes ?? {}}
+										attributes={withoutKeys(
+											spanAttributes,
+											exception?.consumedKeys ?? [],
+										)}
 										title="Span Attributes"
 										groupByNamespace
 									/>

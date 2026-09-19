@@ -185,6 +185,59 @@ export function errorsByTypeQuery(opts: ErrorsByTypeOpts) {
 		.format("JSON")
 }
 
+// Error sample stack
+//
+// `errorsByTypeQuery` answers "what is failing and how often", and it is the
+// only builder the errors list runs. It has never selected the stack: it is one
+// row per fingerprint over a window of thousands of events, and carrying a
+// multi-kilobyte `ExceptionStacktrace` on every row of a 50-row list is the
+// payload of the whole list spent on text that is shown for one expanded row.
+//
+// So the stack is its own builder, fetched for the fingerprint the user opened.
+// That keeps `errorsByTypeQuery`'s SQL byte-identical — it is in the catalog
+// baseline, and a widened SELECT there would read as a change to the list.
+//
+// Every field is `argMax(…, Timestamp)` rather than `any()`: the four columns
+// have to describe ONE occurrence. A fingerprint groups events that share a
+// type and a top frame, not events with identical stacks — the same error
+// raised under two call paths differs below the top frame, and `any()` picks
+// each column independently, which can splice a message from one occurrence
+// onto a stack from another. The latest is also the one worth showing: it is
+// the build the user is running.
+
+export interface ErrorSampleStackOpts {
+	fingerprintHash: string
+}
+
+export interface ErrorSampleStackOutput {
+	readonly exceptionType: string
+	readonly exceptionMessage: string
+	readonly exceptionStacktrace: string
+	readonly topFrame: string
+	readonly lastSeen: string
+}
+
+export function errorSampleStackQuery(opts: ErrorSampleStackOpts) {
+	return from(ErrorEvents)
+		.select(($) => ({
+			exceptionType: CH.argMax($.ExceptionType, $.Timestamp),
+			exceptionMessage: CH.argMax($.ExceptionMessage, $.Timestamp),
+			exceptionStacktrace: CH.argMax($.ExceptionStacktrace, $.Timestamp),
+			topFrame: CH.argMax($.TopFrame, $.Timestamp),
+			lastSeen: CH.max_($.Timestamp),
+		}))
+		.where(($) => [
+			$.OrgId.eq(param.string("orgId")),
+			// Through the list helper, not `fingerprintHashEq`: an issue whose
+			// fingerprint is a synthetic alert/integration key lowers to `1 = 0`
+			// here instead of aborting the request on `toUInt64('alert:…')`.
+			fingerprintHashIn($.FingerprintHash, [opts.fingerprintHash]),
+			$.Timestamp.gte(param.dateTimeSeconds("startTime")),
+			$.Timestamp.lte(param.dateTimeSeconds("endTime")),
+		])
+		.format("JSON")
+}
+
 // Errors timeseries
 
 export interface ErrorsTimeseriesOpts {

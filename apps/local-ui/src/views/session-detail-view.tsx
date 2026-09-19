@@ -35,6 +35,7 @@ import {
 	type ReplayPlayerHandle,
 } from "../components/session-replay-player"
 import { useLocalSessionReplay } from "../hooks/use-local-session-replay"
+import { StackTrace } from "../components/stack-trace"
 
 interface SessionDetailViewProps {
 	sessionId: string
@@ -468,9 +469,18 @@ function TranscriptBody({ event }: { event: SessionTranscriptOutput }) {
 				<div>
 					<p className="break-words text-xs text-destructive">{event.message}</p>
 					{event.errorStack ? (
-						<pre className="mt-1 max-h-24 overflow-auto whitespace-pre-wrap rounded bg-muted/50 p-1.5 font-mono text-[10px] text-muted-foreground">
-							{event.errorStack}
-						</pre>
+						// `showHeader` off: the message is already the line above, and a
+						// browser `Error.stack` repeats it as its own first line. `nested`
+						// because the row itself is a button that seeks the player, so the
+						// toggles cannot be buttons — and a click on one is not a seek.
+						<StackTrace
+							className="mt-1"
+							stack={event.errorStack}
+							showHeader={false}
+							compact
+							collapsible
+							nested
+						/>
 					) : null}
 				</div>
 			)
