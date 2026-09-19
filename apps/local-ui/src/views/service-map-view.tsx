@@ -1,15 +1,19 @@
 // Service map — who calls whom, over the selected range.
 //
-// The graph is the headline, but the edge table beside it is not a fallback:
-// it is the same rows sorted by volume, readable without a pointer and without
-// colour, and it is where an exact number lives. The drawing is in
-// `components/service-map-graph.tsx`; the layout it needs is in
-// `lib/service-map-layout.ts`.
+// The canvas is the headline: a titled strip over the drawing, a footer under
+// it with the map's shape and the one thing worth saying about this window.
+// The edge table beside it is not a fallback — it is the same rows sorted by
+// volume, readable without a pointer and without colour, and it is where an
+// exact number lives. The drawing is in `components/service-map-graph.tsx`; the
+// layout it needs is in `lib/service-map-layout.ts`.
 
+import { useId } from "react"
 import { SitemapIcon } from "@maple/ui/components/icons"
 import { LatencyValue } from "@maple/ui/components/latency-value"
 import { ServiceDot } from "@maple/ui/components/service-dot"
+import { Label } from "@maple/ui/components/ui/label"
 import { NativeSelect, NativeSelectOption } from "@maple/ui/components/ui/native-select"
+import { Switch } from "@maple/ui/components/ui/switch"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@maple/ui/components/ui/table"
 import { formatErrorRate, formatNumber } from "@maple/ui/lib/format"
 import { cn } from "@maple/ui/lib/utils"
@@ -19,6 +23,7 @@ import { EmptyState, ErrorState, ListSkeleton } from "../components/view-states"
 import { useLocalServiceCatalog } from "../hooks/use-local-service-catalog"
 import { useLocalServiceMap, type ServiceMapEdge, type ServiceMapNode } from "../hooks/use-local-service-map"
 import { useQueryParams } from "../lib/router"
+import { formatInsight, selectInsight } from "../lib/service-map-stats"
 import { DEFAULT_RANGE } from "../lib/time"
 
 interface ServiceMapViewProps {
@@ -29,8 +34,12 @@ export function ServiceMapView({ onSelectService }: ServiceMapViewProps) {
 	const [query, setParams] = useQueryParams()
 	const range = query.get("range") || DEFAULT_RANGE
 	const env = query.get("env") || undefined
+	// Live is in the hash like every other filter, so a reload keeps it and a
+	// pasted link arrives live. The param names the exception, so an ordinary
+	// link still carries no `live`.
+	const live = query.get("live") === "1"
 
-	const map = useLocalServiceMap({ range, env })
+	const map = useLocalServiceMap({ range, env, live })
 	// The environment list is the services catalog's, not the map's: filtering
 	// the map by an environment removes the very rows the other options would
 	// have come from, and a select that empties itself on use is a trap.
@@ -39,6 +48,8 @@ export function ServiceMapView({ onSelectService }: ServiceMapViewProps) {
 
 	const nodes = map.data?.nodes ?? []
 	const edges = map.data?.edges ?? []
+	// Not `window`: the global is one typo away and this is a map window.
+	const mapWindow = map.data?.window
 
 	const toolbar = (
 		<Toolbar>
@@ -71,6 +82,7 @@ export function ServiceMapView({ onSelectService }: ServiceMapViewProps) {
 					label="failing"
 					danger
 				/>
+				<LiveToggle live={live} onChange={(next) => setParams({ live: next ? "1" : null })} />
 				<RefreshButton />
 				<TimeRangeSelect value={range} onChange={(next) => setParams({ range: next })} />
 			</ToolbarStats>
@@ -88,23 +100,40 @@ export function ServiceMapView({ onSelectService }: ServiceMapViewProps) {
 				) : nodes.length === 0 ? (
 					<EmptyState
 						icon={<SitemapIcon />}
-						title={env ? `No traffic in ${env}` : "No service traffic yet"}
+						title={
+							live
+								? "Nothing in the last 60 seconds"
+								: env
+									? `No traffic in ${env}`
+									: "No service traffic yet"
+						}
 						hint={
-							env
-								? "Try another environment, or widen the time range."
-								: "The map is drawn from client and server spans — it fills in as soon as one service calls another."
+							live
+								? "Live mode only shows the last minute. Turn it off to widen the window."
+								: env
+									? "Try another environment, or widen the time range."
+									: "The map is drawn from client and server spans — it fills in as soon as one service calls another."
 						}
 					/>
 				) : (
 					<div className="flex flex-col gap-4 p-4 xl:flex-row xl:items-start">
-						<div className="min-w-0 flex-1 rounded-md border bg-card/40">
-							<ServiceMapGraph
+						<section className="flex min-w-0 flex-1 flex-col rounded-md border bg-card/40">
+							<CanvasHeader label={mapWindow?.label ?? range.toUpperCase()} live={live} />
+							<div className="min-h-0 flex-1">
+								<ServiceMapGraph
+									nodes={nodes}
+									edges={edges}
+									maxCallCount={map.data.maxCallCount}
+									windowSeconds={mapWindow?.seconds ?? 0}
+									onSelectService={onSelectService}
+								/>
+							</div>
+							<CanvasFooter
 								nodes={nodes}
 								edges={edges}
-								maxCallCount={map.data.maxCallCount}
-								onSelectService={onSelectService}
+								windowLabel={mapWindow?.label ?? range.toUpperCase()}
 							/>
-						</div>
+						</section>
 						<EdgeTable
 							edges={edges}
 							nodes={nodes}
@@ -115,6 +144,82 @@ export function ServiceMapView({ onSelectService }: ServiceMapViewProps) {
 				)}
 			</div>
 		</div>
+	)
+}
+
+/**
+ * Live is a window, not a refresh button: sixty seconds, re-read every five.
+ * Spelled as what it turns on rather than as its state, so the label does not
+ * change under the click that changes the switch.
+ */
+function LiveToggle({ live, onChange }: { live: boolean; onChange: (live: boolean) => void }) {
+	const id = useId()
+	return (
+		<span className="flex items-center gap-1.5" title={LIVE_HINT}>
+			<Switch id={id} checked={live} onCheckedChange={onChange} />
+			<Label htmlFor={id} className="cursor-pointer text-xs font-normal whitespace-nowrap">
+				Live
+			</Label>
+		</span>
+	)
+}
+
+const LIVE_HINT = "Draw the map from the last 60 seconds, re-read every 5 seconds"
+
+function CanvasHeader({ label, live }: { label: string; live: boolean }) {
+	return (
+		<header className="flex items-center justify-between border-b px-3 py-2">
+			<h2 className="text-[10px] font-medium tracking-[0.12em] text-muted-foreground uppercase">
+				Service map · Last {label}
+			</h2>
+			{live ? (
+				<span className="flex items-center gap-1.5 text-[10px] font-medium tracking-[0.12em] text-success uppercase">
+					<span className="relative flex size-1.5">
+						<span className="absolute inline-flex size-full animate-ping rounded-full bg-success opacity-75 motion-reduce:animate-none" />
+						<span className="relative inline-flex size-1.5 rounded-full bg-success" />
+					</span>
+					Live
+				</span>
+			) : null}
+		</header>
+	)
+}
+
+/**
+ * The map's shape on the left, and on the right the single line this window is
+ * worth: whichever service's p95 moved furthest from the window before it.
+ * Nothing moved enough, or nothing has a window before it to compare against —
+ * then the strip carries the counts alone rather than a manufactured headline.
+ */
+function CanvasFooter({
+	nodes,
+	edges,
+	windowLabel,
+}: {
+	nodes: readonly ServiceMapNode[]
+	edges: readonly ServiceMapEdge[]
+	windowLabel: string
+}) {
+	const insight = selectInsight(
+		nodes.map((node) => ({
+			label: node.label,
+			kind: node.kind,
+			p95Ms: node.p95Ms,
+			previousP95Ms: node.previousP95Ms,
+			spanCount: node.spanCount,
+		})),
+	)
+	return (
+		<footer className="flex flex-wrap items-center justify-between gap-2 border-t px-3 py-2 text-[10px] tracking-[0.12em] text-muted-foreground uppercase">
+			<span className="tabular-nums">
+				{nodes.length} services · {edges.length} edges · {windowLabel} window
+			</span>
+			{insight ? (
+				<span className={cn("tabular-nums", insight.deltaRatio > 0 && "text-destructive")}>
+					{formatInsight(insight, windowLabel)}
+				</span>
+			) : null}
+		</footer>
 	)
 }
 

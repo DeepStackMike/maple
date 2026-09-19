@@ -64,11 +64,15 @@ export interface ServiceMapLayout {
 	readonly height: number
 }
 
+// Card sizes, not label sizes. A node carries its name and three stat columns,
+// so it is a 212 x 78 card; the column and row gaps are set from those rather
+// than from the old one-line pill, or the orthogonal routing between two cards
+// would have no lane to turn in.
 const DEFAULTS = {
-	columnWidth: 232,
-	rowHeight: 78,
-	nodeWidth: 168,
-	nodeHeight: 46,
+	columnWidth: 332,
+	rowHeight: 110,
+	nodeWidth: 212,
+	nodeHeight: 78,
 	sweeps: 4,
 } satisfies Required<LayoutOptions>
 
@@ -244,4 +248,89 @@ function orderWithinLayers(
 	}
 
 	return rows
+}
+
+// Orthogonal routing
+//
+// Cards are wide and their stats are read left-to-right, so an edge that leaves
+// a card's right border, turns once, and arrives at the next card's left border
+// never crosses the text it connects — which a diagonal bezier between two 212
+// px cards does constantly. One vertical lane, halfway between the two columns,
+// is enough: the layout has already ordered each layer to minimise crossings,
+// so the lane is mostly empty.
+
+export interface Point {
+	readonly x: number
+	readonly y: number
+}
+
+export interface ElbowPathOptions {
+	/** Card width; ports sit half of it out from a node's centre. */
+	readonly nodeWidth?: number
+	/** Corner radius, clamped to half the shorter leg so short edges stay smooth. */
+	readonly radius?: number
+	/** Port offset from the source's vertical centre — fans several edges off one card. */
+	readonly startOffsetY?: number
+	/** Port offset from the target's vertical centre. */
+	readonly endOffsetY?: number
+}
+
+const ELBOW_RADIUS = 14
+/** Below this the two ends are on one line and a corner would be a kink. */
+const COLLINEAR_EPSILON = 0.5
+
+/**
+ * An SVG path from the right border of `from` to the left border of `to`, with
+ * one rounded elbow in the lane between them.
+ *
+ * A back edge — anything whose target sits at or left of its source, which is
+ * how the layout draws a cycle — leaves the source's LEFT border and enters the
+ * target's right, so the arrow still reads as "calls" while pointing the other
+ * way. Same two corners, mirrored.
+ */
+export function elbowPath(from: Point, to: Point, options: ElbowPathOptions = {}): string {
+	const halfWidth = (options.nodeWidth ?? DEFAULTS.nodeWidth) / 2
+	const backwards = to.x <= from.x
+	const startX = from.x + (backwards ? -halfWidth : halfWidth)
+	const endX = to.x + (backwards ? halfWidth : -halfWidth)
+	const startY = from.y + (options.startOffsetY ?? 0)
+	const endY = to.y + (options.endOffsetY ?? 0)
+
+	const dx = endX - startX
+	const dy = endY - startY
+	if (Math.abs(dy) < COLLINEAR_EPSILON) return `M ${r(startX)} ${r(startY)} L ${r(endX)} ${r(startY)}`
+	if (Math.abs(dx) < COLLINEAR_EPSILON) return `M ${r(startX)} ${r(startY)} L ${r(endX)} ${r(endY)}`
+
+	const laneX = startX + dx / 2
+	const horizontal = Math.sign(dx)
+	const vertical = Math.sign(dy)
+	const radius = Math.min(options.radius ?? ELBOW_RADIUS, Math.abs(dx) / 2, Math.abs(dy) / 2)
+
+	return [
+		`M ${r(startX)} ${r(startY)}`,
+		`H ${r(laneX - horizontal * radius)}`,
+		`Q ${r(laneX)} ${r(startY)} ${r(laneX)} ${r(startY + vertical * radius)}`,
+		`V ${r(endY - vertical * radius)}`,
+		`Q ${r(laneX)} ${r(endY)} ${r(laneX + horizontal * radius)} ${r(endY)}`,
+		`H ${r(endX)}`,
+	].join(" ")
+}
+
+/**
+ * Port offsets for the edges meeting one card, spread around its centre.
+ *
+ * Six edges into a card all aimed at the same pixel arrive as one line; spread
+ * over the card's height they arrive as six. Sorted by the other end's row so
+ * the fan does not cross itself, and clamped so a busy card's ports stay on it.
+ */
+export function portOffsets(count: number, nodeHeight: number, spacing = 12): number[] {
+	if (count <= 1) return count === 1 ? [0] : []
+	const usable = Math.max(0, nodeHeight - 24)
+	const step = Math.min(spacing, usable / (count - 1))
+	return Array.from({ length: count }, (_, i) => (i - (count - 1) / 2) * step)
+}
+
+/** Two decimals: enough for a crisp path, few enough for a stable snapshot. */
+function r(value: number): number {
+	return Number(value.toFixed(2))
 }
