@@ -185,7 +185,7 @@ function EdgeTable({
 									>
 										{formatNumber(edge.errorCount)}
 										<span className="ml-1 text-xs text-muted-foreground">
-											{formatErrorRate(edge.errorRate)}
+											({formatErrorRate(edge.errorRate)})
 										</span>
 									</TableCell>
 									<TableCell className="text-right">
