@@ -4,13 +4,21 @@ import { Option } from "effect"
 import { executeLocalCompiledFirstRow, executeLocalCompiledQuery } from "@/lib/query"
 import { LOCAL_ORG_ID } from "../lib/constants"
 import { boundsForRange } from "../lib/time"
+import { groupSparkPoints, sparkWindow, type SparkPoint } from "../lib/error-spark"
 
 export interface ErrorsFilters {
 	/** Exact service name match. */
 	service?: string
 	/** Exact `deployment.environment` resource attribute. */
 	env?: string
-	/** Restrict to root-span errors. */
+	/** Exact `ErrorLabel` match — the value the "Error Type" facet lists. */
+	errorType?: string
+	/** Exact `service.version` match — the value the "Version" facet lists. */
+	version?: string
+	/**
+	 * Restrict to root-span errors — the *unchecked* state of the sidebar's
+	 * "All span errors" box, which is how `apps/web` spelled the same filter.
+	 */
 	rootOnly?: boolean
 	/** Time-range preset key (see `TIME_RANGES`). */
 	range?: string
@@ -21,6 +29,8 @@ function commonOpts(filters: ErrorsFilters) {
 		rootOnly: filters.rootOnly,
 		services: filters.service ? [filters.service] : undefined,
 		deploymentEnvs: filters.env ? [filters.env] : undefined,
+		errorLabels: filters.errorType ? [filters.errorType] : undefined,
+		serviceVersions: filters.version ? [filters.version] : undefined,
 	}
 }
 
@@ -61,12 +71,105 @@ export function useLocalErrorsByType(filters: ErrorsFilters) {
 	})
 }
 
-export interface ErrorsFacets {
-	services: Array<{ name: string; count: number }>
-	environments: Array<{ name: string; count: number }>
+/**
+ * Per-build occurrence split for every fingerprint on the page, in one query.
+ *
+ * One request for the whole list, not one per row: the list shows fifty
+ * fingerprints and every one of them wants the version it was introduced in, and
+ * chDB runs local queries serially — fifty round trips would be the page's whole
+ * latency budget spent on a subtitle.
+ *
+ * Returned as a Map so a row looks its own versions up by hash instead of
+ * re-filtering the flat result on every render. Rows come back oldest-first
+ * within a fingerprint, which is the order "introduced in" reads off; the
+ * Compare-versions table re-sorts by recency for display.
+ */
+export function useLocalErrorVersions(fingerprintHashes: ReadonlyArray<string>, filters: ErrorsFilters) {
+	// The key is the hash list, not the row objects: counts change on every
+	// refetch and would evict a cache entry whose answer did not move.
+	const key = [...fingerprintHashes].sort().join(",")
+	return useQuery({
+		queryKey: ["local", "errors", "versions", key, filters],
+		enabled: fingerprintHashes.length > 0,
+		placeholderData: keepPreviousData,
+		queryFn: async (): Promise<Map<string, Array<CH.ErrorVersionsOutput>>> => {
+			const { startTime, endTime } = boundsForRange(filters.range)
+			const rows = await executeLocalCompiledQuery(
+				CH.compile(CH.errorVersionsQuery({ ...commonOpts(filters), fingerprintHashes }), {
+					orgId: LOCAL_ORG_ID,
+					startTime,
+					endTime,
+				}),
+			)
+			const byFingerprint = new Map<string, Array<CH.ErrorVersionsOutput>>()
+			for (const row of rows) {
+				const list = byFingerprint.get(row.fingerprintHash)
+				if (list) list.push(row)
+				else byFingerprint.set(row.fingerprintHash, [row])
+			}
+			return byFingerprint
+		},
+	})
 }
 
-/** Service + environment facet counts for the sidebar (UNION query). */
+/**
+ * Bucketed occurrence counts for every fingerprint on the page, in one scan.
+ *
+ * `errorsSparkQuery` exists for exactly this and predates the local UI: it is
+ * fingerprint-filtered, so it rides `error_events`' (OrgId, FingerprintHash,
+ * Timestamp) key instead of scanning the window, and it returns rows tall
+ * (fingerprint x bucket) rather than as a wide `groupArray`, because aggregate
+ * state merge order is not input order and the client would have to re-sort
+ * anyway.
+ *
+ * The compile window stays `boundsForRange`'s — padded an hour ahead so a
+ * clock-skewed exporter's rows are not filtered out — while `sparkWindow`
+ * decides what is *drawn*. The two differ on purpose; see `error-spark.ts`.
+ */
+export function useLocalErrorsSpark(fingerprintHashes: ReadonlyArray<string>, filters: ErrorsFilters) {
+	const key = [...fingerprintHashes].sort().join(",")
+	return useQuery({
+		queryKey: ["local", "errors", "spark", key, filters],
+		enabled: fingerprintHashes.length > 0,
+		placeholderData: keepPreviousData,
+		queryFn: async (): Promise<Map<string, Array<SparkPoint>>> => {
+			const { startTime, endTime } = boundsForRange(filters.range)
+			const rows = await executeLocalCompiledQuery(
+				CH.compile(CH.errorsSparkQuery({ ...commonOpts(filters), fingerprintHashes }), {
+					orgId: LOCAL_ORG_ID,
+					startTime,
+					endTime,
+					bucketSeconds: sparkWindow(filters.range).bucketSeconds,
+				}),
+			)
+			return groupSparkPoints(rows)
+		},
+	})
+}
+
+export interface FacetOption {
+	name: string
+	count: number
+}
+
+export interface ErrorsFacets {
+	services: Array<FacetOption>
+	environments: Array<FacetOption>
+	errorTypes: Array<FacetOption>
+	versions: Array<FacetOption>
+}
+
+/**
+ * Sidebar facet counts (one UNION query, one scan).
+ *
+ * Every active filter goes in, not just the range: `errorsFacetsQuery` drops
+ * each section's own dimension server-side (its `except` argument), so ticking
+ * `production` narrows the Service counts while Environment still lists its
+ * alternatives. Passing only `rootOnly` — which is what this hook did — left
+ * every number on the sidebar describing the unfiltered window, so the counts
+ * never moved when a box was ticked and none of them matched the list beside
+ * them.
+ */
 export function useLocalErrorsFacets(filters: ErrorsFilters) {
 	return useQuery({
 		queryKey: ["local", "errors", "facets", filters],
@@ -74,7 +177,7 @@ export function useLocalErrorsFacets(filters: ErrorsFilters) {
 		queryFn: async (): Promise<ErrorsFacets> => {
 			const { startTime, endTime } = boundsForRange(filters.range)
 			const rows = await executeLocalCompiledQuery(
-				CH.compileUnion(CH.errorsFacetsQuery({ rootOnly: filters.rootOnly }), {
+				CH.compileUnion(CH.errorsFacetsQuery(commonOpts(filters)), {
 					orgId: LOCAL_ORG_ID,
 					startTime,
 					endTime,
@@ -84,7 +187,12 @@ export function useLocalErrorsFacets(filters: ErrorsFilters) {
 				rows
 					.filter((r) => r.facetType === facetType)
 					.map((r) => ({ name: r.name, count: Number(r.count) }))
-			return { services: pick("service"), environments: pick("environment") }
+			return {
+				services: pick("service"),
+				environments: pick("environment"),
+				errorTypes: pick("error_type"),
+				versions: pick("version"),
+			}
 		},
 	})
 }
@@ -129,6 +237,42 @@ export function useLocalErrorTraces(fingerprintHash: string | undefined, filters
 						fingerprintHash: fingerprintHash!,
 						rootOnly: filters.rootOnly,
 						services: filters.service ? [filters.service] : undefined,
+						limit: 10,
+					}),
+					{ orgId: LOCAL_ORG_ID, startTime, endTime },
+				),
+			)
+		},
+	})
+}
+
+/**
+ * Browser sessions this error was hit in (expanded row).
+ *
+ * `messageMatch` comes from the fingerprint's own latest occurrence, so this
+ * runs after {@link useLocalErrorSampleStack} rather than beside it — which is
+ * why the caller mounts it only once that has resolved. Passing `undefined`
+ * would not be harmless: it silently drops the branch of the query that finds
+ * browser-side errors at all.
+ *
+ * Unfiltered by service, like the stack: the sidebar narrows *which* errors are
+ * listed, and once one is open the question is who hit it.
+ */
+export function useLocalErrorSessions(
+	fingerprintHash: string | undefined,
+	messageMatch: string | undefined,
+	filters: ErrorsFilters,
+) {
+	return useQuery({
+		queryKey: ["local", "errors", "sessions", fingerprintHash, messageMatch, filters.range],
+		enabled: !!fingerprintHash,
+		queryFn: async (): Promise<ReadonlyArray<CH.ErrorSessionsOutput>> => {
+			const { startTime, endTime } = boundsForRange(filters.range)
+			return executeLocalCompiledQuery(
+				CH.compile(
+					CH.errorSessionsQuery({
+						fingerprintHash: fingerprintHash!,
+						messageMatch,
 						limit: 10,
 					}),
 					{ orgId: LOCAL_ORG_ID, startTime, endTime },

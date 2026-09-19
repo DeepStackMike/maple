@@ -18,6 +18,8 @@ import {
 	ErrorEventsByTime,
 	ErrorFingerprintsMinutely,
 	ServiceUsage,
+	SessionEvents,
+	SessionReplays,
 	TraceDetailSpans,
 	TraceListMv,
 	Traces,
@@ -239,6 +241,73 @@ export function errorSampleStackQuery(opts: ErrorSampleStackOpts) {
 		.format("JSON")
 }
 
+// Error versions — one fingerprint's occurrences, split by the build they ran on
+//
+// "Is this new?" is the first question asked of an error and the one the errors
+// list could not answer. `errorsByTypeQuery` already carries `firstSeen`, but a
+// timestamp only says *when*, and what a reader acts on is *which deploy*:
+// an error whose every occurrence is on `1.4.2` is a regression that shipped
+// this afternoon, and the same error spread evenly across six versions is a bug
+// that has always been there.
+//
+// `error_events.ServiceVersion` is `service.version` off the resource,
+// materialized on every row since the v6→v7 local migration
+// (`v6-to-v7-error-service-version.ts`), so this is a GROUP BY and not a join.
+//
+// Batched over `fingerprintHashes`, like `errorsSparkQuery`: the list renders
+// fifty rows and every one of them wants its introducing version, which as one
+// query per row is fifty round trips against a chDB process that runs them
+// serially. Fingerprint-filtered, so it rides `error_events`' (OrgId,
+// FingerprintHash, Timestamp) key rather than scanning the window.
+//
+// Rows with an empty `ServiceVersion` are kept, not dropped. They are what an
+// exporter that never set `service.version` produces, and dropping them would
+// leave a per-version table whose counts do not add up to the count in the list
+// row above it — the one thing a breakdown must never do.
+
+export interface ErrorVersionsOpts extends ErrorsSharedFilters {
+	fingerprintHashes: readonly string[]
+	rootOnly?: boolean
+	limit?: number
+}
+
+export interface ErrorVersionsOutput {
+	readonly fingerprintHash: string
+	/** `service.version` off the resource; `''` when the exporter set none. */
+	readonly serviceVersion: string
+	readonly count: number
+	readonly firstSeen: string
+	readonly lastSeen: string
+}
+
+export function errorVersionsQuery(opts: ErrorVersionsOpts) {
+	return from(ErrorEvents)
+		.select(($) => ({
+			// Identity UInt64: unwrapped it corrupts above 2^53.
+			fingerprintHash: CH.toString_($.FingerprintHash),
+			serviceVersion: $.ServiceVersion,
+			count: CH.count(),
+			firstSeen: CH.min_($.Timestamp),
+			lastSeen: CH.max_($.Timestamp),
+		}))
+		.where(($) => [
+			$.OrgId.eq(param.string("orgId")),
+			fingerprintHashIn($.FingerprintHash, opts.fingerprintHashes),
+			$.Timestamp.gte(param.dateTimeSeconds("startTime")),
+			$.Timestamp.lte(param.dateTimeSeconds("endTime")),
+			CH.whenTrue(!!opts.rootOnly, () => $.ParentSpanId.eq("")),
+			...sharedFilterConditions($, opts),
+		])
+		.groupBy("fingerprintHash", "serviceVersion")
+		// Grouped by fingerprint first so a truncating LIMIT cuts whole
+		// fingerprints off the tail rather than silently amputating the newest
+		// versions of every row on the page; oldest-first inside a fingerprint is
+		// the order "introduced in" reads off.
+		.orderBy(["fingerprintHash", "asc"], ["firstSeen", "asc"])
+		.limit(opts.limit ?? 500)
+		.format("JSON")
+}
+
 // Errors timeseries
 
 export interface ErrorsTimeseriesOpts {
@@ -283,6 +352,13 @@ export function errorsTimeseriesQuery(opts: ErrorsTimeseriesOpts) {
 
 export interface ErrorsSparkOpts extends ErrorsSharedFilters {
 	fingerprintHashes: readonly string[]
+	/**
+	 * Restrict to root-span occurrences, matching the list the spark is drawn
+	 * beside. Unset — which is every caller that predates it — leaves the
+	 * compiled SQL byte-identical; a trend that counts occurrences the row's own
+	 * count excluded is a chart that contradicts the number next to it.
+	 */
+	rootOnly?: boolean
 }
 
 export const ErrorsSparkOutputSchema = Schema.Struct({
@@ -305,6 +381,7 @@ export function errorsSparkQuery(opts: ErrorsSparkOpts) {
 			fingerprintHashIn($.FingerprintHash, opts.fingerprintHashes),
 			$.Timestamp.gte(param.dateTimeSeconds("startTime")),
 			$.Timestamp.lte(param.dateTimeSeconds("endTime")),
+			CH.whenTrue(!!opts.rootOnly, () => $.ParentSpanId.eq("")),
 			...sharedFilterConditions($, opts),
 		])
 		.groupBy("fingerprintHash", "bucket")
@@ -1290,6 +1367,161 @@ export function errorIssueEnvironmentsQuery(opts: { limit?: number } = {}) {
 		.groupBy("name")
 		.orderBy(["count", "desc"])
 		.limit(opts.limit ?? 20)
+		.format("JSON")
+}
+
+// Error → sessions
+//
+// The Errors page can already answer "which traces did this error happen in".
+// For an error a person hit in a browser that is the wrong unit: what the
+// reader wants is the recording — what the user was doing in the ten seconds
+// before the throw, and what the page looked like after it.
+//
+// **Two ways in, because the data has two.** `session_events` rows of
+// `Type = 'error'` are what the browser SDK's `installErrorCapture` writes
+// (`capture/errors.ts`), and they carry `traceId: activeTraceId()` — which is
+// the id of whatever span happened to be open. For an uncaught throw in an
+// event handler that is usually nothing at all, so a trace-id join alone finds
+// nothing for exactly the errors this feature exists for. The message is what
+// is always there.
+//
+// Conversely the trace id is the only link for a *server* error the session
+// caused: the browser's `network` event for the failed fetch carries the trace
+// id the API answered under, and its message is an HTTP status, not a stack. So
+// the predicate is the union — trace id OR message — and neither branch is
+// redundant.
+//
+// Matching is `positionCaseInsensitive`, not `ILIKE '%…%'`: the needle is an
+// exception message off a real exception, and messages contain `%` and `_`
+// often enough (`"500 Internal Server Error"`, `"user_id missing"`) that LIKE's
+// wildcards would quietly widen the match to something the page then presents
+// as exact.
+
+/** Distinct traces scanned for the trace-id branch. A fingerprint with more occurrences than this is not short of sessions to show. */
+const ERROR_SESSION_TRACE_LIMIT = 500
+
+/** Needle cap. A stack-sized needle is a slow scan and a worse match than its first line. */
+const ERROR_SESSION_NEEDLE_MAX = 200
+
+export interface ErrorSessionsOpts {
+	fingerprintHash: string
+	/**
+	 * The fingerprint's own exception message (or type, when it has no message) —
+	 * the browser-side branch of the match. Omit and only the trace-id branch
+	 * runs, which is the right call when the text is empty or generic.
+	 */
+	messageMatch?: string
+	limit?: number
+}
+
+export interface ErrorSessionsOutput {
+	readonly sessionId: string
+	/** `''` when no `session_replays` meta row arrived for the session. */
+	readonly browserName: string
+	readonly osName: string
+	readonly deviceType: string
+	readonly startTime: string
+	/** Every error in the session, not just this fingerprint's. */
+	readonly errorCount: number
+	/** Events of this session that matched this fingerprint. */
+	readonly matchCount: number
+	/** `Seq` of the FIRST match — what a `?jump=` lands the replay player on. */
+	readonly jumpSeq: number
+	readonly lastMatchAt: string
+}
+
+export function errorSessionsQuery(opts: ErrorSessionsOpts) {
+	const needle = opts.messageMatch?.trim().slice(0, ERROR_SESSION_NEEDLE_MAX)
+
+	const errorTraces = from(ErrorEvents)
+		.select(($) => ({ TraceId: $.TraceId }))
+		.where(($) => [
+			$.OrgId.eq(param.string("orgId")),
+			// The list helper, not `fingerprintHashEq`: a synthetic alert/integration
+			// key lowers to `1 = 0` instead of aborting on `toUInt64('alert:…')`.
+			fingerprintHashIn($.FingerprintHash, [opts.fingerprintHash]),
+			$.Timestamp.gte(param.dateTimeSeconds("startTime")),
+			$.Timestamp.lte(param.dateTimeSeconds("endTime")),
+			// An empty trace id would match every session event that has none.
+			// Through `length()`, because `TraceId`'s branded schema refuses `''` as
+			// a literal — which is the point of the brand, and exactly the value that
+			// has to be excluded here.
+			CH.length_($.TraceId).gt(0),
+		])
+		.groupBy("TraceId")
+		.limit(ERROR_SESSION_TRACE_LIMIT)
+
+	const matched = from(SessionEvents)
+		.select(($) => ({
+			sessionId: $.SessionId,
+			matchCount: CH.count(),
+			// The first match, not the last: a reader opening a session wants the
+			// moment it broke, and everything after it is consequence.
+			jumpSeq: CH.argMin($.Seq, $.Timestamp),
+			lastMatchAt: CH.max_($.Timestamp),
+		}))
+		.where(($) => {
+			const byTrace = inSubquery(
+				$.TraceId,
+				fromQuery(errorTraces, "error_traces").select(($$) => ({ TraceId: $$.TraceId })),
+			)
+			const byMessage = needle
+				? $.Type.eq("error").and(
+						CH.positionCaseInsensitive($.Message, CH.lit(needle))
+							.gt(0)
+							.or(CH.positionCaseInsensitive($.ErrorStack, CH.lit(needle)).gt(0)),
+					)
+				: undefined
+			return [
+				$.OrgId.eq(param.string("orgId")),
+				$.Timestamp.gte(param.dateTimeString("startTime")),
+				$.Timestamp.lte(param.dateTimeString("endTime")),
+				byMessage ? byTrace.or(byMessage) : byTrace,
+			]
+		})
+		.groupBy("sessionId")
+
+	// Session metadata, finalized off the ReplacingMergeTree's `Version` like
+	// every other read of this table.
+	//
+	// Bounded above and NOT below: a session that started yesterday and threw
+	// inside the selected hour is precisely the row this query exists to return,
+	// and a lower bound on StartTime would drop it. The upper bound still prunes
+	// forward partitions, and the table is TTL'd at 30 days — this is the right
+	// query for a store that holds an afternoon, which is what Local is.
+	const sessions = from(SessionReplays)
+		.select(($) => ({
+			sessionId: $.SessionId,
+			startTime: CH.argMax($.StartTime, $.Version),
+			browserName: CH.argMax($.BrowserName, $.Version),
+			osName: CH.argMax($.OsName, $.Version),
+			deviceType: CH.argMax($.DeviceType, $.Version),
+			errorCount: CH.argMax($.ErrorCount, $.Version),
+		}))
+		.where(($) => [
+			$.OrgId.eq(param.string("orgId")),
+			$.StartTime.lte(param.dateTimeString("endTime")),
+		])
+		.groupBy("sessionId")
+
+	// LEFT, so a session whose meta row never arrived (a tab closed before the
+	// unload beacon) still lists with the events that prove it happened, rather
+	// than vanishing from an answer about its own error.
+	return fromQuery(matched, "m")
+		.leftJoinQuery(sessions, "s", (m, s) => m.sessionId.eq(s.sessionId))
+		.select(($) => ({
+			sessionId: $.sessionId,
+			browserName: $.s.browserName,
+			osName: $.s.osName,
+			deviceType: $.s.deviceType,
+			startTime: $.s.startTime,
+			errorCount: $.s.errorCount,
+			matchCount: $.matchCount,
+			jumpSeq: $.jumpSeq,
+			lastMatchAt: $.lastMatchAt,
+		}))
+		.orderBy(["lastMatchAt", "desc"])
+		.limit(opts.limit ?? 10)
 		.format("JSON")
 }
 

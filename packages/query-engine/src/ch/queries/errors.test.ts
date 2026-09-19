@@ -5,8 +5,10 @@ import {
 	errorSampleStackQuery,
 	errorsTimeseriesQuery,
 	errorsSparkQuery,
+	errorVersionsQuery,
 	errorsSummaryQuery,
 	errorDetailTracesQuery,
+	errorSessionsQuery,
 	errorsFacetsQuery,
 	errorIssuesQuery,
 	errorTickBootstrapIssuesQuery,
@@ -34,6 +36,24 @@ describe("errorsSparkQuery synthetic fingerprints", () => {
 		expect(sql).not.toContain("alert:")
 		expect(sql).toContain("toUInt64('123')")
 		expect(sql).toContain("toUInt64('456')")
+	})
+
+	it("adds nothing to the compiled SQL until rootOnly is asked for", () => {
+		// Every caller that predates the option must keep its exact SQL — it is in
+		// the catalog baseline.
+		const base = compileUnsafe(errorsSparkQuery({ fingerprintHashes: ["123"] }), baseParams).sql
+		const unset = compileUnsafe(
+			errorsSparkQuery({ fingerprintHashes: ["123"], rootOnly: false }),
+			baseParams,
+		).sql
+		expect(unset).toBe(base)
+		expect(base).not.toContain("ParentSpanId")
+
+		const rootOnly = compileUnsafe(
+			errorsSparkQuery({ fingerprintHashes: ["123"], rootOnly: true }),
+			baseParams,
+		).sql
+		expect(rootOnly).toContain("ParentSpanId = ''")
 	})
 
 	it("matches nothing when every fingerprint is synthetic", () => {
@@ -116,6 +136,70 @@ describe("errorsByTypeQuery", () => {
 		const q = errorsByTypeQuery({ limit: 25 })
 		const { sql } = compileUnsafe(q, baseParams)
 		expect(sql).toContain("LIMIT 25")
+	})
+})
+
+// errorVersionsQuery — the per-build occurrence split behind "Introduced in"
+
+describe("errorVersionsQuery", () => {
+	it("splits one scan of the fingerprint-keyed table by deployed version", () => {
+		const { sql } = compileUnsafe(errorVersionsQuery({ fingerprintHashes: ["123", "456"] }), baseParams)
+		// Fingerprint-filtered, so it prunes on (OrgId, FingerprintHash, Timestamp).
+		expect(sql).toContain("FROM error_events")
+		expect(sql).not.toContain("FROM error_events_by_time")
+		expect(sql).toContain("toString(FingerprintHash) AS fingerprintHash")
+		expect(sql).toContain("ServiceVersion AS serviceVersion")
+		expect(sql).toContain("count() AS count")
+		expect(sql).toContain("min(Timestamp) AS firstSeen")
+		expect(sql).toContain("max(Timestamp) AS lastSeen")
+		expect(sql).toContain("GROUP BY fingerprintHash, serviceVersion")
+		expect(sql).toContain("ORDER BY fingerprintHash ASC, firstSeen ASC")
+		expect(sql).toContain("LIMIT 500")
+		expect(sql).toContain("FORMAT JSON")
+	})
+
+	it("asks for every listed fingerprint in one IN list, not one query each", () => {
+		const { sql } = compileUnsafe(errorVersionsQuery({ fingerprintHashes: ["123", "456"] }), baseParams)
+		expect(sql).toContain("FingerprintHash IN (toUInt64('123'), toUInt64('456'))")
+	})
+
+	it("keeps unversioned occurrences so the breakdown still sums to the row above it", () => {
+		// An exporter that never set `service.version` writes ''. Dropping those
+		// rows would leave a per-version table whose counts do not add up.
+		const { sql } = compileUnsafe(errorVersionsQuery({ fingerprintHashes: ["123"] }), baseParams)
+		expect(sql).not.toContain("ServiceVersion != ''")
+	})
+
+	it("drops synthetic issue keys instead of aborting on toUInt64", () => {
+		const { sql } = compileUnsafe(
+			errorVersionsQuery({ fingerprintHashes: ["alert:abc:all"] }),
+			baseParams,
+		)
+		expect(sql).toContain("1 = 0")
+		expect(sql).not.toContain("IN ()")
+	})
+
+	it("carries the list's own filters so the split describes the listed rows", () => {
+		const { sql } = compileUnsafe(
+			errorVersionsQuery({
+				fingerprintHashes: ["123"],
+				rootOnly: true,
+				services: ["api"],
+				deploymentEnvs: ["production"],
+				serviceVersions: ["1.4.2"],
+			}),
+			baseParams,
+		)
+		expect(sql).toContain("ParentSpanId = ''")
+		expect(sql).toContain("ServiceName IN ('api')")
+		expect(sql).toContain("DeploymentEnv IN ('production')")
+		expect(sql).toContain("ServiceVersion IN ('1.4.2')")
+	})
+
+	it("scopes to the org and derives single-tenant scope", () => {
+		const compiled = compileUnsafe(errorVersionsQuery({ fingerprintHashes: ["123"] }), baseParams)
+		expect(compiled.sql).toContain("OrgId = 'org_1'")
+		expect(compiled.tenantScope).toBe("single-tenant")
 	})
 })
 
@@ -224,6 +308,104 @@ describe("errorDetailTracesQuery", () => {
 // Exclusions on the fingerprint-resolving query. The errors list is issue-first until a facet is
 // active, at which point it asks the warehouse which fingerprints survive — so an exclusion has to
 // narrow that set or it never reaches the rows at all.
+
+// errorSessionsQuery — the browser sessions an error was hit in
+//
+// The predicate is a union of two links that find different errors, so the
+// tests that matter are about both branches being present and neither being
+// able to match everything.
+
+describe("errorSessionsQuery", () => {
+	it("matches on the fingerprint's traces OR its message text", () => {
+		const { sql } = compileUnsafe(
+			errorSessionsQuery({ fingerprintHash: "123", messageMatch: "boom" }),
+			baseParams,
+		)
+		expect(sql).toContain("FROM session_events")
+		expect(sql).toContain("TraceId IN (SELECT")
+		expect(sql).toContain("FROM error_events")
+		expect(sql).toContain("Type = 'error'")
+		expect(sql).toContain("positionCaseInsensitive(Message, 'boom') > 0")
+		expect(sql).toContain("positionCaseInsensitive(ErrorStack, 'boom') > 0")
+	})
+
+	it("drops the message branch entirely when there is no needle", () => {
+		// An uncaught browser throw usually has no active span, so the trace-id
+		// branch alone is the only link for a server error — it must still compile.
+		const { sql } = compileUnsafe(errorSessionsQuery({ fingerprintHash: "123" }), baseParams)
+		expect(sql).toContain("TraceId IN (SELECT")
+		expect(sql).not.toContain("positionCaseInsensitive")
+		expect(sql).not.toContain("Type = 'error'")
+	})
+
+	it("matches by substring, not by LIKE, so a % in a message stays a % ", () => {
+		// "500 Internal Server Error" and "user_id missing" are ordinary exception
+		// messages and both carry LIKE metacharacters.
+		const { sql } = compileUnsafe(
+			errorSessionsQuery({ fingerprintHash: "123", messageMatch: "100% of user_ids" }),
+			baseParams,
+		)
+		expect(sql).not.toContain("ILIKE")
+		expect(sql).toContain("positionCaseInsensitive(Message, '100% of user_ids')")
+	})
+
+	it("caps the needle so a pasted stack is not the scan predicate", () => {
+		const { sql } = compileUnsafe(
+			errorSessionsQuery({ fingerprintHash: "123", messageMatch: "x".repeat(400) }),
+			baseParams,
+		)
+		expect(sql).toContain(`'${"x".repeat(200)}'`)
+		expect(sql).not.toContain("x".repeat(201))
+	})
+
+	it("excludes trace-less error events from the trace branch", () => {
+		// '' would otherwise match every session event that carries no trace id,
+		// which is most of them. Expressed through length() because TraceId's
+		// branded schema refuses '' as a literal.
+		const { sql } = compileUnsafe(errorSessionsQuery({ fingerprintHash: "123" }), baseParams)
+		expect(sql).toContain("length(TraceId) > 0")
+	})
+
+	it("jumps to the first match in a session, not the last", () => {
+		const { sql } = compileUnsafe(errorSessionsQuery({ fingerprintHash: "123" }), baseParams)
+		expect(sql).toContain("argMin(Seq, Timestamp) AS jumpSeq")
+		expect(sql).toContain("max(Timestamp) AS lastMatchAt")
+		expect(sql).toContain("ORDER BY lastMatchAt DESC")
+	})
+
+	it("LEFT JOINs the session metadata and finalizes it off Version", () => {
+		const { sql } = compileUnsafe(errorSessionsQuery({ fingerprintHash: "123" }), baseParams)
+		expect(sql).toContain("LEFT JOIN")
+		expect(sql).toContain("FROM session_replays")
+		expect(sql).toContain("argMax(BrowserName, Version) AS browserName")
+	})
+
+	it("does not bound the session side below, so a session older than the window still lists", () => {
+		const { sql } = compileUnsafe(errorSessionsQuery({ fingerprintHash: "123" }), baseParams)
+		expect(sql).toContain("StartTime <= '2024-01-02 00:00:00'")
+		expect(sql).not.toContain("StartTime >=")
+	})
+
+	it("drops synthetic issue keys instead of aborting on toUInt64", () => {
+		const { sql } = compileUnsafe(errorSessionsQuery({ fingerprintHash: "alert:abc:all" }), baseParams)
+		expect(sql).toContain("1 = 0")
+		expect(sql).not.toContain("IN ()")
+	})
+
+	it("scopes every table it touches by org", () => {
+		const compiled = compileUnsafe(
+			errorSessionsQuery({ fingerprintHash: "123", messageMatch: "boom" }),
+			baseParams,
+		)
+		expect(compiled.sql.match(/OrgId = 'org_1'/g)).toHaveLength(3)
+		expect(compiled.tenantScope).toBe("single-tenant")
+	})
+
+	it("applies a custom limit", () => {
+		const { sql } = compileUnsafe(errorSessionsQuery({ fingerprintHash: "123", limit: 25 }), baseParams)
+		expect(sql).toContain("LIMIT 25")
+	})
+})
 
 describe("errorSampleStackQuery", () => {
 	it("finalizes all four exception columns off the same latest occurrence", () => {
