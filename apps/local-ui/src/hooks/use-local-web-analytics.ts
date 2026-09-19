@@ -130,3 +130,43 @@ export function useLocalWebBreakdowns(range: string | undefined) {
 		},
 	})
 }
+
+/**
+ * One `ResourceAttributes` key of the session, ranked by sessions.
+ *
+ * The geography the Countries card shows stops at the country: `Country` is a
+ * column, resolved once at the ingest gateway from an edge header. Anything
+ * finer arrives as OpenTelemetry geo keys in the session's resource map, which
+ * has no column and no facet branch — hence its own builder and its own round
+ * trip per card rather than two more arms on the union.
+ *
+ * `qualifierKey` is what makes a region row readable: `TX` is an ISO 3166-2
+ * subdivision code, unique only inside its country, so the Regions card pairs
+ * it with `geo.country.iso_code` and reads `US-TX`. Resolving that in SQL keeps
+ * this a single query — see `sessionResourceAttributeBreakdownQuery`.
+ */
+export function useLocalSessionAttributeBreakdown(
+	range: string | undefined,
+	attribute: { readonly key: string; readonly qualifierKey?: string },
+) {
+	return useQuery({
+		queryKey: [
+			"local",
+			"web-analytics",
+			"session-attribute",
+			attribute.key,
+			attribute.qualifierKey ?? null,
+			range,
+		],
+		placeholderData: keepPreviousData,
+		queryFn: async (): Promise<ReadonlyArray<CH.SessionResourceAttributeBreakdownOutput>> => {
+			const { startTime, endTime } = boundsForRange(range)
+			return executeLocalCompiledQuery(
+				CH.compile(
+					CH.sessionResourceAttributeBreakdownQuery({ ...attribute, limit: BREAKDOWN_LIMIT }),
+					{ orgId: LOCAL_ORG_ID, startTime, endTime },
+				),
+			)
+		},
+	})
+}

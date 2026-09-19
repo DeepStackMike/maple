@@ -1,10 +1,11 @@
 // The Analytics tab's Web section: how much traffic the browser SDK recorded,
 // what it read, and where it came from.
 //
-// Six queries back the whole thing, and two of them are somebody else's — the
+// Eight queries back the whole thing, and two of them are somebody else's — the
 // summary is Home's and the error count is the sessions tab's (see
-// `use-local-web-analytics.ts`). The rest is the KPI strip, one chart, and nine
-// ranked tables cut from a single facet union.
+// `use-local-web-analytics.ts`). The rest is the KPI strip, one chart, nine
+// ranked tables cut from a single facet union, and two — Regions and Cities —
+// that read a key of the session's resource map and so cost a query each.
 //
 // The one piece of URL state is which UTM dimension the acquisition card shows;
 // the view owns it, the same way it owns the product panel's property key.
@@ -20,6 +21,7 @@ import { cn } from "@maple/ui/lib/utils"
 import { useLocalSessionsSummary } from "../hooks/use-local-home"
 import { useLocalSessionFacets } from "../hooks/use-local-sessions"
 import {
+	useLocalSessionAttributeBreakdown,
 	useLocalWebBreakdowns,
 	useLocalWebPages,
 	useLocalWebPageviewsTimeseries,
@@ -63,6 +65,28 @@ const DEFAULT_UTM_DIMENSION: UtmDimension = "utmSource"
 const ANALYTICS_BLOCK_HINT =
 	"Not recorded. Entry and exit paths come from the session's analytics block, which the browser SDK writes only when it is tracking a visitor."
 
+/**
+ * The two geography dimensions below Country, as OpenTelemetry names them.
+ *
+ * `Country` is a `session_replays` column the ingest gateway fills from one
+ * edge header; region and city are not columns at all — the ingest sidecar
+ * writes them into the session's `ResourceAttributes` under these keys, so each
+ * card is its own query rather than another branch of the facet union.
+ *
+ * Regions carry their country: `TX` and `NRW` are ISO 3166-2 subdivision codes,
+ * unique only within a country, and the builder pairs them into `US-TX` on the
+ * same scan.
+ */
+const GEO_REGION = { key: "geo.region.iso_code", qualifierKey: "geo.country.iso_code" } as const
+const GEO_CITY = { key: "geo.locality.name" } as const
+
+/**
+ * Both keys come from the same place — the edge's visitor location headers —
+ * so an empty Regions card and an empty Cities card have the same one cause and
+ * say so identically.
+ */
+const GEO_HEADER_HINT = "Enable Cloudflare's visitor location headers on the ingest hostname."
+
 /** Clamps a hand-edited `utm` param to one of the three. */
 export function parseUtmDimension(raw: string | null | undefined): UtmDimension {
 	return UTM_DIMENSIONS.find((dimension) => dimension.key === raw)?.key ?? DEFAULT_UTM_DIMENSION
@@ -85,6 +109,8 @@ export function WebAnalyticsPanel({ range, utm, onUtmChange }: WebAnalyticsPanel
 	const pageviewsTimeseries = useLocalWebPageviewsTimeseries(range)
 	const pages = useLocalWebPages(range)
 	const breakdowns = useLocalWebBreakdowns(range)
+	const regions = useLocalSessionAttributeBreakdown(range, GEO_REGION)
+	const cities = useLocalSessionAttributeBreakdown(range, GEO_CITY)
 
 	const sessionPoints = sessionsTimeseries.data ?? []
 	const pageviewPoints = pageviewsTimeseries.data ?? []
@@ -106,6 +132,8 @@ export function WebAnalyticsPanel({ range, utm, onUtmChange }: WebAnalyticsPanel
 		() => withShares((pages.data ?? []).map((page) => ({ name: page.pagePath, count: page.pageViews }))),
 		[pages.data],
 	)
+	const regionRows = useMemo(() => withShares(regions.data ?? []), [regions.data])
+	const cityRows = useMemo(() => withShares(cities.data ?? []), [cities.data])
 
 	// Carry the range onto every outbound link, exactly as Home does: the
 	// sessions list defaults to 30 days and this tab may be showing one hour, so
@@ -311,6 +339,24 @@ export function WebAnalyticsPanel({ range, utm, onUtmChange }: WebAnalyticsPanel
 						format={countryLabel}
 						empty="No geo data. Country is resolved at the ingest gateway from an edge header, which local mode does not set."
 					/>
+					{/* Region and city ride their own queries, so they carry their own
+					    pending and error states rather than the union's. */}
+					<BreakdownCard
+						title="Regions"
+						rows={regionRows}
+						pending={regions.isPending}
+						error={regions.isError ? regions.error : undefined}
+						onRetry={() => regions.refetch()}
+						empty={`No region data. ${GEO_HEADER_HINT}`}
+					/>
+					<BreakdownCard
+						title="Cities"
+						rows={cityRows}
+						pending={cities.isPending}
+						error={cities.isError ? cities.error : undefined}
+						onRetry={() => cities.refetch()}
+						empty={`No city data. ${GEO_HEADER_HINT}`}
+					/>
 				</div>
 			)}
 		</section>
@@ -385,6 +431,8 @@ function BreakdownCard({
 	rows,
 	pending,
 	empty,
+	error,
+	onRetry,
 	format,
 	onRowClick,
 	action,
@@ -395,6 +443,13 @@ function BreakdownCard({
 	rows: ReadonlyArray<BreakdownRow>
 	pending: boolean
 	empty: string
+	/**
+	 * Set when this card has its own query and that query failed. Cards cut from
+	 * the facet union leave it unset — one failed union is one error above the
+	 * grid, not nine identical ones inside it.
+	 */
+	error?: unknown
+	onRetry?: () => void
 	format?: (value: string) => string
 	/** Makes each row a link into the sessions list, filtered on this value. */
 	onRowClick?: (name: string) => void
@@ -402,7 +457,12 @@ function BreakdownCard({
 }) {
 	return (
 		<Card title={title} action={action}>
-			{pending ? (
+			{/* A failed query is not an empty dimension: rendering the empty hint
+			    here would tell the reader to go and enable a header that is already
+			    on. Same rule the KPI tiles follow. */}
+			{error !== undefined ? (
+				<ErrorState label={title.toLowerCase()} error={error} onRetry={onRetry} />
+			) : pending ? (
 				<ListSkeleton rows={4} />
 			) : rows.length === 0 ? (
 				<Hint>{empty}</Hint>

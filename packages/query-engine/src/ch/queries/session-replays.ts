@@ -593,6 +593,114 @@ export function sessionReplaysFacetsQuery(
 	).format("JSON")
 }
 
+// Resource-attribute breakdown (one session-scoped map key)
+//
+// The facet union above fans out over `session_replays` *columns*; this one
+// groups by one key of the session's `ResourceAttributes` map, which is where
+// everything the ingest path knows about a session but the schema has no column
+// for ends up. The OpenTelemetry geography keys are the case it was written for
+// — `geo.region.iso_code` and `geo.locality.name` sit one level below the
+// `Country` column the facet union already lists.
+//
+// It is a query of its own rather than another branch of
+// `webAnalyticsBreakdownsQuery` because it cannot be flat. Every branch of that
+// union counts with `uniq(SessionId)` straight off the raw rows, which is
+// version-blind on purpose: the columns it reads are written identically to the
+// v1 and v2 rows of a session (see this file's header). A map key carries no
+// such guarantee — a sidecar that resolves the city only at session end writes
+// it on one version and leaves `''` on the other, and a flat `GROUP BY
+// ResourceAttributes[key]` would then list that session twice, once under its
+// city and once under the empty group. So the value is finalized per session
+// with `argMax(…, Version)` first, exactly as every other query here does, and
+// the sessions are counted in the outer aggregate.
+//
+// Sessions whose finalized value is empty are dropped rather than grouped, the
+// same rule the facet branches apply: a key nobody writes renders as an empty
+// card instead of as one giant blank row.
+
+export interface SessionResourceAttributeBreakdownOpts {
+	/** The `ResourceAttributes` key to group sessions by, e.g. `geo.locality.name`. */
+	readonly key: string
+	/**
+	 * A second key prefixed onto the value when the session carries it
+	 * (`geo.country.iso_code` + `geo.region.iso_code` → `US-TX`, `DE-NRW`).
+	 *
+	 * Region codes are ISO 3166-2 subdivisions, unique only within their
+	 * country, so `TX` on its own is a claim the data does not make. Resolving
+	 * the qualifier here is a second lookup into a map the scan is already
+	 * reading — cheaper than the round trip the UI would otherwise need to pair
+	 * the two, and it keeps the row shape `{ name, count }`.
+	 */
+	readonly qualifierKey?: string
+	/** Rows returned. Defaults to 50, the facet branches' own limit. */
+	readonly limit?: number
+}
+
+export interface SessionResourceAttributeBreakdownOutput {
+	readonly name: string
+	readonly count: number
+}
+
+// Return type annotated, not inferred: the qualified and unqualified forms are
+// structurally different queries over structurally different subqueries, and TS
+// otherwise infers a union that won't unify at the compile call site. Same
+// reason as sessionReplaysListQuery above.
+export function sessionResourceAttributeBreakdownQuery(
+	opts: SessionResourceAttributeBreakdownOpts,
+): CHQuery<any, SessionResourceAttributeBreakdownOutput, any> {
+	const limit = opts.limit ?? 50
+	const { qualifierKey } = opts
+
+	// The window is the only filter: this is an overview card, not a sidebar
+	// facet, so there is no selection for a branch to exclude. StartTime is the
+	// version-invariant column the table partitions on.
+	const sessionWindow = ($: ColumnAccessor<typeof SessionReplays.columns>) => [
+		$.OrgId.eq(param.string("orgId")),
+		$.StartTime.gte(param.dateTimeString("startTime")),
+		$.StartTime.lte(param.dateTimeString("endTime")),
+	]
+
+	if (qualifierKey === undefined) {
+		const perSession = from(SessionReplays)
+			.select(($) => ({
+				sessionId: $.SessionId,
+				value: argMax($.ResourceAttributes.get(opts.key), $.Version),
+			}))
+			.where(sessionWindow)
+			.groupBy("sessionId")
+
+		return fromQuery(perSession, "sessions")
+			.select(($) => ({ name: $.value, count: CH.count() }))
+			.where(($) => [$.value.neq("")])
+			.groupBy("name")
+			.orderBy(["count", "desc"])
+			.limit(limit)
+			.format("JSON")
+	}
+
+	const perSession = from(SessionReplays)
+		.select(($) => ({
+			sessionId: $.SessionId,
+			value: argMax($.ResourceAttributes.get(opts.key), $.Version),
+			qualifier: argMax($.ResourceAttributes.get(qualifierKey), $.Version),
+		}))
+		.where(sessionWindow)
+		.groupBy("sessionId")
+
+	return fromQuery(perSession, "sessions")
+		.select(($) => ({
+			// A session with the region but not the country keeps the bare code
+			// rather than being dropped or prefixed with a blank.
+			name: CH.if_($.qualifier.neq(""), CH.concat($.qualifier, "-", $.value), $.value),
+			count: CH.count(),
+		}))
+		.where(($) => [$.value.neq("")])
+		.groupBy("name")
+		.orderBy(["count", "desc"])
+		.limit(limit)
+		.format("JSON")
+}
+
 // Single session detail
 //
 // (OrgId, SessionId) is the full sort-key prefix, so this is an O(log N)

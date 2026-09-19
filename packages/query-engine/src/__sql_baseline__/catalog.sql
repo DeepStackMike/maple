@@ -3367,6 +3367,43 @@ SELECT
         OFFSET 0
         FORMAT JSON
 
+-- builder:session-replays:sessionResourceAttributeBreakdownQuery:default  [c8084ddc]
+SELECT
+          value AS name,
+          count() AS count
+        FROM (SELECT
+          SessionId AS sessionId,
+          argMax(ResourceAttributes['geo.locality.name'], Version) AS value
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+        GROUP BY sessionId) AS sessions
+        WHERE value != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+        FORMAT JSON
+
+-- builder:session-replays:sessionResourceAttributeBreakdownQuery:qualified  [787b3f99]
+SELECT
+          if(qualifier != '', concat(qualifier, '-', value), value) AS name,
+          count() AS count
+        FROM (SELECT
+          SessionId AS sessionId,
+          argMax(ResourceAttributes['geo.region.iso_code'], Version) AS value,
+          argMax(ResourceAttributes['geo.country.iso_code'], Version) AS qualifier
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+        GROUP BY sessionId) AS sessions
+        WHERE value != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+        FORMAT JSON
+
 -- builder:session-replays:sessionsForTraceQuery:default  [279e957f]
 SELECT
           SessionId AS sessionId,

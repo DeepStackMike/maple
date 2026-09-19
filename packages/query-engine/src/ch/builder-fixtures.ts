@@ -402,6 +402,33 @@ export const builderFixtures: ReadonlyArray<BuilderFixture> = [
 			),
 	},
 	{
+		// apps/local-ui web analytics — the Cities card. One map key, no qualifier.
+		module: "session-replays",
+		name: "sessionResourceAttributeBreakdownQuery",
+		label: "default",
+		compile: () =>
+			CH.compileUnsafe(
+				CH.sessionResourceAttributeBreakdownQuery({ key: "geo.locality.name", limit: 50 }),
+				window,
+			),
+	},
+	{
+		// The Regions card: a second map lookup and the `concat` branch, which is
+		// a whole other SQL shape the unqualified fixture never reaches.
+		module: "session-replays",
+		name: "sessionResourceAttributeBreakdownQuery",
+		label: "qualified",
+		compile: () =>
+			CH.compileUnsafe(
+				CH.sessionResourceAttributeBreakdownQuery({
+					key: "geo.region.iso_code",
+					qualifierKey: "geo.country.iso_code",
+					limit: 50,
+				}),
+				window,
+			),
+	},
+	{
 		module: "session-replays",
 		name: "getSessionReplayQuery",
 		label: "default",

@@ -124,6 +124,7 @@ export {
 export {
 	sessionReplaysListQuery,
 	sessionReplaysFacetsQuery,
+	sessionResourceAttributeBreakdownQuery,
 	getSessionReplayQuery,
 	sessionReplayChunkIndexQuery,
 	sessionReplayEventsQuery,
@@ -133,6 +134,8 @@ export {
 	type SessionReplaysListOutput,
 	type SessionReplaysFacetsOpts,
 	type SessionReplaysFacetsOutput,
+	type SessionResourceAttributeBreakdownOpts,
+	type SessionResourceAttributeBreakdownOutput,
 	type SessionReplayDetailOutput,
 	type SessionReplayChunkIndexOpts,
 	type SessionReplayChunkIndexOutput,

@@ -4,6 +4,7 @@ import {
 	getSessionReplayQuery,
 	sessionReplaysFacetsQuery,
 	sessionReplaysListQuery,
+	sessionResourceAttributeBreakdownQuery,
 	sessionReplayChunkIndexQuery,
 	sessionReplayEventsQuery,
 	sessionsForTraceQuery,
@@ -508,5 +509,62 @@ describe("sessionReplaysFacetsQuery duration distribution", () => {
 	it("never reads session_events — active time has no distribution branch", () => {
 		const { sql } = compileUnionUnsafe(sessionReplaysFacetsQuery({}), { ...baseParams, ...WINDOW })
 		expect(sql).not.toContain("session_events")
+	})
+})
+
+// The Analytics tab's Regions and Cities cards. Geography finer than the
+// `Country` column arrives in the session's ResourceAttributes map, which is
+// per-row rather than version-invariant — so the finalize-then-count shape is
+// the whole point of the query and the thing worth pinning.
+
+describe("sessionResourceAttributeBreakdownQuery", () => {
+	it("finalizes the key per session before counting sessions", () => {
+		const q = sessionResourceAttributeBreakdownQuery({ key: "geo.locality.name" })
+		const { sql } = compileUnsafe(q, { ...baseParams, ...WINDOW })
+		expect(sql).toContain("argMax(ResourceAttributes['geo.locality.name'], Version) AS value")
+		expect(sql).toContain("GROUP BY sessionId")
+		// count() over the finalized rows — one row per session, so no uniq() and
+		// no way for an un-merged v1/v2 pair to weight a value twice.
+		expect(sql).toContain("count() AS count")
+		expect(sql).toContain("ORDER BY count DESC")
+	})
+
+	it("scopes to the org and bounds the window on StartTime", () => {
+		const q = sessionResourceAttributeBreakdownQuery({ key: "geo.locality.name" })
+		const { sql } = compileUnsafe(q, { ...baseParams, ...WINDOW })
+		expect(sql).toContain("OrgId = 'org_1'")
+		expect(sql).toContain("StartTime >= '2026-06-24 04:00:00'")
+		expect(sql).toContain("StartTime <= '2026-06-25 06:00:00'")
+	})
+
+	// Dropped rather than grouped: a key nobody writes must render as an empty
+	// card, not as one blank row carrying every session in the window.
+	it("excludes sessions whose finalized value is empty", () => {
+		const q = sessionResourceAttributeBreakdownQuery({ key: "geo.locality.name" })
+		const { sql } = compileUnsafe(q, { ...baseParams, ...WINDOW })
+		expect(sql).toContain("WHERE value != ''")
+	})
+
+	it("prefixes the qualifier key when one is given, keeping the bare value without it", () => {
+		const q = sessionResourceAttributeBreakdownQuery({
+			key: "geo.region.iso_code",
+			qualifierKey: "geo.country.iso_code",
+		})
+		const { sql } = compileUnsafe(q, { ...baseParams, ...WINDOW })
+		expect(sql).toContain("argMax(ResourceAttributes['geo.country.iso_code'], Version) AS qualifier")
+		expect(sql).toContain("if(qualifier != '', concat(qualifier, '-', value), value) AS name")
+	})
+
+	it("reads only the requested key when no qualifier is given", () => {
+		const q = sessionResourceAttributeBreakdownQuery({ key: "geo.region.iso_code" })
+		const { sql } = compileUnsafe(q, { ...baseParams, ...WINDOW })
+		expect(sql).not.toContain("qualifier")
+		expect(sql).toContain("value AS name")
+	})
+
+	it("honours the row limit", () => {
+		const q = sessionResourceAttributeBreakdownQuery({ key: "geo.locality.name", limit: 12 })
+		const { sql } = compileUnsafe(q, { ...baseParams, ...WINDOW })
+		expect(sql).toContain("LIMIT 12")
 	})
 })
