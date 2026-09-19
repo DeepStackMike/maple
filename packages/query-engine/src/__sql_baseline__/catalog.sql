@@ -1636,6 +1636,45 @@ SELECT
         ORDER BY bucket ASC
         FORMAT JSON
 
+-- builder:service-catalog-versions:serviceCatalogVersionsQuery:default  [3ab90f18]
+SELECT
+          ServiceName AS serviceName,
+          coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) AS environment,
+          ResourceAttributes['service.version'] AS version,
+          count() AS spanCount,
+          toString(min(Timestamp)) AS firstSeen,
+          toString(max(Timestamp)) AS lastSeen
+        FROM traces
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= toDateTime('2026-01-01 10:30:00')
+          AND Timestamp < toDateTime('2026-01-03 14:15:00')
+          AND IsEntryPoint = 1
+          AND ResourceAttributes['service.version'] != ''
+        GROUP BY serviceName, environment, version
+        ORDER BY lastSeen DESC, spanCount DESC
+        LIMIT 500
+        FORMAT JSON
+
+-- builder:service-catalog-versions:serviceCatalogVersionsQuery:single-service  [d91d200b]
+SELECT
+          ServiceName AS serviceName,
+          coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) AS environment,
+          ResourceAttributes['service.version'] AS version,
+          count() AS spanCount,
+          toString(min(Timestamp)) AS firstSeen,
+          toString(max(Timestamp)) AS lastSeen
+        FROM traces
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= toDateTime('2026-01-01 10:30:00')
+          AND Timestamp < toDateTime('2026-01-03 14:15:00')
+          AND IsEntryPoint = 1
+          AND ResourceAttributes['service.version'] != ''
+          AND ServiceName = 'api'
+        GROUP BY serviceName, environment, version
+        ORDER BY lastSeen DESC, spanCount DESC
+        LIMIT 500
+        FORMAT JSON
+
 -- builder:service-endpoints:serviceEndpointsSummaryQuery:default  [3e379104]
 SELECT
           bSpanName AS spanName,
