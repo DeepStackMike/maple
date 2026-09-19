@@ -78,7 +78,9 @@ const ANALYTICS_BLOCK_HINT =
  * unique only within a country, and the builder pairs them into `US-TX` on the
  * same scan.
  */
-const GEO_REGION = { key: "geo.region.iso_code", qualifierKey: "geo.country.iso_code" } as const
+// The plain name (Texas, San Juan) rather than the ISO 3166-2 code (TX, 127):
+// codes like PR-127 mean nothing on screen. Both are written by the sidecar.
+const GEO_REGION = { key: "geo.region.name", qualifierKey: "geo.country.iso_code" } as const
 const GEO_CITY = { key: "geo.locality.name" } as const
 
 /**
