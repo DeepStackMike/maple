@@ -20,6 +20,7 @@
 		"effect": "catalog:effect",
 		"react": "catalog:react",
 		"react-dom": "catalog:react",
+		"react-simple-maps": "^5.0.5",
 		"sugar-high": "^1.2.1"
 	},
 	"devDependencies": {
