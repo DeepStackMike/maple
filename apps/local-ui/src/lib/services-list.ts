@@ -235,6 +235,9 @@ export function formatThroughput(rate: number): string {
 		return `${(rate / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 })}k/s`
 	}
 	if (rate >= 1) return `${rate.toLocaleString(undefined, { maximumFractionDigits: 1 })}/s`
+	// A trickle (a few spans an hour) rounds to "0/s", which reads as dead. Say
+	// "less than" instead, matching the service map's rate labels.
+	if (rate > 0 && rate < 0.0005) return "<0.001/s"
 	return `${rate.toLocaleString(undefined, { maximumFractionDigits: 3 })}/s`
 }
 
