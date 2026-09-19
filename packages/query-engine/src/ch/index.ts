@@ -262,6 +262,13 @@ export {
 	type ServicesFacetsOutput,
 } from "./queries/services"
 
+// Queries — Service version catalog (raw `traces`; see the module header)
+export {
+	serviceCatalogVersionsQuery,
+	type ServiceCatalogVersionsOpts,
+	type ServiceCatalogVersionsOutput,
+} from "./queries/service-catalog-versions"
+
 // Queries — Errors
 export {
 	errorsByTypeQuery,

@@ -737,6 +737,21 @@ export const builderFixtures: ReadonlyArray<BuilderFixture> = [
 	},
 
 	{
+		// The local dashboard's version column. Raw `traces` on purpose — the
+		// overview tiers carry `CommitSha` and no `service.version`.
+		module: "service-catalog-versions",
+		name: "serviceCatalogVersionsQuery",
+		label: "default",
+		compile: () => CH.compileUnsafe(CH.serviceCatalogVersionsQuery(), window),
+	},
+	{
+		module: "service-catalog-versions",
+		name: "serviceCatalogVersionsQuery",
+		label: "single-service",
+		compile: () => CH.compileUnsafe(CH.serviceCatalogVersionsQuery({ serviceName: "api" }), window),
+	},
+
+	{
 		// Sidebar presence gate — no params beyond the org + window, so one fixture
 		// covers it. What the catalog is watching here is that it stays free of
 		// aggregates: a `count()` would read the whole match set before LIMIT 1
