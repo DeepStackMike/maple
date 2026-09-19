@@ -284,7 +284,6 @@ const EXEMPT_BUILDERS: ReadonlySet<string> = new Set([
 	"errors/errorsSummaryQuery",
 	"errors/errorDetailTracesQuery",
 	"logs/logsTimeseriesQuery",
-	"logs/logsBreakdownQuery",
 	"logs/logsCountQuery",
 	"logs/logsListQuery",
 	"logs/errorRateByServiceQuery",

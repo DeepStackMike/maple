@@ -1208,6 +1208,43 @@ export const builderFixtures: ReadonlyArray<BuilderFixture> = [
 			),
 	},
 
+	// ----- logs: the three breakdown dimensions behind the Logs filter sidebar.
+	// ----- One fixture per SQL SHAPE rather than per dimension: `source: "raw"`
+	// ----- and the default two-tier splice are different queries, and
+	// ----- `environment` is the one dimension whose grouped-on expression
+	// ----- differs between the tiers (a column on the MV, a resource-map lookup
+	// ----- on raw `logs`) — so both tables' spellings need to meet the analyzer.
+	{
+		// apps/local-ui/src/hooks/use-local-logs.ts — the severity facet.
+		module: "logs",
+		name: "logsBreakdownQuery",
+		label: "severity-splice",
+		compile: () => CH.compileUnsafe(CH.logsBreakdownQuery({ groupBy: "severity", limit: 20 }), window),
+	},
+	{
+		// apps/local-ui/src/hooks/use-local-log-services.ts — exact membership,
+		// so no rollup tier and no LIMIT.
+		module: "logs",
+		name: "logsBreakdownQuery",
+		label: "service-raw",
+		compile: () =>
+			CH.compileUnsafe(
+				CH.logsBreakdownQuery({ groupBy: "service", limit: null, source: "raw" }),
+				window,
+			),
+	},
+	{
+		// apps/local-ui/src/hooks/use-local-logs.ts — the environment facet.
+		module: "logs",
+		name: "logsBreakdownQuery",
+		label: "environment-raw",
+		compile: () =>
+			CH.compileUnsafe(
+				CH.logsBreakdownQuery({ groupBy: "environment", limit: null, source: "raw" }),
+				window,
+			),
+	},
+
 	// ----- activity: the only deliberately cross-org builders in the product.
 	// ----- Fixtured so the catalog's tenant-scope test actually exercises the
 	// ----- cross-org branch, rather than asserting a rule nothing exemplifies.

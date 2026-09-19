@@ -1049,6 +1049,65 @@ SELECT
         ORDER BY bucket ASC
         FORMAT JSON
 
+-- builder:logs:logsBreakdownQuery:environment-raw  [a56f43db]
+SELECT
+          coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) AS name,
+          count() AS count
+        FROM logs
+        WHERE OrgId = 'org_sql_catalog'
+          AND TimestampTime >= '2026-01-01 10:30:00'
+          AND TimestampTime <= '2026-01-03 14:15:00'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+        GROUP BY name
+        ORDER BY count DESC
+        FORMAT JSON
+
+-- builder:logs:logsBreakdownQuery:service-raw  [7068370d]
+SELECT
+          ServiceName AS name,
+          count() AS count
+        FROM logs
+        WHERE OrgId = 'org_sql_catalog'
+          AND TimestampTime >= '2026-01-01 10:30:00'
+          AND TimestampTime <= '2026-01-03 14:15:00'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+        GROUP BY name
+        ORDER BY count DESC
+        FORMAT JSON
+
+-- builder:logs:logsBreakdownQuery:severity-splice  [c2b83989]
+SELECT
+          name AS name,
+          sum(count) AS count
+        FROM (
+SELECT
+          SeverityText AS name,
+          count() AS count
+        FROM logs
+        WHERE OrgId = 'org_sql_catalog'
+          AND TimestampTime >= '2026-01-01 10:30:00'
+          AND TimestampTime <= '2026-01-03 14:15:00'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND (TimestampTime < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR TimestampTime >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
+        GROUP BY name
+UNION ALL
+SELECT
+          SeverityText AS name,
+          sum(Count) AS count
+        FROM logs_aggregates_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+        GROUP BY name
+) AS breakdown
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 20
+        FORMAT JSON
+
 -- builder:product-events:productEventNamesQuery:default  [4e7d15bf]
 SELECT
           EventName AS eventName,

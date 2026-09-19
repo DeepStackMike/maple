@@ -319,6 +319,32 @@ describe("logsBreakdownQuery", () => {
 		expect(sql).toContain("SeverityText AS name")
 	})
 
+	// The deployment environment is the one breakdown dimension the two tiers do
+	// not spell alike: the MV stores it as a column, raw `logs` stores the
+	// resource map it was derived from. Both branches of one spliced query, so
+	// each assertion below is about a different table in the same SQL.
+	it("groups by the MV's DeploymentEnv column and by the raw resource map, in one splice", () => {
+		const { sql } = compileUnsafe(logsBreakdownQuery({ groupBy: "environment" }), baseParams)
+		expect(sql).toContain("UNION ALL")
+		expect(sql).toContain("DeploymentEnv AS name")
+		expect(sql).toContain(
+			"coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) AS name",
+		)
+	})
+
+	it("reads environments off raw logs alone when an exact window is demanded", () => {
+		const { sql } = compileUnsafe(
+			logsBreakdownQuery({ groupBy: "environment", limit: null, source: "raw" }),
+			baseParams,
+		)
+		expect(sql).toContain("FROM logs")
+		expect(sql).not.toContain("logs_aggregates_hourly")
+		expect(sql).toContain(
+			"coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) AS name",
+		)
+		expect(sql).not.toContain("LIMIT")
+	})
+
 	it("applies optional filters", () => {
 		const q = logsBreakdownQuery({ groupBy: "service", serviceName: "api", severity: "ERROR" })
 		const { sql } = compileUnsafe(q, baseParams)

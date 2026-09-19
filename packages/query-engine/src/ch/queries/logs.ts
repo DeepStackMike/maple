@@ -400,7 +400,7 @@ function buildLogsGroupNameExpr(
 // Breakdown query
 
 export interface LogsBreakdownOpts extends LogsQueryOpts {
-	groupBy: "service" | "severity"
+	groupBy: "service" | "severity" | "environment"
 	/** Maximum groups to return. Pass `null` when complete membership is required. */
 	limit?: number | null
 	/** Force an exact raw-log scan when aggregate retention is not semantically equivalent. */
@@ -412,18 +412,41 @@ export interface LogsBreakdownOutput {
 	readonly count: number
 }
 
-function logsBreakdownName(
-	$: { ServiceName: CH.Expr<string>; SeverityText: CH.Expr<string> },
+/**
+ * The grouped-on expression, per table.
+ *
+ * Service and severity are plain columns on both `logs` and
+ * `logs_aggregates_hourly`, spelled identically — which is why one structural
+ * helper served both paths for as long as those were the only two dimensions.
+ * Deployment environment is not: the MV carries it as the `DeploymentEnv`
+ * column, and raw `logs` has only the resource map it was derived from, where
+ * it is the `deployment.environment.name` / `deployment.environment` rename
+ * pair that `deploymentEnvExpr` collapses. Two functions rather than one
+ * widened structural type, so neither table can be handed the other's spelling.
+ */
+function rawBreakdownName(
+	$: ColumnAccessor<typeof Logs.columns>,
 	groupBy: LogsBreakdownOpts["groupBy"],
 ): CH.Expr<string> {
-	return groupBy === "severity" ? $.SeverityText : $.ServiceName
+	if (groupBy === "severity") return $.SeverityText
+	if (groupBy === "environment") return deploymentEnvExpr($.ResourceAttributes)
+	return $.ServiceName
+}
+
+function mvBreakdownName(
+	$: ColumnAccessor<typeof LogsAggregatesHourly.columns>,
+	groupBy: LogsBreakdownOpts["groupBy"],
+): CH.Expr<string> {
+	if (groupBy === "severity") return $.SeverityText
+	if (groupBy === "environment") return $.DeploymentEnv
+	return $.ServiceName
 }
 
 export function logsBreakdownQuery(opts: LogsBreakdownOpts): CHQuery<ColumnDefs, LogsBreakdownOutput, {}> {
 	if (opts.source === "raw" || !canUseLogsAggregateInterior(opts)) {
 		const raw = from(Logs)
 			.select(($) => ({
-				name: logsBreakdownName($, opts.groupBy),
+				name: rawBreakdownName($, opts.groupBy),
 				count: CH.count(),
 			}))
 			.where(($) => [
@@ -445,7 +468,7 @@ export function logsBreakdownQuery(opts: LogsBreakdownOpts): CHQuery<ColumnDefs,
 
 	const rawEdges = from(Logs)
 		.select(($) => ({
-			name: logsBreakdownName($, opts.groupBy),
+			name: rawBreakdownName($, opts.groupBy),
 			count: CH.count(),
 		}))
 		.where(($) => [
@@ -464,7 +487,7 @@ export function logsBreakdownQuery(opts: LogsBreakdownOpts): CHQuery<ColumnDefs,
 
 	const mvInterior = from(LogsAggregatesHourly)
 		.select(($) => ({
-			name: logsBreakdownName($, opts.groupBy),
+			name: mvBreakdownName($, opts.groupBy),
 			count: CH.sum($.Count),
 		}))
 		.where(($) => [
