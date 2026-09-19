@@ -1194,6 +1194,16 @@ export const builderFixtures: ReadonlyArray<BuilderFixture> = [
 			),
 	},
 
+	{
+		// The waterfall's log markers: one grouped scan per trace, so a 200-span
+		// trace decorates every row without 200 per-span queries. Reached only
+		// from apps/local-ui's `useLocalTraceLogCounts`, never through a pipe.
+		module: "logs",
+		name: "traceSpanLogCountsQuery",
+		label: "default",
+		compile: () => CH.compileUnsafe(CH.traceSpanLogCountsQuery({ traceId: TRACE_ID }), window),
+	},
+
 	// Trace-list enrichment fixtures.
 	{
 		module: "traces",

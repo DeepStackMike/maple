@@ -1,11 +1,12 @@
-import { useState } from "react"
+import { useCallback, useState } from "react"
 import { TraceViewTabs } from "@maple/ui/components/traces/trace-view-tabs"
 import { Button } from "@maple/ui/components/ui/button"
 import { Spinner } from "@maple/ui/components/ui/spinner"
 import { ArrowLeftIcon } from "@maple/ui/components/icons"
 import type { SpanNode } from "@maple/ui/lib/types"
 import { useLocalTraceDetail } from "../hooks/use-local-trace-detail"
-import { SpanDetailPanel } from "../components/span-detail-panel"
+import { useLocalTraceLogCounts } from "../hooks/use-local-span-logs"
+import { SpanDetailPanel, type SpanPanelTab } from "../components/span-detail-panel"
 import { RefreshButton } from "../components/toolbar"
 
 interface TraceDetailViewProps {
@@ -16,6 +17,19 @@ interface TraceDetailViewProps {
 export function TraceDetailView({ traceId, onBack }: TraceDetailViewProps) {
 	const { data, isPending, isError, error } = useLocalTraceDetail(traceId)
 	const [selectedSpan, setSelectedSpan] = useState<SpanNode | undefined>(undefined)
+	const [panelTab, setPanelTab] = useState<SpanPanelTab>("details")
+
+	// One query for the trace, not one per span: which rows have logs is a
+	// property of the whole waterfall, wanted before anything is clicked.
+	const logCounts = useLocalTraceLogCounts(traceId)
+
+	// A marker click says both things at once — this span, and its logs. Picking
+	// a row the ordinary way leaves the tab alone, so a reader working through a
+	// trace log-first keeps the logs tab across selections.
+	const openSpanLogs = useCallback((span: SpanNode) => {
+		setSelectedSpan(span)
+		setPanelTab("logs")
+	}, [])
 
 	return (
 		<div className="flex h-full flex-col">
@@ -54,10 +68,17 @@ export function TraceDetailView({ traceId, onBack }: TraceDetailViewProps) {
 								services={data.services}
 								selectedSpanId={selectedSpan?.spanId}
 								onSelectSpan={setSelectedSpan}
+								spanLogMarkers={logCounts.data}
+								onOpenSpanLogs={openSpanLogs}
 							/>
 						</div>
 						{selectedSpan ? (
-							<SpanDetailPanel span={selectedSpan} onClose={() => setSelectedSpan(undefined)} />
+							<SpanDetailPanel
+								span={selectedSpan}
+								tab={panelTab}
+								onTabChange={setPanelTab}
+								onClose={() => setSelectedSpan(undefined)}
+							/>
 						) : null}
 					</div>
 				)}

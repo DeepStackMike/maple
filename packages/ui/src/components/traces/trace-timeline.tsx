@@ -59,6 +59,8 @@ export function TraceTimeline() {
 		onSelectSpan,
 		colorBy,
 		setColorBy,
+		spanLogMarkers,
+		onOpenSpanLogs,
 	} = useTraceView()
 	// Surfaced in the toolbar: a correction the user cannot see in the bars themselves
 	// should still be visible as a fact about the trace.
@@ -150,6 +152,21 @@ export function TraceTimeline() {
 			onSelectSpan(bars[idx].span)
 		},
 		[bars, barIndexBySpanId, onSelectSpan],
+	)
+
+	// Keyed by span id like every other row callback, so the row stays memoized:
+	// an inline `() => onOpenSpanLogs(bar.span)` would be a new function per row
+	// per render, which on a wide trace is the whole list re-rendering on a hover.
+	const handleOpenLogs = React.useMemo(
+		() =>
+			onOpenSpanLogs
+				? (spanId: string) => {
+						const idx = barIndexBySpanId.get(spanId)
+						if (idx === undefined) return
+						onOpenSpanLogs(bars[idx].span)
+					}
+				: undefined,
+		[bars, barIndexBySpanId, onOpenSpanLogs],
 	)
 
 	const handleZoomSpan = React.useCallback(
@@ -633,6 +650,8 @@ export function TraceTimeline() {
 									dimmed={isSearchActive && !matched}
 									matched={matched}
 									showService={services.length > 1}
+									logMarker={spanLogMarkers?.get(id)}
+									onOpenLogs={handleOpenLogs}
 									onSelect={handleSelect}
 									onToggleCollapse={handleToggleCollapse}
 									onZoomSpan={handleZoomSpan}

@@ -12,6 +12,8 @@ import { getHttpInfo, HTTP_METHOD_COLORS } from "../../lib/http"
 import { getCloudPlatform, outcomeBadgeStyle } from "../../lib/cloud-platforms"
 import { getSpanKindLabel, getSpanStatusBadgeClass } from "../../lib/span-kind"
 import { PixelDurationBar } from "./pixel-duration-bar"
+import { SpanLogMarkerBadge } from "./span-log-marker"
+import type { SpanLogMarker } from "./trace-view-context"
 import { ServiceDot } from "../service-dot"
 import { countDescendants } from "./auto-collapse"
 import type { SpanNode } from "../../lib/types"
@@ -24,6 +26,10 @@ interface SpanRowProps {
 	onToggle: (span: SpanNode) => void
 	isSelected?: boolean
 	onSelect?: (span: SpanNode) => void
+	/** Log counts for this span, when the caller has them. */
+	logMarker?: SpanLogMarker
+	/** Clicking the log marker. Without it the marker is inert. */
+	onOpenLogs?: (span: SpanNode) => void
 }
 
 function SpanRowImpl({
@@ -34,6 +40,8 @@ function SpanRowImpl({
 	onToggle,
 	isSelected,
 	onSelect,
+	logMarker,
+	onOpenLogs,
 }: SpanRowProps) {
 	const hasChildren = span.children.length > 0
 
@@ -205,6 +213,14 @@ function SpanRowImpl({
 						+{countDescendants(span)}
 					</span>
 				)}
+
+				{/* After the name, not before it: the span's identity is what the eye
+				    scans down this column, and a badge ahead of it would push every
+				    name to a different x. */}
+				<SpanLogMarkerBadge
+					marker={logMarker}
+					onOpen={onOpenLogs ? () => onOpenLogs(span) : undefined}
+				/>
 			</div>
 
 			{/* Right section: Duration bar + Duration text + Status (fixed widths, anchored right) */}

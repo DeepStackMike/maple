@@ -26,9 +26,20 @@ import type { LocalLog } from "../lib/log-shape"
 import { LogDetailSheet } from "./log-detail-sheet"
 import { StackTrace } from "./stack-trace"
 
+/** The panel's two tabs, named so a caller can open it on one. */
+export type SpanPanelTab = "details" | "logs"
+
 interface SpanDetailPanelProps {
 	span: SpanNode
 	onClose: () => void
+	/**
+	 * Which tab is showing. Controlled from the view rather than held here
+	 * because opening the panel *on the logs* is something the waterfall asks
+	 * for — a log marker's click says which span and which tab in one gesture,
+	 * and an uncontrolled `defaultValue` cannot hear the second half.
+	 */
+	tab: SpanPanelTab
+	onTabChange: (tab: SpanPanelTab) => void
 }
 
 /**
@@ -73,7 +84,7 @@ function withoutKeys(attributes: Record<string, string>, keys: ReadonlyArray<str
 	return rest
 }
 
-export function SpanDetailPanel({ span, onClose }: SpanDetailPanelProps) {
+export function SpanDetailPanel({ span, onClose, tab, onTabChange }: SpanDetailPanelProps) {
 	const cacheInfo = getCacheInfo(span.spanAttributes)
 	const statusStyle = getSpanStatusBadgeClass(span.statusCode)
 	const kindLabel = getSpanKindLabel(span.spanKind)
@@ -162,7 +173,11 @@ export function SpanDetailPanel({ span, onClose }: SpanDetailPanelProps) {
 			)}
 
 			{/* Tabs */}
-			<Tabs defaultValue="details" className="flex min-h-0 flex-1 flex-col">
+			<Tabs
+				value={tab}
+				onValueChange={(next) => onTabChange(next as SpanPanelTab)}
+				className="flex min-h-0 flex-1 flex-col"
+			>
 				<TabsList variant="underline" className="shrink-0 px-4">
 					<TabsTrigger value="details">
 						<CircleInfoIcon size={14} /> Details

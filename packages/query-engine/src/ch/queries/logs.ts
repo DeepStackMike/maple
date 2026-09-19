@@ -665,6 +665,74 @@ export function logsListQuery(opts: LogsListOpts) {
 	return query
 }
 
+// Per-span log counts for one trace
+
+/**
+ * The OTel severity number at which a record is an error. 1–4 TRACE, 5–8 DEBUG,
+ * 9–12 INFO, 13–16 WARN, 17–20 ERROR, 21–24 FATAL — so `>= 17` is "error or
+ * worse" and needs no upper bound.
+ */
+const ERROR_SEVERITY_NUMBER = 17
+
+export interface TraceSpanLogCountsOpts {
+	readonly traceId: string
+}
+
+export interface TraceSpanLogCountsOutput {
+	readonly spanId: string
+	readonly logCount: number
+	readonly errorLogCount: number
+}
+
+/**
+ * How many logs each span of one trace emitted, and how many of those were
+ * error level.
+ *
+ * Keyed on the trace, not the span, on purpose: a waterfall marking which rows
+ * have logs needs an answer for every span at once, and asking per span turns
+ * one scan into one per row — on a 200-span trace that is 200 round trips to
+ * decorate a list the reader has not clicked yet. The `(TraceId)` bloom-filter
+ * index makes the single scan cheap enough that the count arrives with the
+ * hierarchy rather than after it.
+ *
+ * **Error level is read from both spellings.** `SeverityNumber` is the
+ * normative OTel field and what {@link ERROR_SEVERITY_NUMBER} compares; but an
+ * exporter that fills only `severity_text` leaves the number at 0, and a log
+ * that says `ERROR` while counting as fine would make the badge quietly wrong
+ * in exactly the case it exists for. `errorRateByServiceQuery` matches the same
+ * two texts, so the marker and the Logs tab's error rate agree on what an error
+ * log is.
+ *
+ * Spans with no logs are absent from the result — the caller renders no badge
+ * for a span it does not find, which is also what it renders for a count of 0.
+ */
+export function traceSpanLogCountsQuery(opts: TraceSpanLogCountsOpts) {
+	return from(Logs)
+		.select(($) => ({
+			spanId: $.SpanId,
+			logCount: CH.count(),
+			errorLogCount: CH.countIf(
+				$.SeverityNumber.gte(ERROR_SEVERITY_NUMBER).or(CH.inList($.SeverityText, ["ERROR", "FATAL"])),
+			),
+		}))
+		.where(($) => [
+			$.OrgId.eq(param.string("orgId")),
+			// TimestampTime is the partition key; bounding it prunes partitions
+			// before the TraceId index is consulted.
+			$.TimestampTime.gte(param.dateTimeSeconds("startTime")),
+			$.TimestampTime.lte(param.dateTimeSeconds("endTime")),
+			$.Timestamp.gte(param.dateTimeString("startTime")),
+			$.Timestamp.lte(param.dateTimeString("endTime")),
+			$.TraceId.eq(opts.traceId),
+			// A log correlated to the trace but not to a span carries an empty
+			// SpanId; it belongs to no waterfall row, and grouping it would
+			// produce a bucket no row can ever be matched against.
+			$.SpanId.neq(""),
+		])
+		.groupBy("spanId")
+		.format("JSON")
+}
+
 // Single log lookup (exact-match by composite key)
 //
 // Logs have no native primary id; the public identity combines the indexed
