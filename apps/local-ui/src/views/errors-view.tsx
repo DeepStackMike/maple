@@ -1,9 +1,12 @@
 import { useState } from "react"
 import { CircleWarningIcon, ChevronDownIcon } from "@maple/ui/components/icons"
+import { Badge } from "@maple/ui/components/ui/badge"
 import { Spinner } from "@maple/ui/components/ui/spinner"
-import { formatDuration, formatNumber } from "@maple/ui/lib/format"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@maple/ui/components/ui/table"
+import { formatDuration, formatErrorRate, formatNumber } from "@maple/ui/lib/format"
 import { cn } from "@maple/ui/lib/utils"
 import {
+	FilterSection,
 	SearchableFilterSection,
 	SingleCheckboxFilter,
 	serviceColorMap,
@@ -25,7 +28,7 @@ import {
 import { useQueryParams } from "../lib/router"
 import { DEFAULT_RANGE, formatRelativeTime } from "../lib/time"
 import { PageShell } from "../components/page-shell"
-import { RefreshButton, TimeRangeSelect, Toolbar, ToolbarStat, ToolbarStats } from "../components/toolbar"
+import { RefreshButton, TimeRangeSelect, Toolbar, ToolbarStats } from "../components/toolbar"
 import { EmptyState, ErrorState, ListSkeleton } from "../components/view-states"
 import { StackTrace } from "../components/stack-trace"
 
@@ -33,30 +36,43 @@ interface ErrorsViewProps {
 	onSelectTrace: (traceId: string) => void
 }
 
+/** Columns in the "Errors by Type" table — the colSpan an expanded row has to cover. */
+const TABLE_COLUMNS = 6
+
 export function ErrorsView({ onSelectTrace }: ErrorsViewProps) {
 	const [query, setParams] = useQueryParams()
 	const range = query.get("range") || DEFAULT_RANGE
 	const service = query.get("service") || undefined
 	const env = query.get("env") || undefined
+	const errorType = query.get("type") || undefined
 	const rootOnly = query.get("root") === "1"
 
-	const filters: ErrorsFilters = { service, env, rootOnly, range }
+	const filters: ErrorsFilters = { service, env, errorType, rootOnly, range }
 	const summary = useLocalErrorsSummary(filters)
 	const byType = useLocalErrorsByType(filters)
 	const facets = useLocalErrorsFacets(filters)
-	const hasActiveFilters = !!service || !!env || rootOnly
+	const hasActiveFilters = !!service || !!env || !!errorType || rootOnly
 
 	const sidebar = (
 		<FilterSidebarFrame className="w-56 shrink-0 px-4" waiting={facets.isFetching}>
 			<FilterSidebarHeader
 				canClear={hasActiveFilters}
-				onClear={() => setParams({ service: null, env: null, root: null })}
+				onClear={() => setParams({ service: null, env: null, type: null, root: null })}
 			/>
 			<FilterSidebarBody>
+				{/*
+				 * The hosted sidebar's box, with the hosted spelling: checked means
+				 * "count an error wherever it happened", unchecked means "only the
+				 * span that ended the request". Local's default is the checked one —
+				 * a browser `captureException` and a DB driver's throw are both
+				 * non-root, and on a dev machine those are most of what there is to
+				 * look at. So `root=1` names the exception, which is also what keeps
+				 * every link that already carried it pointing at the same page.
+				 */}
 				<SingleCheckboxFilter
-					title="Root spans only"
-					checked={rootOnly}
-					onChange={(checked) => setParams({ root: checked ? "1" : null })}
+					title="All span errors"
+					checked={!rootOnly}
+					onChange={(checked) => setParams({ root: checked ? null : "1" })}
 				/>
 				<SearchableFilterSection
 					title="Service"
@@ -65,68 +81,162 @@ export function ErrorsView({ onSelectTrace }: ErrorsViewProps) {
 					onChange={(vals) => setParams({ service: vals.at(-1) ?? null })}
 					colorMap={serviceColorMap(facets.data?.services ?? [])}
 				/>
-				<SearchableFilterSection
+				<FilterSection
 					title="Environment"
 					options={facets.data?.environments ?? []}
 					selected={env ? [env] : []}
 					onChange={(vals) => setParams({ env: vals.at(-1) ?? null })}
 				/>
+				<SearchableFilterSection
+					title="Error Type"
+					options={facets.data?.errorTypes ?? []}
+					selected={errorType ? [errorType] : []}
+					onChange={(vals) => setParams({ type: vals.at(-1) ?? null })}
+				/>
 			</FilterSidebarBody>
 		</FilterSidebarFrame>
 	)
 
-	const stats = summary.data
 	const toolbar = (
 		<Toolbar>
-			<div />
+			<div className="min-w-0">
+				<h2 className="text-sm font-medium">Errors</h2>
+				<p className="truncate text-xs text-muted-foreground">
+					Monitor and analyze errors across your services
+				</p>
+			</div>
 			<ToolbarStats>
-				<ToolbarStat value={Math.round(stats?.totalErrors ?? 0)} label="errors" danger />
-				<ToolbarStat value={Math.round(stats?.affectedTracesCount ?? 0)} label="affected traces" />
-				<span className="text-sm text-muted-foreground">
-					<span className="font-medium tabular-nums text-foreground">
-						{((stats?.errorRate ?? 0) * 100).toFixed(2)}%
-					</span>{" "}
-					error rate
-				</span>
 				<RefreshButton />
 				<TimeRangeSelect value={range} onChange={(next) => setParams({ range: next })} />
 			</ToolbarStats>
 		</Toolbar>
 	)
 
+	const rows = byType.data ?? []
+
 	return (
 		<PageShell sidebar={sidebar} toolbar={toolbar}>
-			{byType.isPending ? (
-				<ListSkeleton variant="card" rows={6} />
-			) : byType.isError ? (
-				<ErrorState label="errors" error={byType.error} onRetry={() => byType.refetch()} />
-			) : (byType.data ?? []).length === 0 ? (
-				<EmptyState
-					icon={<CircleWarningIcon />}
-					title={hasActiveFilters ? "No matching errors" : "No errors recorded"}
-					hint={
-						hasActiveFilters
-							? "Try widening the time range or clearing filters."
-							: "Errors appear when spans arrive with an Error status."
-					}
-				/>
-			) : (
-				<div className="space-y-2 p-4">
-					{(byType.data ?? []).map((row) => (
-						<ErrorTypeCard
-							key={row.fingerprintHash}
-							row={row}
-							filters={filters}
-							onSelectTrace={onSelectTrace}
+			<div className="space-y-4 p-4">
+				<ErrorsKpis summary={summary.data ?? null} pending={summary.isPending} />
+
+				<section className="space-y-2">
+					<h3 className="text-sm font-medium">Errors by Type</h3>
+					{byType.isPending ? (
+						<ListSkeleton variant="card" rows={6} />
+					) : byType.isError ? (
+						<ErrorState label="errors" error={byType.error} onRetry={() => byType.refetch()} />
+					) : rows.length === 0 ? (
+						<EmptyState
+							icon={<CircleWarningIcon />}
+							title={hasActiveFilters ? "No matching errors" : "No errors recorded"}
+							hint={
+								hasActiveFilters
+									? "Try widening the time range or clearing filters."
+									: "Errors appear when spans arrive with an Error status."
+							}
 						/>
-					))}
-				</div>
-			)}
+					) : (
+						<div className="overflow-hidden rounded-md border bg-card">
+							<Table>
+								<TableHeader>
+									<TableRow>
+										<TableHead className="w-8" />
+										<TableHead>Error Type</TableHead>
+										<TableHead className="text-right">Count</TableHead>
+										<TableHead className="text-right">Affected Services</TableHead>
+										<TableHead className="text-right">Last Seen</TableHead>
+										<TableHead className="w-8" />
+									</TableRow>
+								</TableHeader>
+								<TableBody>
+									{rows.map((row) => (
+										<ErrorTypeRow
+											key={row.fingerprintHash}
+											row={row}
+											filters={filters}
+											onSelectTrace={onSelectTrace}
+										/>
+									))}
+								</TableBody>
+							</Table>
+						</div>
+					)}
+				</section>
+			</div>
 		</PageShell>
 	)
 }
 
-function ErrorTypeCard({
+/**
+ * The four numbers the hosted page leads with.
+ *
+ * All four come off one `errorsSummaryQuery` row, which is what keeps them
+ * reconcilable: the rate is this window's errors over this window's spans, not
+ * two independently-scoped counts divided in the browser.
+ */
+function ErrorsKpis({ summary, pending }: { summary: CH.ErrorsSummaryOutput | null; pending: boolean }) {
+	if (pending && !summary) {
+		return (
+			<div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+				{[0, 1, 2, 3].map((i) => (
+					<div key={i} className="h-[4.5rem] animate-pulse rounded-md border bg-muted/40" />
+				))}
+			</div>
+		)
+	}
+
+	return (
+		<div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+			<KpiCard
+				label="Total Errors"
+				value={formatNumber(Math.round(summary?.totalErrors ?? 0))}
+				hint="error spans in range"
+				danger
+			/>
+			<KpiCard
+				label="Error Rate"
+				value={formatErrorRate(summary?.errorRate ?? 0)}
+				hint={`of ${formatNumber(Math.round(summary?.totalSpans ?? 0))} spans`}
+			/>
+			<KpiCard
+				label="Affected Services"
+				value={formatNumber(Math.round(summary?.affectedServicesCount ?? 0))}
+				hint="services reporting errors"
+			/>
+			<KpiCard
+				label="Affected Traces"
+				value={formatNumber(Math.round(summary?.affectedTracesCount ?? 0))}
+				hint="traces containing an error"
+			/>
+		</div>
+	)
+}
+
+function KpiCard({
+	label,
+	value,
+	hint,
+	danger,
+}: {
+	label: string
+	value: string
+	hint: string
+	danger?: boolean
+}) {
+	return (
+		<div className="rounded-md border bg-card px-3 py-2">
+			<div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+				{label}
+			</div>
+			<div className={cn("text-lg font-semibold tabular-nums", danger && "text-destructive")}>
+				{value}
+			</div>
+			<div className="truncate text-[10px] text-muted-foreground">{hint}</div>
+		</div>
+	)
+}
+
+function ErrorTypeRow({
 	row,
 	filters,
 	onSelectTrace,
@@ -136,96 +246,122 @@ function ErrorTypeCard({
 	onSelectTrace: (traceId: string) => void
 }) {
 	const [expanded, setExpanded] = useState(false)
-	const traces = useLocalErrorTraces(expanded ? row.fingerprintHash : undefined, filters)
-	const sample = useLocalErrorSampleStack(expanded ? row.fingerprintHash : undefined, filters)
+	const toggle = () => setExpanded((prev) => !prev)
 
 	return (
-		<div className="rounded-md border bg-card">
-			<button
-				type="button"
-				onClick={() => setExpanded((prev) => !prev)}
-				className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-accent/40"
-			>
-				<CircleWarningIcon className="size-4 shrink-0 text-destructive" />
-				<span className="min-w-0 flex-1">
-					<span className="flex items-baseline gap-2">
-						<span className="truncate text-sm font-medium">
+		<>
+			<TableRow className={cn(expanded && "border-b-0 bg-accent/30")}>
+				<TableCell className="pr-0">
+					<CircleWarningIcon className="size-4 text-destructive" />
+				</TableCell>
+				<TableCell className="max-w-0">
+					<button
+						type="button"
+						onClick={toggle}
+						aria-expanded={expanded}
+						className="block w-full text-left"
+					>
+						<span className="block truncate text-sm font-medium text-primary underline-offset-2 hover:underline">
 							{row.errorLabel || "Unknown Error"}
 						</span>
-						<span className="shrink-0 text-xs text-muted-foreground">
-							{row.affectedServicesCount === 1
-								? "1 service"
-								: `${row.affectedServicesCount} services`}
-						</span>
-					</span>
-					{row.sampleMessage ? (
-						<span className="block truncate font-mono text-xs text-muted-foreground">
-							{row.sampleMessage}
-						</span>
-					) : null}
-				</span>
-				<span className="shrink-0 text-right">
-					<span className="block text-sm font-semibold tabular-nums text-destructive">
+						{row.sampleMessage ? (
+							<span className="block truncate font-mono text-xs text-muted-foreground">
+								{row.sampleMessage}
+							</span>
+						) : null}
+					</button>
+				</TableCell>
+				<TableCell className="text-right">
+					<Badge variant="error" className="tabular-nums">
 						{formatNumber(row.count)}
-					</span>
-					<span className="block text-[10px] text-muted-foreground">
-						last seen {formatRelativeTime(row.lastSeen)}
-					</span>
-				</span>
-				<ChevronDownIcon
-					className={cn(
-						"size-4 shrink-0 text-muted-foreground transition-transform",
-						expanded && "rotate-180",
-					)}
-				/>
-			</button>
+					</Badge>
+				</TableCell>
+				<TableCell className="text-right tabular-nums">
+					{formatNumber(row.affectedServicesCount)}
+				</TableCell>
+				<TableCell className="whitespace-nowrap text-right text-muted-foreground">
+					{formatRelativeTime(row.lastSeen)}
+				</TableCell>
+				<TableCell className="pl-0 text-right">
+					<button
+						type="button"
+						onClick={toggle}
+						aria-expanded={expanded}
+						aria-label={expanded ? "Collapse error" : "Expand error"}
+						className="text-muted-foreground transition-colors hover:text-foreground"
+					>
+						<ChevronDownIcon
+							className={cn("size-4 transition-transform", expanded && "rotate-180")}
+						/>
+					</button>
+				</TableCell>
+			</TableRow>
 
 			{expanded ? (
-				<div className="space-y-3 border-t px-4 py-2">
-					<SampleStack
-						data={sample.data ?? null}
-						isPending={sample.isPending}
-						fallbackLabel={row.errorLabel}
-						fallbackMessage={row.sampleMessage}
-					/>
-					{traces.isPending ? (
-						<div className="flex h-16 items-center justify-center">
-							<Spinner className="size-4" />
-						</div>
-					) : traces.isError ? (
-						<p className="py-2 text-xs text-destructive">
-							Couldn’t load traces: {String(traces.error)}
-						</p>
-					) : (traces.data ?? []).length === 0 ? (
-						<p className="py-2 text-xs text-muted-foreground">
-							No traces found for this error in the selected range.
-						</p>
-					) : (
-						<ul className="divide-y">
-							{(traces.data ?? []).map((trace) => (
-								<li key={trace.traceId}>
-									<button
-										type="button"
-										onClick={() => onSelectTrace(trace.traceId)}
-										className="flex w-full items-center gap-3 py-2 text-left text-xs transition-colors hover:text-foreground text-muted-foreground"
-									>
-										<span className="min-w-0 flex-1 truncate font-mono">
-											{trace.rootSpanName || trace.traceId}
-										</span>
-										<span className="shrink-0 tabular-nums">{trace.spanCount} spans</span>
-										<span className="shrink-0 tabular-nums">
-											{formatDuration(trace.durationMicros / 1000)}
-										</span>
-										<span className="shrink-0 tabular-nums">
-											{formatRelativeTime(trace.startTime.slice(0, 19))}
-										</span>
-									</button>
-								</li>
-							))}
-						</ul>
-					)}
-				</div>
+				<TableRow className="bg-accent/30 hover:bg-accent/30">
+					<TableCell colSpan={TABLE_COLUMNS} className="px-4 py-3">
+						<ErrorTypeDetail row={row} filters={filters} onSelectTrace={onSelectTrace} />
+					</TableCell>
+				</TableRow>
 			) : null}
+		</>
+	)
+}
+
+function ErrorTypeDetail({
+	row,
+	filters,
+	onSelectTrace,
+}: {
+	row: CH.ErrorsByTypeOutput
+	filters: ErrorsFilters
+	onSelectTrace: (traceId: string) => void
+}) {
+	const traces = useLocalErrorTraces(row.fingerprintHash, filters)
+	const sample = useLocalErrorSampleStack(row.fingerprintHash, filters)
+
+	return (
+		<div className="space-y-3">
+			<SampleStack
+				data={sample.data ?? null}
+				isPending={sample.isPending}
+				fallbackLabel={row.errorLabel}
+				fallbackMessage={row.sampleMessage}
+			/>
+			{traces.isPending ? (
+				<div className="flex h-16 items-center justify-center">
+					<Spinner className="size-4" />
+				</div>
+			) : traces.isError ? (
+				<p className="py-2 text-xs text-destructive">Couldn’t load traces: {String(traces.error)}</p>
+			) : (traces.data ?? []).length === 0 ? (
+				<p className="py-2 text-xs text-muted-foreground">
+					No traces found for this error in the selected range.
+				</p>
+			) : (
+				<ul className="divide-y">
+					{(traces.data ?? []).map((trace) => (
+						<li key={trace.traceId}>
+							<button
+								type="button"
+								onClick={() => onSelectTrace(trace.traceId)}
+								className="flex w-full items-center gap-3 py-2 text-left text-xs transition-colors hover:text-foreground text-muted-foreground"
+							>
+								<span className="min-w-0 flex-1 truncate font-mono">
+									{trace.rootSpanName || trace.traceId}
+								</span>
+								<span className="shrink-0 tabular-nums">{trace.spanCount} spans</span>
+								<span className="shrink-0 tabular-nums">
+									{formatDuration(trace.durationMicros / 1000)}
+								</span>
+								<span className="shrink-0 tabular-nums">
+									{formatRelativeTime(trace.startTime.slice(0, 19))}
+								</span>
+							</button>
+						</li>
+					))}
+				</ul>
+			)}
 		</div>
 	)
 }

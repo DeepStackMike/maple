@@ -10,7 +10,12 @@ export interface ErrorsFilters {
 	service?: string
 	/** Exact `deployment.environment` resource attribute. */
 	env?: string
-	/** Restrict to root-span errors. */
+	/** Exact `ErrorLabel` match — the value the "Error Type" facet lists. */
+	errorType?: string
+	/**
+	 * Restrict to root-span errors — the *unchecked* state of the sidebar's
+	 * "All span errors" box, which is how `apps/web` spelled the same filter.
+	 */
 	rootOnly?: boolean
 	/** Time-range preset key (see `TIME_RANGES`). */
 	range?: string
@@ -21,6 +26,7 @@ function commonOpts(filters: ErrorsFilters) {
 		rootOnly: filters.rootOnly,
 		services: filters.service ? [filters.service] : undefined,
 		deploymentEnvs: filters.env ? [filters.env] : undefined,
+		errorLabels: filters.errorType ? [filters.errorType] : undefined,
 	}
 }
 
@@ -61,12 +67,28 @@ export function useLocalErrorsByType(filters: ErrorsFilters) {
 	})
 }
 
-export interface ErrorsFacets {
-	services: Array<{ name: string; count: number }>
-	environments: Array<{ name: string; count: number }>
+export interface FacetOption {
+	name: string
+	count: number
 }
 
-/** Service + environment facet counts for the sidebar (UNION query). */
+export interface ErrorsFacets {
+	services: Array<FacetOption>
+	environments: Array<FacetOption>
+	errorTypes: Array<FacetOption>
+}
+
+/**
+ * Sidebar facet counts (one UNION query, one scan).
+ *
+ * Every active filter goes in, not just the range: `errorsFacetsQuery` drops
+ * each section's own dimension server-side (its `except` argument), so ticking
+ * `production` narrows the Service counts while Environment still lists its
+ * alternatives. Passing only `rootOnly` — which is what this hook did — left
+ * every number on the sidebar describing the unfiltered window, so the counts
+ * never moved when a box was ticked and none of them matched the list beside
+ * them.
+ */
 export function useLocalErrorsFacets(filters: ErrorsFilters) {
 	return useQuery({
 		queryKey: ["local", "errors", "facets", filters],
@@ -74,7 +96,7 @@ export function useLocalErrorsFacets(filters: ErrorsFilters) {
 		queryFn: async (): Promise<ErrorsFacets> => {
 			const { startTime, endTime } = boundsForRange(filters.range)
 			const rows = await executeLocalCompiledQuery(
-				CH.compileUnion(CH.errorsFacetsQuery({ rootOnly: filters.rootOnly }), {
+				CH.compileUnion(CH.errorsFacetsQuery(commonOpts(filters)), {
 					orgId: LOCAL_ORG_ID,
 					startTime,
 					endTime,
@@ -84,7 +106,11 @@ export function useLocalErrorsFacets(filters: ErrorsFilters) {
 				rows
 					.filter((r) => r.facetType === facetType)
 					.map((r) => ({ name: r.name, count: Number(r.count) }))
-			return { services: pick("service"), environments: pick("environment") }
+			return {
+				services: pick("service"),
+				environments: pick("environment"),
+				errorTypes: pick("error_type"),
+			}
 		},
 	})
 }
