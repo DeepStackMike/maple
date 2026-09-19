@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { layoutServiceMap, type LayoutEdge } from "./service-map-layout"
+import { elbowPath, layoutServiceMap, portOffsets, type LayoutEdge } from "./service-map-layout"
 
 const edge = (source: string, target: string): LayoutEdge => ({ source, target })
 
@@ -108,5 +108,80 @@ describe("cycles", () => {
 		for (const id of ids) expect(layout.byId.get(id)!.layer).toBeGreaterThanOrEqual(0)
 		expect(layout.backEdges).toHaveLength(1)
 		expect(layout.nodes).toHaveLength(4)
+	})
+})
+
+describe("elbow routing", () => {
+	const options = { nodeWidth: 200, radius: 14 }
+	const start = (path: string) =>
+		path
+			.match(/^M (-?[\d.]+) (-?[\d.]+)/)!
+			.slice(1)
+			.map(Number)
+	const end = (path: string) => Number(path.match(/H (-?[\d.]+)$/)![1])
+
+	it("leaves the source's right border and arrives at the target's left", () => {
+		const path = elbowPath({ x: 100, y: 50 }, { x: 500, y: 200 }, options)
+		expect(start(path)).toEqual([200, 50])
+		expect(end(path)).toBe(400)
+	})
+
+	it("turns once, in the lane halfway between the two cards", () => {
+		const path = elbowPath({ x: 100, y: 50 }, { x: 500, y: 200 }, options)
+		// Both corners are quadratics at the same x — that is what "one elbow" is.
+		const corners = [...path.matchAll(/Q (-?[\d.]+) /g)].map((m) => Number(m[1]))
+		expect(corners).toEqual([300, 300])
+		expect(path).toContain("V ")
+	})
+
+	it("draws a single straight line when the two ports face each other", () => {
+		expect(elbowPath({ x: 100, y: 50 }, { x: 500, y: 50 }, options)).toBe("M 200 50 L 400 50")
+	})
+
+	it("clamps the corner radius to half the shorter leg", () => {
+		// 6 px of drop cannot hold two 14 px corners; they become 3 px each and
+		// the path stays inside the span it was asked for.
+		const path = elbowPath({ x: 100, y: 50 }, { x: 500, y: 56 }, options)
+		expect(path).toContain("Q 300 50 300 53")
+		expect(path).toContain("V 53")
+	})
+
+	it("mirrors onto the other borders for an edge that points backwards", () => {
+		const path = elbowPath({ x: 500, y: 50 }, { x: 100, y: 200 }, options)
+		expect(start(path)).toEqual([400, 50])
+		expect(end(path)).toBe(200)
+	})
+
+	it("moves each end to its port offset", () => {
+		const path = elbowPath(
+			{ x: 100, y: 50 },
+			{ x: 500, y: 200 },
+			{ ...options, startOffsetY: -12, endOffsetY: 8 },
+		)
+		expect(start(path)).toEqual([200, 38])
+		expect(path).toContain("208")
+	})
+
+	it("produces a path for two cards in the same column", () => {
+		const path = elbowPath({ x: 100, y: 50 }, { x: 100, y: 200 }, options)
+		expect(path.startsWith("M ")).toBe(true)
+		expect(path).not.toContain("NaN")
+	})
+})
+
+describe("port offsets", () => {
+	it("spreads edges symmetrically around a card's centre", () => {
+		expect(portOffsets(3, 78, 12)).toEqual([-12, 0, 12])
+	})
+
+	it("puts a lone edge on the centreline", () => {
+		expect(portOffsets(1, 78)).toEqual([0])
+		expect(portOffsets(0, 78)).toEqual([])
+	})
+
+	it("tightens the fan so a busy card's ports stay on the card", () => {
+		const offsets = portOffsets(12, 78, 12)
+		expect(Math.max(...offsets) - Math.min(...offsets)).toBeLessThanOrEqual(78 - 24)
+		expect(offsets.map((n) => -n).reverse()).toEqual(offsets)
 	})
 })
