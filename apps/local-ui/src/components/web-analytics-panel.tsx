@@ -40,6 +40,7 @@ import {
 	withShares,
 	type BreakdownRow,
 } from "../lib/web-analytics"
+import { VisitorMap } from "./visitor-map"
 import { EmptyState, ErrorState, ListSkeleton } from "./view-states"
 
 /** The three acquisition tags, behind one selector rather than three near-identical cards. */
@@ -257,106 +258,119 @@ export function WebAnalyticsPanel({ range, utm, onUtmChange }: WebAnalyticsPanel
 					onRetry={() => breakdowns.refetch()}
 				/>
 			) : (
-				// `items-start` so a Devices card with three rows is not stretched to
-				// the height of a Pages card with fifty.
-				<div className="grid items-start gap-4 lg:grid-cols-2">
-					<BreakdownCard
-						title="Top pages"
-						unit="Views"
-						rows={pageRows}
-						pending={pages.isPending}
-						empty="No page views in this range."
-					/>
-					<BreakdownCard
-						title="Entry pages"
-						rows={facet("entryPath")}
-						pending={breakdowns.isPending}
-						empty={ANALYTICS_BLOCK_HINT}
-					/>
-					<BreakdownCard
-						title="Exit pages"
-						rows={facet("exitPath")}
-						pending={breakdowns.isPending}
-						empty={ANALYTICS_BLOCK_HINT}
-					/>
-					<BreakdownCard
-						title="Referrers"
-						rows={facet("referrerHost")}
-						pending={breakdowns.isPending}
-						format={referrerLabel}
-						empty="No referrer recorded in this range."
-					/>
-					<BreakdownCard
-						title="Campaigns"
-						rows={facet(utm)}
-						pending={breakdowns.isPending}
-						format={utmLabel}
-						empty="No utm_* tag recorded in this range."
-						action={
-							<NativeSelect
-								size="sm"
-								aria-label="UTM dimension"
-								value={utm}
-								onChange={(e) => onUtmChange(parseUtmDimension(e.target.value))}
-							>
-								{UTM_DIMENSIONS.map((dimension) => (
-									<NativeSelectOption key={dimension.key} value={dimension.key}>
-										{dimension.label}
-									</NativeSelectOption>
-								))}
-							</NativeSelect>
-						}
-					/>
-					<BreakdownCard
-						title="Browsers"
-						rows={facet("browserName")}
-						pending={breakdowns.isPending}
-						onRowClick={(name) => openSessions({ browser: name })}
-						empty="No browser recorded in this range."
-					/>
-					{/* The one dimension on the page with no outbound link:
+				<div className="space-y-6">
+					{/* The Countries card's own rows, drawn. Inside the union's error
+					    branch rather than above it, so a failed breakdown query is
+					    still one message on the page and not two. */}
+					<Card title="Where visitors come from">
+						<VisitorMap
+							countries={facet("country")}
+							regions={regionRows}
+							pending={breakdowns.isPending}
+						/>
+					</Card>
+
+					{/* `items-start` so a Devices card with three rows is not stretched
+					    to the height of a Pages card with fifty. */}
+					<div className="grid items-start gap-4 lg:grid-cols-2">
+						<BreakdownCard
+							title="Top pages"
+							unit="Views"
+							rows={pageRows}
+							pending={pages.isPending}
+							empty="No page views in this range."
+						/>
+						<BreakdownCard
+							title="Entry pages"
+							rows={facet("entryPath")}
+							pending={breakdowns.isPending}
+							empty={ANALYTICS_BLOCK_HINT}
+						/>
+						<BreakdownCard
+							title="Exit pages"
+							rows={facet("exitPath")}
+							pending={breakdowns.isPending}
+							empty={ANALYTICS_BLOCK_HINT}
+						/>
+						<BreakdownCard
+							title="Referrers"
+							rows={facet("referrerHost")}
+							pending={breakdowns.isPending}
+							format={referrerLabel}
+							empty="No referrer recorded in this range."
+						/>
+						<BreakdownCard
+							title="Campaigns"
+							rows={facet(utm)}
+							pending={breakdowns.isPending}
+							format={utmLabel}
+							empty="No utm_* tag recorded in this range."
+							action={
+								<NativeSelect
+									size="sm"
+									aria-label="UTM dimension"
+									value={utm}
+									onChange={(e) => onUtmChange(parseUtmDimension(e.target.value))}
+								>
+									{UTM_DIMENSIONS.map((dimension) => (
+										<NativeSelectOption key={dimension.key} value={dimension.key}>
+											{dimension.label}
+										</NativeSelectOption>
+									))}
+								</NativeSelect>
+							}
+						/>
+						<BreakdownCard
+							title="Browsers"
+							rows={facet("browserName")}
+							pending={breakdowns.isPending}
+							onRowClick={(name) => openSessions({ browser: name })}
+							empty="No browser recorded in this range."
+						/>
+						{/* The one dimension on the page with no outbound link:
 					    `sessionReplaysListQuery` takes `browser` and `deviceType` but
 					    has no `osName` filter, so there is no sessions URL to send this
 					    row to. Adding one is a query-engine change plus a facet section
 					    on the sessions sidebar — a separate change from this page. */}
-					<BreakdownCard
-						title="Operating systems"
-						rows={facet("osName")}
-						pending={breakdowns.isPending}
-						empty="No OS recorded in this range."
-					/>
-					<BreakdownCard
-						title="Devices"
-						rows={facet("deviceType")}
-						pending={breakdowns.isPending}
-						onRowClick={(name) => openSessions({ device: name })}
-						empty="No device type recorded in this range."
-					/>
-					<BreakdownCard
-						title="Countries"
-						rows={facet("country")}
-						pending={breakdowns.isPending}
-						format={countryLabel}
-						empty="No geo data. Country is resolved at the ingest gateway from an edge header, which local mode does not set."
-					/>
-					{/* Region and city ride their own queries, so they carry their own
+						<BreakdownCard
+							title="Operating systems"
+							rows={facet("osName")}
+							pending={breakdowns.isPending}
+							empty="No OS recorded in this range."
+						/>
+						<BreakdownCard
+							title="Devices"
+							rows={facet("deviceType")}
+							pending={breakdowns.isPending}
+							onRowClick={(name) => openSessions({ device: name })}
+							empty="No device type recorded in this range."
+						/>
+						<BreakdownCard
+							title="Countries"
+							rows={facet("country")}
+							pending={breakdowns.isPending}
+							format={countryLabel}
+							empty="No geo data. Country is resolved at the ingest gateway from an edge header, which local mode does not set."
+						/>
+						{/* Region and city ride their own queries, so they carry their own
 					    pending and error states rather than the union's. */}
-					<BreakdownCard
-						title="Regions"
-						rows={regionRows}
-						pending={regions.isPending}
-						error={regions.isError ? regions.error : undefined}
-						onRetry={() => regions.refetch()}
-						empty={`No region data. ${GEO_HEADER_HINT}`}
-					/>
-					<BreakdownCard
-						title="Cities"
-						rows={cityRows}
-						pending={cities.isPending}
-						error={cities.isError ? cities.error : undefined}
-						onRetry={() => cities.refetch()}
-						empty={`No city data. ${GEO_HEADER_HINT}`}
-					/>
+						<BreakdownCard
+							title="Regions"
+							rows={regionRows}
+							pending={regions.isPending}
+							error={regions.isError ? regions.error : undefined}
+							onRetry={() => regions.refetch()}
+							empty={`No region data. ${GEO_HEADER_HINT}`}
+						/>
+						<BreakdownCard
+							title="Cities"
+							rows={cityRows}
+							pending={cities.isPending}
+							error={cities.isError ? cities.error : undefined}
+							onRetry={() => cities.refetch()}
+							empty={`No city data. ${GEO_HEADER_HINT}`}
+						/>
+					</div>
 				</div>
 			)}
 		</section>
