@@ -17,6 +17,7 @@ import {
 	type CodeToken,
 	type CodeTokenType,
 } from "./code-block"
+import { highlightJson } from "./highlight"
 
 /** The tokens of one type, concatenated — what a reader would see in that colour. */
 function typed(tokens: ReadonlyArray<CodeToken>, type: CodeTokenType): Array<string> {
@@ -282,5 +283,73 @@ describe("collectCodeAttributes", () => {
 		})
 		expect(found.map((entry) => entry.key)).toEqual(["db.query.text", "http.request.body"])
 		expect(found.map((entry) => entry.language)).toEqual(["sql", "json"])
+	})
+})
+
+// The JSON half of the same palette. `code-block.ts` tokenizes SQL, XML and
+// forms itself; JSON goes through Sugar High, and `highlightJson` is the one
+// place its output is corrected — so the two halves are tested together.
+
+describe("highlightJson", () => {
+	const decode = (html: string): string =>
+		html.replaceAll("&quot;", '"').replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&amp;", "&")
+
+	/** Every token of a class, in order, with Sugar High's entities decoded. */
+	const tokens = (json: string, type: string): Array<string> => {
+		const found: Array<string> = []
+		const pattern = new RegExp(`<span class="sh__token--${type}"[^>]*>([^<]*)</span>`, "g")
+		for (const match of highlightJson(json).matchAll(pattern)) found.push(decode(match[1]!))
+		return found
+	}
+
+	/** What a reader sees in one colour: the tokens, without the quote glyphs. */
+	const painted = (json: string, type: string): Array<string> =>
+		tokens(json, type).filter((text) => text !== '"')
+
+	// Sugar High's `property` token is for unquoted JS keys, so a JSON payload
+	// came back with keys and values in the same colour and `--sh-property`
+	// unused. This is the whole point of the pass.
+	it("paints object keys as keys and their string values as strings", () => {
+		const json = '{"role":"system","n":1,"nested":{"k":[true,"x"]}}'
+		expect(painted(json, "property")).toEqual(["role", "n", "nested", "k"])
+		expect(painted(json, "string")).toEqual(["system", "x"])
+	})
+
+	// A key arrives as three tokens — `"`, its text, `"` — and colouring the
+	// text but not its quotes would be a different kind of wrong.
+	it("takes the key's quotes with it, styled for the key variable", () => {
+		expect(tokens('{"a":1}', "property")).toEqual(['"', "a", '"'])
+		expect(highlightJson('{"a":1}')).toContain(
+			'<span class="sh__token--property" style="color:var(--sh-property)">a</span>',
+		)
+	})
+
+	it("ignores whitespace between a key and its colon", () => {
+		expect(painted('{\n  "a" : 1\n}', "property")).toEqual(["a"])
+	})
+
+	// The colons that matter are punctuation tokens. A colon inside a value is
+	// part of a string token, where this pass cannot see it — which is the
+	// reason to work on the tokens rather than on the text.
+	it("leaves a value that contains a colon a value", () => {
+		expect(painted('{"a":"a:b","b:c":"x"}', "property")).toEqual(["a", "b:c"])
+		expect(painted('{"a":"a:b","b:c":"x"}', "string")).toEqual(["a:b", "x"])
+		expect(painted('{"url":"https://shop.example/p"}', "string")).toEqual(["https://shop.example/p"])
+	})
+
+	// An escaped quote splits the value into a run of string tokens, and the run
+	// is followed by the `}` that ends the member, not by a colon.
+	it("leaves a JSON document embedded in a string value alone", () => {
+		const json = String.raw`{"k":"{\"a\":\"b\"}"}`
+		expect(painted(json, "property")).toEqual(["k"])
+		expect(tokens(json, "string").join("")).toBe(String.raw`"{\"a\":\"b\"}"`)
+	})
+
+	// The rewrite splices HTML by offset; a dropped or duplicated character
+	// would be invisible in the assertions above.
+	it("renders every character of the input, once", () => {
+		const json = '{"a":"a:b","n":1,"nested":{"k":[true,"x"]}}'
+		const text = decode(highlightJson(json).replace(/<[^>]*>/g, ""))
+		expect(text).toBe(json)
 	})
 })
