@@ -89,6 +89,33 @@ export function useLocalErrorsFacets(filters: ErrorsFilters) {
 	})
 }
 
+/**
+ * The latest occurrence's exception columns for one fingerprint (expanded row).
+ *
+ * Its own query rather than four more columns on `errorsByTypeQuery`: a
+ * stacktrace is kilobytes, the list is fifty rows, and only the row the user
+ * opened ever shows one. Unfiltered by service on purpose — the list row's
+ * service filter narrows *which* errors are listed, and once one is open the
+ * question is what the newest one looked like.
+ */
+export function useLocalErrorSampleStack(fingerprintHash: string | undefined, filters: ErrorsFilters) {
+	return useQuery({
+		queryKey: ["local", "errors", "sample-stack", fingerprintHash, filters.range],
+		enabled: !!fingerprintHash,
+		queryFn: async (): Promise<CH.ErrorSampleStackOutput | null> => {
+			const { startTime, endTime } = boundsForRange(filters.range)
+			const row = await executeLocalCompiledFirstRow(
+				CH.compile(CH.errorSampleStackQuery({ fingerprintHash: fingerprintHash! }), {
+					orgId: LOCAL_ORG_ID,
+					startTime,
+					endTime,
+				}),
+			)
+			return Option.getOrNull(row)
+		},
+	})
+}
+
 /** Most recently errored traces for one fingerprint (expanded row). */
 export function useLocalErrorTraces(fingerprintHash: string | undefined, filters: ErrorsFilters) {
 	return useQuery({

@@ -549,6 +549,14 @@ export const builderFixtures: ReadonlyArray<BuilderFixture> = [
 			),
 	},
 	{
+		// local-ui use-local-errors.ts useLocalErrorSampleStack — the stack shown
+		// in the Errors view's expanded row.
+		module: "errors",
+		name: "errorSampleStackQuery",
+		label: "default",
+		compile: () => CH.compileUnsafe(CH.errorSampleStackQuery({ fingerprintHash: FINGERPRINT }), window),
+	},
+	{
 		// ErrorsService errorIssuesScan (the scheduled sweep)
 		module: "errors",
 		name: "errorIssuesQuery",

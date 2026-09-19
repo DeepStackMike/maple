@@ -265,6 +265,7 @@ export {
 // Queries — Errors
 export {
 	errorsByTypeQuery,
+	errorSampleStackQuery,
 	errorsTimeseriesQuery,
 	errorsSparkQuery,
 	ErrorsSparkOutputSchema,
@@ -289,6 +290,8 @@ export {
 	type ErrorIssueVersionsSinceOutput,
 	type ErrorsByTypeOpts,
 	type ErrorsByTypeOutput,
+	type ErrorSampleStackOpts,
+	type ErrorSampleStackOutput,
 	type ErrorsTimeseriesOpts,
 	type ErrorsTimeseriesOutput,
 	type ErrorsSparkOpts,

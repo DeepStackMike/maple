@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import { compileUnsafe, compileUnionUnsafe } from "@maple-dev/clickhouse-builder"
 import {
 	errorsByTypeQuery,
+	errorSampleStackQuery,
 	errorsTimeseriesQuery,
 	errorsSparkQuery,
 	errorsSummaryQuery,
@@ -223,6 +224,48 @@ describe("errorDetailTracesQuery", () => {
 // Exclusions on the fingerprint-resolving query. The errors list is issue-first until a facet is
 // active, at which point it asks the warehouse which fingerprints survive — so an exclusion has to
 // narrow that set or it never reaches the rows at all.
+
+describe("errorSampleStackQuery", () => {
+	it("finalizes all four exception columns off the same latest occurrence", () => {
+		const { sql } = compileUnsafe(errorSampleStackQuery({ fingerprintHash: "123" }), baseParams)
+		// Fingerprint-filtered, so it rides error_events' (OrgId, FingerprintHash,
+		// Timestamp) key rather than scanning the window.
+		expect(sql).toContain("FROM error_events")
+		expect(sql).not.toContain("FROM error_events_by_time")
+		expect(sql).toContain("argMax(ExceptionType, Timestamp) AS exceptionType")
+		expect(sql).toContain("argMax(ExceptionMessage, Timestamp) AS exceptionMessage")
+		expect(sql).toContain("argMax(ExceptionStacktrace, Timestamp) AS exceptionStacktrace")
+		expect(sql).toContain("argMax(TopFrame, Timestamp) AS topFrame")
+		expect(sql).toContain("toUInt64('123')")
+	})
+
+	it("is org-scoped and time-bounded", () => {
+		const { sql } = compileUnsafe(errorSampleStackQuery({ fingerprintHash: "123" }), baseParams)
+		expect(sql).toContain("OrgId = 'org_1'")
+		expect(sql).toContain("Timestamp >= '2024-01-01 00:00:00'")
+		expect(sql).toContain("Timestamp <= '2024-01-02 00:00:00'")
+	})
+
+	// An alert- or integration-backed issue reuses fingerprint_hash for a synthetic
+	// key. `toUInt64('alert:…')` aborts the whole request rather than matching
+	// nothing, and the expanded row must not be able to 500 the panel.
+	it("matches nothing for a synthetic fingerprint instead of failing", () => {
+		const { sql } = compileUnsafe(
+			errorSampleStackQuery({ fingerprintHash: "alert:28dd3389-5046-4ed7-8a8e-1bf147c1ddd6:all" }),
+			baseParams,
+		)
+		expect(sql).not.toContain("alert:")
+		expect(sql).toContain("1 = 0")
+	})
+
+	// The list query is in the SQL catalog baseline; widening its SELECT to carry
+	// the stack would read as a change to the list itself.
+	it("leaves errorsByTypeQuery's columns alone", () => {
+		const { sql } = compileUnsafe(errorsByTypeQuery({}), baseParams)
+		expect(sql).not.toContain("ExceptionStacktrace")
+		expect(sql).not.toContain("TopFrame")
+	})
+})
 
 describe("errorsByTypeQuery exclusions", () => {
 	it("emits NOT IN for every excluded dimension", () => {

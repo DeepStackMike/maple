@@ -15,6 +15,7 @@ import {
 } from "@maple/ui/components/filters/filter-sidebar"
 import type { CH } from "@maple/query-engine"
 import {
+	useLocalErrorSampleStack,
 	useLocalErrorTraces,
 	useLocalErrorsByType,
 	useLocalErrorsFacets,
@@ -26,6 +27,7 @@ import { DEFAULT_RANGE, formatRelativeTime } from "../lib/time"
 import { PageShell } from "../components/page-shell"
 import { RefreshButton, TimeRangeSelect, Toolbar, ToolbarStat, ToolbarStats } from "../components/toolbar"
 import { EmptyState, ErrorState, ListSkeleton } from "../components/view-states"
+import { StackTrace } from "../components/stack-trace"
 
 interface ErrorsViewProps {
 	onSelectTrace: (traceId: string) => void
@@ -135,6 +137,7 @@ function ErrorTypeCard({
 }) {
 	const [expanded, setExpanded] = useState(false)
 	const traces = useLocalErrorTraces(expanded ? row.fingerprintHash : undefined, filters)
+	const sample = useLocalErrorSampleStack(expanded ? row.fingerprintHash : undefined, filters)
 
 	return (
 		<div className="rounded-md border bg-card">
@@ -178,7 +181,13 @@ function ErrorTypeCard({
 			</button>
 
 			{expanded ? (
-				<div className="border-t px-4 py-2">
+				<div className="space-y-3 border-t px-4 py-2">
+					<SampleStack
+						data={sample.data ?? null}
+						isPending={sample.isPending}
+						fallbackLabel={row.errorLabel}
+						fallbackMessage={row.sampleMessage}
+					/>
 					{traces.isPending ? (
 						<div className="flex h-16 items-center justify-center">
 							<Spinner className="size-4" />
@@ -216,6 +225,60 @@ function ErrorTypeCard({
 						</ul>
 					)}
 				</div>
+			) : null}
+		</div>
+	)
+}
+
+/**
+ * The newest occurrence's exception, under the fingerprint it belongs to.
+ *
+ * `error_events` has held `ExceptionStacktrace` and `TopFrame` since the table
+ * existed — materialized from the span's `exception` event — and no Local view
+ * read either, so an error in the list was an `ErrorLabel` and a truncated
+ * `StatusMessage`. Read: the line that threw.
+ *
+ * The list row's own label and message are the fallback header, for a stack the
+ * exporter sent without one (a Go or Rust runtime, or a browser stack the SDK
+ * trimmed).
+ */
+function SampleStack({
+	data,
+	isPending,
+	fallbackLabel,
+	fallbackMessage,
+}: {
+	data: CH.ErrorSampleStackOutput | null
+	isPending: boolean
+	fallbackLabel: string
+	fallbackMessage: string
+}) {
+	if (isPending) {
+		return <div className="h-12 animate-pulse rounded-md bg-muted/40" />
+	}
+	if (!data) return null
+
+	const stack = data.exceptionStacktrace
+	const type = data.exceptionType || fallbackLabel
+	const message = data.exceptionMessage || fallbackMessage
+
+	// Nothing at all to draw: no stack, no class, no message. The traces list
+	// below is still the answer, so this section just stands down.
+	if (!stack && !type && !message && !data.topFrame) return null
+
+	return (
+		<div className="space-y-1">
+			<h4 className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+				Latest occurrence
+			</h4>
+			<StackTrace stack={stack} exceptionType={type} exceptionMessage={message} />
+			{/* The ingest-computed top frame is what the fingerprint is grouped on. It
+			    is redundant beside a full stack, and it is the whole location when
+			    the exporter sent no stack at all. */}
+			{!stack && data.topFrame ? (
+				<p className="truncate font-mono text-[10px] text-muted-foreground" title={data.topFrame}>
+					{data.topFrame}
+				</p>
 			) : null}
 		</div>
 	)
