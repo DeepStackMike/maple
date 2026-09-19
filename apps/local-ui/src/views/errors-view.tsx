@@ -37,6 +37,8 @@ import { PageShell } from "../components/page-shell"
 import { RefreshButton, TimeRangeSelect, Toolbar, ToolbarStats } from "../components/toolbar"
 import { EmptyState, ErrorState, ListSkeleton } from "../components/view-states"
 import { StackTrace } from "../components/stack-trace"
+import { CodeBlock } from "../components/code-block"
+import { detectLanguage } from "../lib/code-block"
 
 interface ErrorsViewProps {
 	onSelectTrace: (traceId: string) => void
@@ -635,12 +637,33 @@ function SampleStack({
 	// below is still the answer, so this section just stands down.
 	if (!stack && !type && !message && !data.topFrame) return null
 
+	// An upstream that answers with its own error envelope puts a whole JSON
+	// document where the header expects a sentence, and the stack header renders
+	// it as one unwrapped line. When the message is a document, it gets the
+	// payload treatment and the header keeps the class alone.
+	const messageLanguage = message ? detectLanguage(message) : "text"
+	const structuredMessage = messageLanguage !== "text"
+
 	return (
 		<div className="space-y-1">
 			<h4 className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
 				Latest occurrence
 			</h4>
-			<StackTrace stack={stack} exceptionType={type} exceptionMessage={message} />
+			{structuredMessage ? (
+				<CodeBlock
+					value={message}
+					language={messageLanguage}
+					label={type || "message"}
+					copyLabel="error message"
+					collapseAfter={8}
+					compact
+				/>
+			) : null}
+			<StackTrace
+				stack={stack}
+				exceptionType={type}
+				exceptionMessage={structuredMessage ? "" : message}
+			/>
 			{/* The ingest-computed top frame is what the fingerprint is grouped on. It
 			    is redundant beside a full stack, and it is the whole location when
 			    the exporter sent no stack at all. */}

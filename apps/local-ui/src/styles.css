@@ -74,6 +74,39 @@
 	--success-foreground: var(--color-emerald-700);
 	--warning: var(--color-amber-500);
 	--warning-foreground: var(--color-amber-700);
+
+	/* Syntax palette. One set of names paints every code surface: the JSON that
+	   goes through Sugar High, the SQL/XML/form scanners in `lib/code-block.ts`,
+	   and the stack-trace frames. Sugar High's own `--sh-*` names alias onto it
+	   below — local-ui shipped `highlightJson` without ever defining them, so
+	   every token resolved to an unset custom property and inherited the body
+	   colour. The highlighting was in the DOM and invisible on screen. */
+	--code-plain: var(--foreground);
+	--code-punctuation: oklch(0.55 0.01 286);
+	--code-comment: oklch(0.62 0.012 286);
+	--code-key: oklch(0.5 0.15 250);
+	--code-string: oklch(0.52 0.13 168);
+	--code-number: oklch(0.54 0.15 65);
+	--code-keyword: oklch(0.55 0.2 25);
+	--code-tag: oklch(0.55 0.2 25);
+	--code-attr: oklch(0.5 0.15 250);
+	--code-placeholder: oklch(0.52 0.18 305);
+	--code-gutter: oklch(0.72 0.008 286);
+
+	/* Sugar High reads these off an ancestor and writes them into an inline
+	   `color: var(--sh-*)` on every token it emits. Aliased rather than given
+	   their own values so the two renderers can never drift apart. `class` is
+	   its token type for numbers; `entity` is a call target, which in a JSON
+	   payload never occurs. */
+	--sh-identifier: var(--code-plain);
+	--sh-sign: var(--code-punctuation);
+	--sh-comment: var(--code-comment);
+	--sh-property: var(--code-key);
+	--sh-string: var(--code-string);
+	--sh-class: var(--code-number);
+	--sh-keyword: var(--code-keyword);
+	--sh-entity: var(--code-string);
+	--sh-jsxliterals: var(--code-plain);
 }
 
 .dark {
@@ -143,6 +176,19 @@
 	--success-foreground: var(--color-emerald-400);
 	--warning: var(--color-amber-500);
 	--warning-foreground: var(--color-amber-400);
+
+	/* Warmer, and lifted: the dark surface here is a warm near-black, and the
+	   light palette's chroma reads muddy against it. */
+	--code-punctuation: oklch(0.62 0.02 70);
+	--code-comment: oklch(0.52 0.02 58);
+	--code-key: oklch(0.75 0.12 255);
+	--code-string: oklch(0.7 0.14 158);
+	--code-number: oklch(0.78 0.13 78);
+	--code-keyword: oklch(0.72 0.16 45);
+	--code-tag: oklch(0.72 0.16 30);
+	--code-attr: oklch(0.75 0.12 255);
+	--code-placeholder: oklch(0.74 0.13 305);
+	--code-gutter: oklch(0.44 0.015 65);
 }
 
 @theme inline {
@@ -232,6 +278,17 @@
 	--color-info-foreground: var(--info-foreground);
 	--color-info: var(--info);
 	--color-destructive-foreground: var(--destructive-foreground);
+	--color-code-plain: var(--code-plain);
+	--color-code-punctuation: var(--code-punctuation);
+	--color-code-comment: var(--code-comment);
+	--color-code-key: var(--code-key);
+	--color-code-string: var(--code-string);
+	--color-code-number: var(--code-number);
+	--color-code-keyword: var(--code-keyword);
+	--color-code-tag: var(--code-tag);
+	--color-code-attr: var(--code-attr);
+	--color-code-placeholder: var(--code-placeholder);
+	--color-code-gutter: var(--code-gutter);
 	@keyframes skeleton {
 		from {
 			transform: translateX(-100%);
@@ -339,6 +396,26 @@
 
 [role="status"].animate-spin {
 	animation: pixel-spin 1s steps(8, end) infinite;
+}
+
+/* Gutter line numbers for <CodeBlock lineNumbers>. Both renderers emit
+   `sh__line` spans separated by real newlines — Sugar High's own output shape —
+   so one counter rule numbers either of them. The spans stay inline on purpose:
+   `display: block` here would double every line break, since the newline
+   between them is already doing the work inside a `<pre>`. */
+.code-block--numbered code {
+	counter-reset: sh-line-number;
+}
+
+.code-block--numbered .sh__line::before {
+	counter-increment: sh-line-number 1;
+	content: counter(sh-line-number);
+	display: inline-block;
+	width: 2.5ch;
+	margin-right: 1.25ch;
+	text-align: right;
+	color: var(--code-gutter);
+	user-select: none;
 }
 
 /* ReactFlow Controls styling */

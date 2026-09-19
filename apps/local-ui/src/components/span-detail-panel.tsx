@@ -3,7 +3,7 @@
 // mode doesn't have. The shareable pieces (AttributesSection, SeverityBadge,
 // HttpSpanLabel, format/colors libs) already come from @maple/ui.
 
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { HttpSpanLabel } from "@maple/ui/components/traces/http-span-label"
 import { SeverityBadge } from "@maple/ui/components/logs/severity-badge"
 import { Button } from "@maple/ui/components/ui/button"
@@ -25,6 +25,8 @@ import { ErrorSection } from "@maple/ui/components/error-section"
 import type { LocalLog } from "../lib/log-shape"
 import { LogDetailSheet } from "./log-detail-sheet"
 import { StackTrace } from "./stack-trace"
+import { CodeBlock } from "./code-block"
+import { collectCodeAttributes } from "../lib/code-block"
 
 /** The panel's two tabs, named so a caller can open it on one. */
 export type SpanPanelTab = "details" | "logs"
@@ -102,8 +104,25 @@ export function SpanDetailPanel({ span, onClose, tab, onTabChange }: SpanDetailP
 
 	// The lazy map once it lands, the tree's trimmed one until then — and for a
 	// missing span, which has no row to look up, permanently.
-	const spanAttributes = detail.data?.spanAttributes ?? span.spanAttributes ?? {}
+	// Memoized on the two sources rather than recomputed: the `?? {}` tail makes a
+	// fresh object every render, and `payloads` below runs language detection
+	// over every attribute this map holds.
+	const spanAttributes = useMemo(
+		() => detail.data?.spanAttributes ?? span.spanAttributes ?? {},
+		[detail.data?.spanAttributes, span.spanAttributes],
+	)
 	const exception = readSpanException(spanAttributes)
+
+	// The attributes whose value is a document rather than a scalar —
+	// `db.query.text`, a `gen_ai.*` message array, an HTTP body. They come out of
+	// the table for the same reason the stacktrace does: a 4,000-character JSON
+	// payload in a value cell is unreadable, and reading it is the whole point of
+	// having opened the panel.
+	const payloads = useMemo(() => collectCodeAttributes(spanAttributes), [spanAttributes])
+	const tableAttributes = withoutKeys(spanAttributes, [
+		...(exception?.consumedKeys ?? []),
+		...payloads.map((payload) => payload.key),
+	])
 
 	return (
 		<aside className="flex h-full w-[28rem] shrink-0 flex-col overflow-hidden border-l bg-background">
@@ -259,9 +278,27 @@ export function SpanDetailPanel({ span, onClose, tab, onTabChange }: SpanDetailP
 								</div>
 							</div>
 
+							{payloads.length > 0 ? (
+								<div className="space-y-1">
+									<h4 className="text-xs font-medium text-muted-foreground">Payloads</h4>
+									<div className="space-y-2">
+										{payloads.map((payload) => (
+											<CodeBlock
+												key={payload.key}
+												value={payload.value}
+												language={payload.language}
+												label={payload.key}
+												copyLabel={payload.key}
+												compact
+											/>
+										))}
+									</div>
+								</div>
+							) : null}
+
 							{span.isMissing ? (
 								<AttributesSection
-									attributes={withoutKeys(spanAttributes, exception?.consumedKeys ?? [])}
+									attributes={tableAttributes}
 									title="Span Attributes"
 									groupByNamespace
 								/>
@@ -275,10 +312,7 @@ export function SpanDetailPanel({ span, onClose, tab, onTabChange }: SpanDetailP
 							) : (
 								<>
 									<AttributesSection
-										attributes={withoutKeys(
-											spanAttributes,
-											exception?.consumedKeys ?? [],
-										)}
+										attributes={tableAttributes}
 										title="Span Attributes"
 										groupByNamespace
 									/>

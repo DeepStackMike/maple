@@ -10,6 +10,9 @@
 // Two ideas do the work. The frame is split in two — the function you are
 // looking for, then its location underneath and dimmed, with the line:col
 // brought back up, because "which line" is the part you retype into an editor.
+// The three parts take their colours from the same `--code-*` palette
+// `<CodeBlock>` paints a payload with, so a stack and the JSON next to it read
+// as one syntax-highlighted surface rather than two conventions.
 // And the runtime's frames fold away: a Bun/Node stack is mostly `node_modules`
 // and `node:internal`, and a stack that opens on ten of those reads as noise no
 // matter how well each line is set.
@@ -135,8 +138,10 @@ function FrameRow({ frame, compact }: { frame: StackFrame; compact?: boolean }) 
 	return (
 		<li className={cn("px-2", compact ? "py-0.5" : "py-1")}>
 			<p className={cn("truncate font-mono", compact ? "text-[10px]" : "text-[11px]")}>
-				{frame.modifier ? <span className="text-muted-foreground">{frame.modifier} </span> : null}
-				<span className={frame.fn ? "text-foreground" : "italic text-muted-foreground"}>
+				{/* `async` / `new` are the runtime's words, not the developer's, so
+				    they take the keyword colour rather than the identifier's. */}
+				{frame.modifier ? <span className="text-code-keyword">{frame.modifier} </span> : null}
+				<span className={frame.fn ? "text-code-key" : "italic text-muted-foreground"}>
 					{frame.fn || "anonymous"}
 				</span>
 			</p>
@@ -149,7 +154,9 @@ function FrameRow({ frame, compact }: { frame: StackFrame; compact?: boolean }) 
 					className="truncate font-mono text-[10px] text-muted-foreground"
 				>
 					{shortFile}
-					{position ? <span className="text-foreground/70">{position}</span> : null}
+					{/* The one part of a frame you retype into an editor, so it is the
+					    one part that gets a colour of its own. */}
+					{position ? <span className="text-code-number">{position}</span> : null}
 				</p>
 			) : null}
 		</li>
@@ -215,6 +222,8 @@ function FrameList({
 function Header({ header, compact }: { header: StackHeader; compact?: boolean }) {
 	return (
 		<div className={cn("min-w-0 flex-1", compact ? "text-[11px]" : "text-xs")}>
+			{/* The class stays in the error colour rather than the keyword one: it
+			    is the subject of the banner, not a token inside a payload. */}
 			{header.type ? (
 				<span className="font-mono font-semibold text-destructive">{header.type}</span>
 			) : null}

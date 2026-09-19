@@ -27,7 +27,8 @@ import type { LocalLog } from "../lib/log-shape"
 import { navigate } from "../lib/router"
 import { ErrorSection } from "@maple/ui/components/error-section"
 import { SearchInput } from "@maple/ui/components/ui/search-input"
-import { highlightJson } from "../lib/highlight"
+import { CodeBlock } from "./code-block"
+import { collectCodeAttributes, detectLanguage } from "../lib/code-block"
 
 interface LogDetailSheetProps {
 	log: LocalLog | null
@@ -122,51 +123,19 @@ const HERO_TONE: Record<string, string> = {
 
 const BODY_LINE_THRESHOLD = 280
 
-function tryParse(value: string): unknown | null {
-	const trimmed = value.trimStart()
-	if (trimmed[0] !== "{" && trimmed[0] !== "[") return null
-	try {
-		return JSON.parse(value)
-	} catch {
-		return null
-	}
-}
-
 function LogHeroHeader({ log, onClose }: { log: LocalLog; onClose: () => void }) {
 	const [expanded, setExpanded] = useState(false)
 	const tone = HERO_TONE[log.severityText.toUpperCase()] ?? "border-border"
 	const body = log.body ?? ""
 
-	const parsed = tryParse(body)
-	const isJson = parsed !== null
-	const formatted = useMemo(
-		() => (parsed !== null ? JSON.stringify(parsed, null, 2) : body),
-		[parsed, body],
-	)
-	const highlighted = useMemo(() => (isJson ? highlightJson(formatted) : ""), [isJson, formatted])
-	const copyValue = isJson ? formatted : body
-	const isLong = formatted.length > BODY_LINE_THRESHOLD || formatted.includes("\n")
-
-	const message = (clamp: boolean) =>
-		isJson ? (
-			<pre
-				className={cn(
-					"font-mono text-[13px] leading-relaxed whitespace-pre-wrap break-words",
-					clamp && "line-clamp-6",
-				)}
-			>
-				<code dangerouslySetInnerHTML={{ __html: highlighted }} />
-			</pre>
-		) : (
-			<p
-				className={cn(
-					"font-mono text-sm leading-relaxed whitespace-pre-wrap break-words",
-					clamp && "line-clamp-4",
-				)}
-			>
-				{body}
-			</p>
-		)
+	// A log body is a sentence far more often than it is a document. Only one
+	// that detects as *something* — a JSON envelope, a statement, a markup
+	// fragment — gets the code block; a sentence in a bordered block with its own
+	// toolbar reads worse than a sentence, and the block brings its own fold and
+	// its own copy control, so the clamp below would be a second one of each.
+	const language = useMemo(() => detectLanguage(body), [body])
+	const structured = language !== "text"
+	const isLong = body.length > BODY_LINE_THRESHOLD || body.includes("\n")
 
 	return (
 		<div className={cn("shrink-0 border-b px-4 py-3", tone)}>
@@ -181,16 +150,37 @@ function LogHeroHeader({ log, onClose }: { log: LocalLog; onClose: () => void })
 			</div>
 
 			<div className="mt-3">
-				<CopyableValue value={copyValue}>{message(isLong && !expanded)}</CopyableValue>
-				{isLong && (
-					<button
-						type="button"
-						onClick={() => setExpanded((v) => !v)}
-						className="mt-1.5 flex items-center gap-1 text-[10px] text-muted-foreground transition-colors hover:text-foreground"
-					>
-						{expanded ? "Show less" : "Show full message"}
-						{expanded ? <ChevronUpIcon size={10} /> : <ChevronDownIcon size={10} />}
-					</button>
+				{structured ? (
+					<CodeBlock
+						value={body}
+						language={language}
+						label="body"
+						copyLabel="log body"
+						collapseAfter={8}
+					/>
+				) : (
+					<>
+						<CopyableValue value={body}>
+							<p
+								className={cn(
+									"font-mono text-sm leading-relaxed whitespace-pre-wrap break-words",
+									isLong && !expanded && "line-clamp-4",
+								)}
+							>
+								{body}
+							</p>
+						</CopyableValue>
+						{isLong && (
+							<button
+								type="button"
+								onClick={() => setExpanded((v) => !v)}
+								className="mt-1.5 flex items-center gap-1 text-[10px] text-muted-foreground transition-colors hover:text-foreground"
+							>
+								{expanded ? "Show less" : "Show full message"}
+								{expanded ? <ChevronUpIcon size={10} /> : <ChevronDownIcon size={10} />}
+							</button>
+						)}
+					</>
 				)}
 			</div>
 		</div>
@@ -256,6 +246,26 @@ function LogAttributesPanel({ log }: { log: LocalLog }) {
 	const hasAttributes =
 		Object.keys(log.logAttributes).length > 0 || Object.keys(log.resourceAttributes).length > 0
 
+	// Same lift as the span panel: a document-shaped value comes out of the table
+	// and gets a block of its own, because it is unreadable in a value cell.
+	const payloads = useMemo(() => collectCodeAttributes(log.logAttributes), [log.logAttributes])
+	const payloadKeys = new Set(payloads.map((payload) => payload.key))
+	const tableAttributes = Object.fromEntries(
+		Object.entries(log.logAttributes).filter(([key]) => !payloadKeys.has(key)),
+	)
+
+	// The search box filters the table; a payload block has no rows to filter, so
+	// it matches on its key and its text and then shows all of itself or none.
+	const query = attrSearch.toLowerCase()
+	const visiblePayloads =
+		query === ""
+			? payloads
+			: payloads.filter(
+					(payload) =>
+						payload.key.toLowerCase().includes(query) ||
+						payload.value.toLowerCase().includes(query),
+				)
+
 	return (
 		<div className="space-y-3">
 			{hasAttributes && (
@@ -266,8 +276,23 @@ function LogAttributesPanel({ log }: { log: LocalLog }) {
 				/>
 			)}
 
+			{visiblePayloads.length > 0 && (
+				<div className="space-y-2">
+					{visiblePayloads.map((payload) => (
+						<CodeBlock
+							key={payload.key}
+							value={payload.value}
+							language={payload.language}
+							label={payload.key}
+							copyLabel={payload.key}
+							compact
+						/>
+					))}
+				</div>
+			)}
+
 			<AttributesSection
-				attributes={log.logAttributes}
+				attributes={tableAttributes}
 				title="Log Attributes"
 				searchQuery={attrSearch}
 				groupByNamespace
@@ -328,24 +353,19 @@ function buildLogJsonPayload(log: LocalLog): string {
 }
 
 function LogRawPanel({ log }: { log: LocalLog }) {
-	const jsonPayload = buildLogJsonPayload(log)
-	const highlighted = useMemo(() => highlightJson(jsonPayload), [jsonPayload])
+	const jsonPayload = useMemo(() => buildLogJsonPayload(log), [log])
 
+	// Numbered here and nowhere else: this is the whole record, and a line number
+	// is how you say which part of it you are talking about. An attribute payload
+	// is a fragment, where the gutter is chrome.
 	return (
-		<div>
-			<div className="mb-2 flex items-center justify-between">
-				<span className="text-xs font-medium text-muted-foreground">JSON Payload</span>
-				<CopyButton
-					value={jsonPayload}
-					label="Log JSON"
-					idleLabel="Copy"
-					iconSize={10}
-					className="h-5 px-1.5 text-[10px]"
-				/>
-			</div>
-			<pre className="whitespace-pre-wrap break-all rounded-md border bg-muted/30 p-2 font-mono text-[11px] leading-relaxed">
-				<code dangerouslySetInnerHTML={{ __html: highlighted }} />
-			</pre>
-		</div>
+		<CodeBlock
+			value={jsonPayload}
+			language="json"
+			label="JSON payload"
+			copyLabel="Log JSON"
+			lineNumbers
+			collapseAfter={40}
+		/>
 	)
 }
