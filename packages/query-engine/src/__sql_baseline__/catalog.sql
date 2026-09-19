@@ -528,6 +528,102 @@ SELECT
           AND Timestamp <= '2026-01-03 14:15:00'
         FORMAT JSON
 
+-- builder:errors:errorSessionsQuery:traceAndMessage  [a404d4a9]
+SELECT
+          m.sessionId AS sessionId,
+          s.browserName AS browserName,
+          s.osName AS osName,
+          s.deviceType AS deviceType,
+          s.startTime AS startTime,
+          s.errorCount AS errorCount,
+          m.matchCount AS matchCount,
+          m.jumpSeq AS jumpSeq,
+          m.lastMatchAt AS lastMatchAt
+        FROM (SELECT
+          SessionId AS sessionId,
+          count() AS matchCount,
+          argMin(Seq, Timestamp) AS jumpSeq,
+          max(Timestamp) AS lastMatchAt
+        FROM session_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND (TraceId IN (SELECT
+          TraceId AS TraceId
+        FROM (SELECT
+          TraceId AS TraceId
+        FROM error_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND FingerprintHash IN (toUInt64('11640393269246331608'))
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND length(TraceId) > 0
+        GROUP BY TraceId
+        LIMIT 500) AS error_traces) OR (Type = 'error' AND (positionCaseInsensitive(Message, 'Cannot read properties of undefined') > 0 OR positionCaseInsensitive(ErrorStack, 'Cannot read properties of undefined') > 0)))
+        GROUP BY sessionId) AS m
+        LEFT JOIN (SELECT
+          SessionId AS sessionId,
+          argMax(StartTime, Version) AS startTime,
+          argMax(BrowserName, Version) AS browserName,
+          argMax(OsName, Version) AS osName,
+          argMax(DeviceType, Version) AS deviceType,
+          argMax(ErrorCount, Version) AS errorCount
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime <= '2026-01-03 14:15:00'
+        GROUP BY sessionId) AS s ON m.sessionId = s.sessionId
+        ORDER BY lastMatchAt DESC
+        LIMIT 10
+        FORMAT JSON
+
+-- builder:errors:errorSessionsQuery:traceOnly  [291a7932]
+SELECT
+          m.sessionId AS sessionId,
+          s.browserName AS browserName,
+          s.osName AS osName,
+          s.deviceType AS deviceType,
+          s.startTime AS startTime,
+          s.errorCount AS errorCount,
+          m.matchCount AS matchCount,
+          m.jumpSeq AS jumpSeq,
+          m.lastMatchAt AS lastMatchAt
+        FROM (SELECT
+          SessionId AS sessionId,
+          count() AS matchCount,
+          argMin(Seq, Timestamp) AS jumpSeq,
+          max(Timestamp) AS lastMatchAt
+        FROM session_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND TraceId IN (SELECT
+          TraceId AS TraceId
+        FROM (SELECT
+          TraceId AS TraceId
+        FROM error_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND FingerprintHash IN (toUInt64('11640393269246331608'))
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND length(TraceId) > 0
+        GROUP BY TraceId
+        LIMIT 500) AS error_traces)
+        GROUP BY sessionId) AS m
+        LEFT JOIN (SELECT
+          SessionId AS sessionId,
+          argMax(StartTime, Version) AS startTime,
+          argMax(BrowserName, Version) AS browserName,
+          argMax(OsName, Version) AS osName,
+          argMax(DeviceType, Version) AS deviceType,
+          argMax(ErrorCount, Version) AS errorCount
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime <= '2026-01-03 14:15:00'
+        GROUP BY sessionId) AS s ON m.sessionId = s.sessionId
+        ORDER BY lastMatchAt DESC
+        LIMIT 10
+        FORMAT JSON
+
 -- builder:errors:errorsSparkQuery:default  [89ec2bb4]
 SELECT
           toString(FingerprintHash) AS fingerprintHash,

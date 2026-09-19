@@ -620,6 +620,29 @@ export const builderFixtures: ReadonlyArray<BuilderFixture> = [
 			CH.compileUnsafe(CH.errorVersionsQuery({ fingerprintHashes: [FINGERPRINT] }), window),
 	},
 	{
+		// local-ui use-local-errors.ts useLocalErrorSessions — "Sessions with this
+		// error" in the expanded row. Both branches of the predicate are exercised:
+		// without a needle the message half never compiles.
+		module: "errors",
+		name: "errorSessionsQuery",
+		label: "traceAndMessage",
+		compile: () =>
+			CH.compileUnsafe(
+				CH.errorSessionsQuery({
+					fingerprintHash: FINGERPRINT,
+					messageMatch: "Cannot read properties of undefined",
+				}),
+				window,
+			),
+	},
+	{
+		module: "errors",
+		name: "errorSessionsQuery",
+		label: "traceOnly",
+		compile: () =>
+			CH.compileUnsafe(CH.errorSessionsQuery({ fingerprintHash: FINGERPRINT }), window),
+	},
+	{
 		module: "errors",
 		name: "errorIssueSampleTracesQuery",
 		label: "default",

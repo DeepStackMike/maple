@@ -245,3 +245,39 @@ export function useLocalErrorTraces(fingerprintHash: string | undefined, filters
 		},
 	})
 }
+
+/**
+ * Browser sessions this error was hit in (expanded row).
+ *
+ * `messageMatch` comes from the fingerprint's own latest occurrence, so this
+ * runs after {@link useLocalErrorSampleStack} rather than beside it — which is
+ * why the caller mounts it only once that has resolved. Passing `undefined`
+ * would not be harmless: it silently drops the branch of the query that finds
+ * browser-side errors at all.
+ *
+ * Unfiltered by service, like the stack: the sidebar narrows *which* errors are
+ * listed, and once one is open the question is who hit it.
+ */
+export function useLocalErrorSessions(
+	fingerprintHash: string | undefined,
+	messageMatch: string | undefined,
+	filters: ErrorsFilters,
+) {
+	return useQuery({
+		queryKey: ["local", "errors", "sessions", fingerprintHash, messageMatch, filters.range],
+		enabled: !!fingerprintHash,
+		queryFn: async (): Promise<ReadonlyArray<CH.ErrorSessionsOutput>> => {
+			const { startTime, endTime } = boundsForRange(filters.range)
+			return executeLocalCompiledQuery(
+				CH.compile(
+					CH.errorSessionsQuery({
+						fingerprintHash: fingerprintHash!,
+						messageMatch,
+						limit: 10,
+					}),
+					{ orgId: LOCAL_ORG_ID, startTime, endTime },
+				),
+			)
+		},
+	})
+}

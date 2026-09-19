@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react"
-import { CircleWarningIcon, ChevronDownIcon } from "@maple/ui/components/icons"
+import { CircleWarningIcon, ChevronDownIcon, EyeIcon } from "@maple/ui/components/icons"
 import { Badge } from "@maple/ui/components/ui/badge"
 import { StatSparkline } from "@maple/ui/components/charts/sparkline/stat-sparkline"
 import { Spinner } from "@maple/ui/components/ui/spinner"
@@ -20,6 +20,7 @@ import {
 import type { CH } from "@maple/query-engine"
 import {
 	useLocalErrorSampleStack,
+	useLocalErrorSessions,
 	useLocalErrorTraces,
 	useLocalErrorVersions,
 	useLocalErrorsByType,
@@ -386,6 +387,18 @@ function ErrorTypeDetail({
 				fallbackLabel={row.errorLabel}
 				fallbackMessage={row.sampleMessage}
 			/>
+			{/* Mounted only once the stack has resolved: the needle comes off it, and
+			    running without one drops the half of the query that finds browser
+			    errors. A conditional mount rather than a conditional hook. */}
+			{sample.isPending ? null : (
+				<SessionsWithError
+					fingerprintHash={row.fingerprintHash}
+					messageMatch={
+						sample.data?.exceptionMessage || sample.data?.exceptionType || row.sampleMessage
+					}
+					filters={filters}
+				/>
+			)}
 			{traces.isPending ? (
 				<div className="flex h-16 items-center justify-center">
 					<Spinner className="size-4" />
@@ -420,6 +433,81 @@ function ErrorTypeDetail({
 					))}
 				</ul>
 			)}
+		</div>
+	)
+}
+
+/**
+ * The browser sessions this error was hit in.
+ *
+ * The traces list below answers "which requests broke". For an error a person
+ * hit in a browser that is the wrong unit — the answer is the recording: what
+ * they were doing in the ten seconds before the throw, and what the page looked
+ * like after it. Each row links into the session at the event that matched, so
+ * the replay opens on the moment rather than at 00:00.
+ *
+ * The `?jump=` param is emitted and nothing here interprets it — resolving a
+ * seq to a player position is the session page's job, and this view has no
+ * business knowing how.
+ */
+function SessionsWithError({
+	fingerprintHash,
+	messageMatch,
+	filters,
+}: {
+	fingerprintHash: string
+	messageMatch: string | undefined
+	filters: ErrorsFilters
+}) {
+	const sessions = useLocalErrorSessions(fingerprintHash, messageMatch, filters)
+	const rows = sessions.data ?? []
+
+	// Nothing to say is said by saying nothing: a backend error nobody's browser
+	// ever saw is the common case, and an empty panel on every one of them is
+	// noise on the row that matters.
+	if (sessions.isPending || rows.length === 0) return null
+
+	const sessionHref = (sessionId: string, jumpSeq: number) => {
+		const params = new URLSearchParams()
+		if (filters.range) params.set("range", filters.range)
+		params.set("jump", String(jumpSeq))
+		return `#/sessions/${encodeURIComponent(sessionId)}?${params.toString()}`
+	}
+
+	return (
+		<div className="space-y-1">
+			<h4 className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+				Sessions with this error
+			</h4>
+			<ul className="divide-y rounded-md border">
+				{rows.map((session) => (
+					<li key={session.sessionId}>
+						<a
+							href={sessionHref(session.sessionId, session.jumpSeq)}
+							className="flex items-center gap-3 px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+						>
+							<EyeIcon className="size-3.5 shrink-0" />
+							<span className="min-w-0 flex-1 truncate font-mono">
+								{session.browserName || session.sessionId}
+								{session.osName ? (
+									<span className="ml-1.5 text-muted-foreground">{session.osName}</span>
+								) : null}
+							</span>
+							<span className="shrink-0 tabular-nums">
+								{session.matchCount === 1 ? "1 hit" : `${session.matchCount} hits`}
+							</span>
+							{/* The session's total error count, which is the fingerprint's
+							    count plus whatever else went wrong in the same visit. */}
+							<span className="shrink-0 tabular-nums">
+								{formatNumber(session.errorCount)} errors
+							</span>
+							<span className="w-20 shrink-0 text-right tabular-nums">
+								{formatRelativeTime(session.startTime.slice(0, 19))}
+							</span>
+						</a>
+					</li>
+				))}
+			</ul>
 		</div>
 	)
 }
