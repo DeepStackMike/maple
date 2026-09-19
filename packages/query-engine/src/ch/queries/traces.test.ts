@@ -420,6 +420,47 @@ describe("traceListQuery", () => {
 		expect(inner).toContain("TraceId < 'trace123'")
 	})
 
+	it("excludes health-check routes on the MV's own pre-extracted columns", () => {
+		const inner = pageSubquery(
+			compileUnsafe(traceListQuery({ excludeNamePatterns: ["%/health%", "%/ping%"] }), baseParams).sql,
+		)
+
+		expect(inner).toContain("FROM trace_list_mv")
+		expect(inner).toContain("SpanName ILIKE '%/health%'")
+		expect(inner).toContain("SpanName ILIKE '%/ping%'")
+		// Both spellings: the MV pre-extracts the route, and a probe whose span
+		// name is bare `GET` is only identifiable by it.
+		expect(inner).toContain("HttpRoute ILIKE '%/health%'")
+		expect(inner).toContain("HttpRoute ILIKE '%/ping%'")
+		expect(inner).toContain("NOT (")
+	})
+
+	// Same rows, different columns. Stage 1 picks its table on the filter set, so
+	// an exclusion that only worked on one path would switch itself off the
+	// moment the user ticked an attribute facet.
+	it("excludes the same routes on the raw paging path, off SpanAttributes", () => {
+		const inner = pageSubquery(
+			compileUnsafe(
+				traceListQuery({
+					excludeNamePatterns: ["%/health%"],
+					attributeFilters: [{ key: "user.id", value: "u1", mode: "equals" }],
+				}),
+				baseParams,
+			).sql,
+		)
+
+		expect(inner).toContain("FROM traces")
+		expect(inner).toContain("SpanName ILIKE '%/health%'")
+		expect(inner).toContain("SpanAttributes['http.route'] ILIKE '%/health%'")
+	})
+
+	// The option is additive: unset, the SQL is what it was before it existed.
+	it("adds nothing when no patterns are given", () => {
+		const withOption = compileUnsafe(traceListQuery({ excludeNamePatterns: [] }), baseParams).sql
+		expect(withOption).toBe(compileUnsafe(traceListQuery({}), baseParams).sql)
+		expect(withOption).not.toContain("ILIKE")
+	})
+
 	it("reads only TraceId + Timestamp in the paging stage", () => {
 		const inner = pageSubquery(compileUnsafe(traceListQuery({}), baseParams).sql)
 

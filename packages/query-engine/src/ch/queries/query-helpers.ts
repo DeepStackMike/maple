@@ -107,6 +107,12 @@ export interface TracesBaseWhereOpts {
 	excludedEnvironments?: readonly string[]
 	excludedNamespaces?: readonly string[]
 	excludedCommitShas?: readonly string[]
+	/**
+	 * Drop rows whose name matches any of these `ILIKE` patterns — the route
+	 * shape of a health probe (`%/health%`), not a value. See
+	 * {@link nameExclusionCondition} for why it is a pattern and not a list.
+	 */
+	excludeNamePatterns?: readonly string[]
 	attributeIndexMode?: AttributeIndexMode
 }
 
@@ -224,6 +230,37 @@ export function errorsOnlyCondition(
 	if (errorsOnly === true) return statusCode.eq("Error")
 	if (errorsOnly === false) return statusCode.neq("Error")
 	return undefined
+}
+
+/**
+ * `NOT (name ILIKE p1 OR name ILIKE p2 …)` over every expression a row can be
+ * named by — or `undefined` when there are no patterns, so a caller that leaves
+ * the option unset emits byte-identical SQL.
+ *
+ * Patterns rather than a value list because the thing being excluded is a route
+ * shape. One health probe reaches the warehouse spelled three ways depending on
+ * the SDK — as the raw span name (`http.server GET`), as the rewritten display
+ * name (`GET /healthz`), or only as an `http.route` attribute — and a path
+ * prefix (`/api/health`, `/v1/health`) multiplies each of those again. A
+ * substring match covers the family; an exact list would have to enumerate it
+ * per SDK and would silently stop matching when one of them renamed a span.
+ *
+ * `ILIKE` and not `LIKE`: the same probe is `/Health` behind an ASP.NET route
+ * template, and a case-sensitive filter that works on one service and not the
+ * next is worse than no filter at all.
+ *
+ * Every name expression is tested against every pattern, so the caller passes
+ * the columns that could carry the name on the table it is reading — on raw
+ * `traces` that is `SpanName` plus the `http.route` attribute; on `trace_list_mv`
+ * it is the pre-extracted `SpanName` and `HttpRoute` columns.
+ */
+export function nameExclusionCondition(
+	patterns: readonly string[] | undefined,
+	...names: ReadonlyArray<CH.Expr<string>>
+): CH.Condition | undefined {
+	if (!patterns?.length || names.length === 0) return undefined
+	const matches = names.flatMap((name) => patterns.map((pattern) => name.ilike(pattern)))
+	return CH.not(matches.reduce((any, match) => any.or(match)))
 }
 
 type TracesBaseWhereColumns = Pick<
@@ -354,6 +391,9 @@ export function tracesBaseWhereConditions(
 			CH.notInList($.ResourceAttributes.get("vcs.ref.head.revision"), opts.excludedCommitShas),
 		)
 	}
+	conditions.push(
+		nameExclusionCondition(opts.excludeNamePatterns, $.SpanName, $.SpanAttributes.get("http.route")),
+	)
 
 	return conditions
 }

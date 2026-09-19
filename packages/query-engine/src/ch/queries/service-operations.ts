@@ -20,7 +20,7 @@ import { defineCondFn, from, fromUnion, unionAll, type ColumnAccessor } from "@m
 import { httpDisplaySpanName } from "../../traces-shared"
 import { CHNumber } from "../schema"
 import { ServiceOperationsHourly, ServiceOperationsMinutely, Traces } from "../tables"
-import { tracesBaseWhereConditions } from "./query-helpers"
+import { nameExclusionCondition, tracesBaseWhereConditions } from "./query-helpers"
 import { edgeCondition, hourGrain, interiorConditions, minuteGrain } from "./rollup-splice"
 import * as T from "@maple-dev/clickhouse-builder/types"
 
@@ -34,6 +34,20 @@ export interface ServiceOperationsSummaryOpts {
 	 * tab leaves it unset and keeps internal spans in the ranking.
 	 */
 	httpOnly?: boolean
+	/**
+	 * Drop operations whose name matches any of these `ILIKE` patterns — health
+	 * probes, which out-rank real work on a low-traffic service and push it off
+	 * the page.
+	 *
+	 * Matched on the *name only*, on every tier. The raw branch could also read
+	 * `SpanAttributes['http.route']` and the rollups cannot, and giving the two
+	 * tiers different predicates is the failure this file's KNOWN GAP note is
+	 * about: a probe would be excluded in the boundary minutes and counted in
+	 * the interior, so the totals would depend on where the window edge fell.
+	 * The display name already folds `http.route` in — a probe with a route is
+	 * `GET /health` on both sides — so nothing is lost by staying on it.
+	 */
+	excludeNamePatterns?: readonly string[]
 }
 
 export interface ServiceOperationsSummaryOutput {
@@ -167,6 +181,7 @@ export function serviceOperationsSummaryRawQuery(opts: ServiceOperationsSummaryO
 				environments: opts.environments,
 			}),
 			httpEndpointCondition(displaySpanName($), opts.httpOnly),
+			nameExclusionCondition(opts.excludeNamePatterns, displaySpanName($)),
 		])
 		.groupBy("spanName")
 		.orderBy(["estimatedSpanCount", "desc"])
@@ -192,6 +207,7 @@ export function serviceOperationsSummaryQuery(opts: ServiceOperationsSummaryOpts
 			}),
 			edgeCondition("Timestamp", minuteGrain),
 			httpEndpointCondition(displaySpanName($), opts.httpOnly),
+			nameExclusionCondition(opts.excludeNamePatterns, displaySpanName($)),
 		])
 		.groupBy("bSpanName")
 
@@ -212,6 +228,7 @@ export function serviceOperationsSummaryQuery(opts: ServiceOperationsSummaryOpts
 			...interiorConditions($.Minute, minuteGrain),
 			edgeCondition("Minute", hourGrain),
 			httpEndpointCondition($.SpanName, opts.httpOnly),
+			nameExclusionCondition(opts.excludeNamePatterns, $.SpanName),
 		])
 		.groupBy("bSpanName")
 
@@ -231,6 +248,7 @@ export function serviceOperationsSummaryQuery(opts: ServiceOperationsSummaryOpts
 			hourlyEnvironmentCondition($, opts.environments),
 			...interiorConditions($.Hour, hourGrain),
 			httpEndpointCondition($.SpanName, opts.httpOnly),
+			nameExclusionCondition(opts.excludeNamePatterns, $.SpanName),
 		])
 		.groupBy("bSpanName")
 

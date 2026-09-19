@@ -27,6 +27,7 @@ import {
 	inclusionValues,
 	inclusionCondition,
 	matchOrIn,
+	nameExclusionCondition,
 	type FacetOutput,
 } from "./query-helpers"
 import { deploymentEnvExpr } from "@maple/domain/tinybird/semconv-renames"
@@ -523,6 +524,12 @@ export interface TracesDurationStatsOpts {
 		deploymentEnv?: "contains"
 		serviceNamespace?: "contains"
 	}
+	/**
+	 * `ILIKE` patterns whose matching span names / routes are dropped — the
+	 * sidebar's "Hide health checks". Kept in step with the list query's own
+	 * `excludeNamePatterns` so a facet count describes the rows the list shows.
+	 */
+	excludeNamePatterns?: readonly string[]
 }
 
 export interface TracesDurationStatsOutput {
@@ -569,6 +576,7 @@ export function tracesDurationStatsQuery(opts: TracesDurationStatsOpts) {
 			CH.when(namespaces, (v: readonly string[]) =>
 				matchOrIn($.ServiceNamespace, v, mm?.serviceNamespace === "contains"),
 			),
+			nameExclusionCondition(opts.excludeNamePatterns, $.SpanName, $.HttpRoute),
 		])
 		.format("JSON")
 }
@@ -609,6 +617,12 @@ export interface TracesFacetsOpts {
 		deploymentEnv?: "contains"
 		serviceNamespace?: "contains"
 	}
+	/**
+	 * `ILIKE` patterns whose matching span names / routes are dropped — the
+	 * sidebar's "Hide health checks". Kept in step with the list query's own
+	 * `excludeNamePatterns` so a facet count describes the rows the list shows.
+	 */
+	excludeNamePatterns?: readonly string[]
 	attributeFilterKey?: string
 	attributeFilterValue?: string
 	attributeFilterValueMatchMode?: "contains"
@@ -661,6 +675,7 @@ export function tracesFacetsQuery(opts: TracesFacetsOpts): CHUnionQuery<TracesFa
 				matchOrIn($.ServiceNamespace, namespaces, opts.matchModes?.serviceNamespace === "contains"),
 			)
 		}
+		conditions.push(nameExclusionCondition(opts.excludeNamePatterns, $.SpanName, $.HttpRoute))
 
 		// Attribute filter EXISTS subqueries (correlated — references outer TraceId)
 		if (opts.attributeFilterKey) {

@@ -1,5 +1,6 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query"
 import { CH } from "@maple/query-engine"
+import { healthCheckPatterns } from "@/lib/health-checks"
 import { executeLocalCompiledQuery } from "@/lib/query"
 import { LOCAL_ORG_ID } from "../lib/constants"
 import { boundsForRange } from "../lib/time"
@@ -47,6 +48,11 @@ export function useLocalTraceFacets(filters: TraceFilters) {
 				namespace: filters.ns,
 				minDurationMs: filters.minDurationMs,
 				maxDurationMs: filters.maxDurationMs,
+				// Same exclusion as the list: a "Root Span" facet offering a probe
+				// that the list below it cannot show is a dead click, and the
+				// duration stats behind the range slider would put their floor
+				// under every row the reader can see.
+				excludeNamePatterns: healthCheckPatterns(filters.hideHealthChecks === true),
 			}
 			const [facetRows, statsRows] = await Promise.all([
 				executeLocalCompiledQuery(CH.compileUnion(CH.tracesFacetsQuery(opts), params)),

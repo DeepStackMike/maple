@@ -64,6 +64,14 @@ const FINGERPRINT = "11640393269246331608"
 
 const window = { orgId: ORG_ID, startTime: START_TIME, endTime: END_TIME }
 
+/**
+ * The probe routes the trace-list toggle hides, copied rather than imported:
+ * `apps/local-ui/src/lib/health-checks.ts` owns the product's list and the
+ * query engine must not depend on an app. Drift is harmless here — the fixture
+ * exists to pin the SQL *shape* the option compiles to.
+ */
+const HEALTH_CHECK_PATTERNS = ["%/health%", "%/ready%", "%/live%", "%/ping%", "%/api/telemetry%"]
+
 // Web analytics fixtures used by the v1 route registry.
 //
 // Two fixtures per page-view builder: unfiltered, and with a
@@ -1133,6 +1141,29 @@ export const builderFixtures: ReadonlyArray<BuilderFixture> = [
 				CH.serviceExternalEdgesSQL({ serviceName: "web", deploymentEnv: "production" }, window),
 			),
 		sampleValues: { targetType: "http" },
+	},
+
+	// Trace list. Two fixtures for one builder, and the pair is the point: the
+	// second differs from the first only by `excludeNamePatterns`, so the
+	// baseline diff shows exactly what the "Hide health checks" toggle adds and
+	// that it adds nothing anywhere else.
+	{
+		// runtime/query-engine.ts:1670 — the v2 trace list, and apps/local-ui's
+		// `useLocalTraces`. Both page over `trace_list_mv` by default.
+		module: "traces",
+		name: "traceListQuery",
+		label: "default",
+		compile: () => CH.compileUnsafe(CH.traceListQuery({ limit: 25 }), window),
+	},
+	{
+		module: "traces",
+		name: "traceListQuery",
+		label: "healthExcluded",
+		compile: () =>
+			CH.compileUnsafe(
+				CH.traceListQuery({ limit: 25, excludeNamePatterns: HEALTH_CHECK_PATTERNS }),
+				window,
+			),
 	},
 
 	// Trace-list enrichment fixtures.

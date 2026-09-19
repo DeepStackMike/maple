@@ -1,5 +1,6 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query"
 import { CH } from "@maple/query-engine"
+import { healthCheckPatterns } from "@/lib/health-checks"
 import { executeLocalCompiledQuery } from "@/lib/query"
 import { LOCAL_ORG_ID } from "../lib/constants"
 import { boundsForRange } from "../lib/time"
@@ -66,19 +67,33 @@ export function useLocalServiceOverview(serviceName: string, range: string | und
 
 export type ServiceOperationRow = CH.ServiceOperationsSummaryOutput
 
-/** Top operations table for the service detail page. */
-export function useLocalServiceOperations(serviceName: string, range: string | undefined) {
+/**
+ * Top operations table for the service detail page.
+ *
+ * `hideHealthChecks` is excluded in SQL rather than filtered out of the result:
+ * the query returns the top 25 by throughput and a probe out-ranks every real
+ * operation on a quiet service, so dropping them afterwards would leave a table
+ * of three rows with twenty-two invisibly spent on `/health`.
+ */
+export function useLocalServiceOperations(
+	serviceName: string,
+	range: string | undefined,
+	hideHealthChecks: boolean,
+) {
 	return useQuery({
-		queryKey: ["local", "services", "operations", serviceName, range],
+		queryKey: ["local", "services", "operations", serviceName, range, hideHealthChecks],
 		placeholderData: keepPreviousData,
 		queryFn: async (): Promise<ReadonlyArray<ServiceOperationRow>> => {
 			const { startTime, endTime } = boundsForRange(range)
 			return executeLocalCompiledQuery(
-				CH.compile(CH.serviceOperationsSummaryQuery({ serviceName, limit: 25 }), {
-					orgId: LOCAL_ORG_ID,
-					startTime,
-					endTime,
-				}),
+				CH.compile(
+					CH.serviceOperationsSummaryQuery({
+						serviceName,
+						limit: 25,
+						excludeNamePatterns: healthCheckPatterns(hideHealthChecks),
+					}),
+					{ orgId: LOCAL_ORG_ID, startTime, endTime },
+				),
 			)
 		},
 	})

@@ -35,6 +35,7 @@ import {
 	tracesBaseWhereConditions,
 	type TracesBaseWhereOpts,
 	matchOrIn,
+	nameExclusionCondition,
 	soleValue,
 } from "./query-helpers"
 
@@ -1615,6 +1616,9 @@ function traceListMvWhereConditions(
 	if (opts.excludedNamespaces?.length) {
 		conditions.push(CH.notInList($.ServiceNamespace, opts.excludedNamespaces))
 	}
+	// The MV's own spelling of the pair the raw branch reads off `SpanName` +
+	// `SpanAttributes['http.route']`, so both stage-1 paths exclude the same rows.
+	conditions.push(nameExclusionCondition(opts.excludeNamePatterns, $.SpanName, $.HttpRoute))
 
 	return conditions
 }

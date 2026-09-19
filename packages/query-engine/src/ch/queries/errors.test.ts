@@ -11,6 +11,7 @@ import {
 	errorTickBootstrapIssuesQuery,
 	errorTickIssuesQuery,
 	errorFingerprintsQuery,
+	tracesDurationStatsQuery,
 	tracesFacetsQuery,
 } from "./errors"
 
@@ -471,6 +472,26 @@ describe("tracesFacetsQuery", () => {
 		expect(sql).toContain("host.name")
 	})
 
+	// The sidebar's counts and the list they annotate come from two different
+	// tables; the exclusion has to be on both or the "Root Span" facet keeps
+	// offering a probe that the list no longer shows.
+	it("excludes health-check routes from every branch of the union", () => {
+		const { sql } = compileUnionUnsafe(
+			tracesFacetsQuery({ excludeNamePatterns: ["%/health%", "%/api/telemetry%"] }),
+			baseParams,
+		)
+		const excluded = (sql.match(/SpanName ILIKE '%\/health%'/g) || []).length
+		// Seven branches, one predicate each.
+		expect(excluded).toBe(7)
+		expect(sql).toContain("HttpRoute ILIKE '%/api/telemetry%'")
+	})
+
+	it("adds nothing to the facet SQL when no patterns are given", () => {
+		const { sql } = compileUnionUnsafe(tracesFacetsQuery({ excludeNamePatterns: [] }), baseParams)
+		expect(sql).toBe(compileUnionUnsafe(tracesFacetsQuery({}), baseParams).sql)
+		expect(sql).not.toContain("ILIKE")
+	})
+
 	it("compiles only the requested branch when facet is set", () => {
 		const q = tracesFacetsQuery({ facet: "service" })
 		const { sql } = compileUnionUnsafe(q, baseParams)
@@ -490,5 +511,26 @@ describe("tracesFacetsQuery", () => {
 		expect(sql).toContain("'deploymentEnv' AS facetType")
 		expect(sql).toContain("DeploymentEnv != ''")
 		expect(sql).toContain("LIMIT 20")
+	})
+})
+
+// tracesDurationStatsQuery
+
+describe("tracesDurationStatsQuery", () => {
+	// The stats drive the duration slider's bounds. Health probes are the fastest
+	// spans a service emits, so leaving them in when the list drops them puts the
+	// slider's floor under every row the user can actually see.
+	it("excludes health-check routes on the same columns as the facets", () => {
+		const { sql } = compileUnsafe(
+			tracesDurationStatsQuery({ excludeNamePatterns: ["%/health%"] }),
+			baseParams,
+		)
+		expect(sql).toContain("FROM trace_list_mv")
+		expect(sql).toContain("NOT ((SpanName ILIKE '%/health%' OR HttpRoute ILIKE '%/health%'))")
+	})
+
+	it("adds nothing when no patterns are given", () => {
+		const { sql } = compileUnsafe(tracesDurationStatsQuery({}), baseParams)
+		expect(sql).not.toContain("ILIKE")
 	})
 })

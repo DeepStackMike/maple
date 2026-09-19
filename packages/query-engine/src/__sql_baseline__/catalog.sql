@@ -3441,6 +3441,79 @@ SELECT
         LIMIT 200
         FORMAT JSON
 
+-- builder:traces:traceListQuery:default  [b47ce2af]
+SELECT
+          TraceId AS traceId,
+          argMin(Timestamp, (if(ParentSpanId = '', 0, 1), Timestamp)) AS startTime,
+          fromUnixTimestamp64Nano(max(toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS endTime,
+          intDiv(max(toUnixTimestamp64Nano(Timestamp) + toInt64(Duration)) - min(toUnixTimestamp64Nano(Timestamp)), 1000) AS durationMicros,
+          intDiv(argMin(Duration, (if(ParentSpanId = '', 0, 1), Timestamp)), 1000) AS rootDurationMicros,
+          count() AS spanCount,
+          arrayDistinct(arrayPushFront(arraySort(groupUniqArray(ServiceName)), argMin(ServiceName, (if(ParentSpanId = '', 0, 1), Timestamp)))) AS services,
+          argMin(SpanName, (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanName,
+          argMin(SpanKind, (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanKind,
+          argMin(StatusCode, (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanStatusCode,
+          argMin(SpanAttributes['http.method'], (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpMethod,
+          argMin(SpanAttributes['http.route'], (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpRoute,
+          argMin(SpanAttributes['http.status_code'], (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpStatusCode,
+          argMin(toJSONString(map('http.method', SpanAttributes['http.method'], 'http.request.method', SpanAttributes['http.request.method'], 'http.route', SpanAttributes['http.route'], 'http.target', SpanAttributes['http.target'], 'http.status_code', SpanAttributes['http.status_code'], 'http.response.status_code', SpanAttributes['http.response.status_code'], 'http.url', SpanAttributes['http.url'], 'url.full', SpanAttributes['url.full'], 'url.path', SpanAttributes['url.path'], 'server.address', SpanAttributes['server.address'], 'net.peer.name', SpanAttributes['net.peer.name'], 'screen.name', SpanAttributes['screen.name'])), (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanAttributes,
+          if(argMin(StatusCode, (if(ParentSpanId = '', 0, 1), Timestamp)) = 'Error', 1, 0) AS hasError
+        FROM trace_detail_spans
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= subtractHours(toDateTime('2026-01-01 10:30:00'), 1)
+          AND Timestamp <= addHours(toDateTime('2026-01-03 14:15:00'), 1)
+          AND TraceId IN (SELECT traceId FROM (SELECT
+          TraceId AS traceId,
+          Timestamp AS ts,
+          Duration AS d
+        FROM trace_list_mv
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+        ORDER BY ts DESC, traceId DESC
+        LIMIT 25))
+        GROUP BY traceId
+        ORDER BY startTime DESC, traceId DESC
+        LIMIT 25
+        FORMAT JSON
+
+-- builder:traces:traceListQuery:healthExcluded  [42d9f920]
+SELECT
+          TraceId AS traceId,
+          argMin(Timestamp, (if(ParentSpanId = '', 0, 1), Timestamp)) AS startTime,
+          fromUnixTimestamp64Nano(max(toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS endTime,
+          intDiv(max(toUnixTimestamp64Nano(Timestamp) + toInt64(Duration)) - min(toUnixTimestamp64Nano(Timestamp)), 1000) AS durationMicros,
+          intDiv(argMin(Duration, (if(ParentSpanId = '', 0, 1), Timestamp)), 1000) AS rootDurationMicros,
+          count() AS spanCount,
+          arrayDistinct(arrayPushFront(arraySort(groupUniqArray(ServiceName)), argMin(ServiceName, (if(ParentSpanId = '', 0, 1), Timestamp)))) AS services,
+          argMin(SpanName, (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanName,
+          argMin(SpanKind, (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanKind,
+          argMin(StatusCode, (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanStatusCode,
+          argMin(SpanAttributes['http.method'], (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpMethod,
+          argMin(SpanAttributes['http.route'], (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpRoute,
+          argMin(SpanAttributes['http.status_code'], (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpStatusCode,
+          argMin(toJSONString(map('http.method', SpanAttributes['http.method'], 'http.request.method', SpanAttributes['http.request.method'], 'http.route', SpanAttributes['http.route'], 'http.target', SpanAttributes['http.target'], 'http.status_code', SpanAttributes['http.status_code'], 'http.response.status_code', SpanAttributes['http.response.status_code'], 'http.url', SpanAttributes['http.url'], 'url.full', SpanAttributes['url.full'], 'url.path', SpanAttributes['url.path'], 'server.address', SpanAttributes['server.address'], 'net.peer.name', SpanAttributes['net.peer.name'], 'screen.name', SpanAttributes['screen.name'])), (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanAttributes,
+          if(argMin(StatusCode, (if(ParentSpanId = '', 0, 1), Timestamp)) = 'Error', 1, 0) AS hasError
+        FROM trace_detail_spans
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= subtractHours(toDateTime('2026-01-01 10:30:00'), 1)
+          AND Timestamp <= addHours(toDateTime('2026-01-03 14:15:00'), 1)
+          AND TraceId IN (SELECT traceId FROM (SELECT
+          TraceId AS traceId,
+          Timestamp AS ts,
+          Duration AS d
+        FROM trace_list_mv
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND NOT ((((((((((SpanName ILIKE '%/health%' OR SpanName ILIKE '%/ready%') OR SpanName ILIKE '%/live%') OR SpanName ILIKE '%/ping%') OR SpanName ILIKE '%/api/telemetry%') OR HttpRoute ILIKE '%/health%') OR HttpRoute ILIKE '%/ready%') OR HttpRoute ILIKE '%/live%') OR HttpRoute ILIKE '%/ping%') OR HttpRoute ILIKE '%/api/telemetry%'))
+        ORDER BY ts DESC, traceId DESC
+        LIMIT 25))
+        GROUP BY traceId
+        ORDER BY startTime DESC, traceId DESC
+        LIMIT 25
+        FORMAT JSON
+
 -- builder:traces:traceServicesByTraceIdsQuery:page-enrichment  [4e5e4b4b]
 SELECT
           TraceId AS traceId,

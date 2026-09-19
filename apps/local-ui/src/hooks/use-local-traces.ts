@@ -1,5 +1,6 @@
 import { useInfiniteQuery } from "@tanstack/react-query"
 import { CH } from "@maple/query-engine"
+import { healthCheckPatterns } from "@/lib/health-checks"
 import { executeLocalCompiledQuery } from "@/lib/query"
 import { LOCAL_ORG_ID } from "../lib/constants"
 import { boundsForRange } from "../lib/time"
@@ -36,6 +37,12 @@ export interface TraceFilters {
 	minDurationMs?: number
 	/** Maximum root span duration in milliseconds. */
 	maxDurationMs?: number
+	/**
+	 * Drop liveness probes from the list and the facets. Part of the filter set
+	 * (and so of the query key) rather than a hook argument: it changes which
+	 * rows are counted, exactly like every other field here.
+	 */
+	hideHealthChecks?: boolean
 	/** Time-range preset key (see `TIME_RANGES`). */
 	range?: string
 }
@@ -84,6 +91,7 @@ export function useLocalTraces(filters: TraceFilters) {
 					minDurationMs: filters.minDurationMs,
 					maxDurationMs: filters.maxDurationMs,
 					attributeFilters: attributeFilters.length > 0 ? attributeFilters : undefined,
+					excludeNamePatterns: healthCheckPatterns(filters.hideHealthChecks === true),
 				}),
 				{ orgId: LOCAL_ORG_ID, startTime, endTime },
 			)

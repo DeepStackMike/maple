@@ -356,7 +356,6 @@ const EXEMPT_BUILDERS: ReadonlySet<string> = new Set([
 	"services/serviceEnvironmentsQuery",
 	"services/serviceUsageWithPreviousQuery",
 	"traces/traceSummariesQuery",
-	"traces/traceListQuery",
 ])
 
 describe("builder coverage", () => {

@@ -15,9 +15,10 @@ import {
 	useLocalServiceOperationsTimeseries,
 	useLocalServiceOverview,
 } from "../hooks/use-local-service-detail"
+import { useHideHealthChecks } from "../hooks/use-hide-health-checks"
 import { navigate, useQueryParams } from "../lib/router"
 import { DEFAULT_RANGE } from "../lib/time"
-import { RefreshButton, TimeRangeSelect } from "../components/toolbar"
+import { HideHealthChecksToggle, RefreshButton, TimeRangeSelect } from "../components/toolbar"
 import { EmptyState, ErrorState } from "../components/view-states"
 
 const CHART_SERIES_LIMIT = 8
@@ -31,8 +32,10 @@ export function ServiceDetailView({ serviceName, onBack }: ServiceDetailViewProp
 	const [query, setParams] = useQueryParams()
 	const range = query.get("range") || DEFAULT_RANGE
 
+	const [hideHealthChecks, setHideHealthChecks] = useHideHealthChecks()
+
 	const overview = useLocalServiceOverview(serviceName, range)
-	const operations = useLocalServiceOperations(serviceName, range)
+	const operations = useLocalServiceOperations(serviceName, range, hideHealthChecks)
 	const topSpanNames = useMemo(
 		() => (operations.data ?? []).slice(0, CHART_SERIES_LIMIT).map((op) => op.spanName),
 		[operations.data],
@@ -76,6 +79,7 @@ export function ServiceDetailView({ serviceName, onBack }: ServiceDetailViewProp
 					</Badge>
 				))}
 				<div className="ml-auto flex items-center gap-2">
+					<HideHealthChecksToggle hidden={hideHealthChecks} onChange={setHideHealthChecks} />
 					<Button variant="outline" size="sm" onClick={() => openTraces()}>
 						View traces
 					</Button>
@@ -163,7 +167,9 @@ export function ServiceDetailView({ serviceName, onBack }: ServiceDetailViewProp
 								/>
 							) : (operations.data ?? []).length === 0 ? (
 								<div className="flex h-24 items-center justify-center rounded-md border text-sm text-muted-foreground">
-									No operations recorded in this range.
+									{hideHealthChecks
+										? "No operations in this range, other than health checks."
+										: "No operations recorded in this range."}
 								</div>
 							) : (
 								<div className="rounded-md border">

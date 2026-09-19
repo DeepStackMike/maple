@@ -2,8 +2,10 @@
 // invalidates the `["local", …]` React Query prefix, and the time-range select
 // is bound to local mode's presets.
 
-import { useCallback } from "react"
+import { useCallback, useId } from "react"
 import { useQueryClient } from "@tanstack/react-query"
+import { Checkbox } from "@maple/ui/components/ui/checkbox"
+import { Label } from "@maple/ui/components/ui/label"
 import {
 	RefreshButton as SharedRefreshButton,
 	TimeRangeSelect as SharedTimeRangeSelect,
@@ -48,3 +50,33 @@ const RANGE_OPTIONS = TIME_RANGES.map((range) => ({
 export function TimeRangeSelect({ value, onChange }: { value: string; onChange: (next: string) => void }) {
 	return <SharedTimeRangeSelect ranges={RANGE_OPTIONS} value={value} onChange={onChange} />
 }
+
+/**
+ * The probe filter, as a toolbar checkbox rather than a sidebar facet.
+ *
+ * It is not a facet: every facet section lists values the data reported and
+ * counts them, and this one lists nothing — it is a standing decision about
+ * what the view is for, which is why it sits beside the time range and survives
+ * a reload. Spelled as what it *does* ("Hide health checks") and not as its
+ * state, so the label does not change under the click that changes the box.
+ */
+export function HideHealthChecksToggle({
+	hidden,
+	onChange,
+}: {
+	hidden: boolean
+	onChange: (hidden: boolean) => void
+}) {
+	const id = useId()
+	return (
+		<span className="flex items-center gap-1.5" title={HIDE_HEALTH_CHECKS_HINT}>
+			<Checkbox id={id} checked={hidden} onCheckedChange={(val) => onChange(val === true)} />
+			<Label htmlFor={id} className="cursor-pointer whitespace-nowrap text-xs font-normal">
+				Hide health checks
+			</Label>
+		</span>
+	)
+}
+
+const HIDE_HEALTH_CHECKS_HINT =
+	"Hides traces whose route looks like a liveness probe — /health, /ready, /live, /ping, /api/telemetry"

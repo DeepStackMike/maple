@@ -237,3 +237,55 @@ describe("row schemas (BYO-CH UInt64-as-string)", () => {
 		expect(decoded.count).toBe(17)
 	})
 })
+
+describe("health-check exclusion", () => {
+	// Every tier or none. A predicate on the raw edges alone would exclude a
+	// probe in the boundary minutes and count it in the interior, so the total
+	// would depend on where the window edge happened to fall — the same silent
+	// failure this file's splice is built to avoid.
+	it("applies the same name exclusion to all three tiers of the splice", () => {
+		const { sql } = compileUnsafe(
+			serviceOperationsSummaryQuery({ serviceName: "api", excludeNamePatterns: ["%/health%"] }),
+			baseParams,
+		)
+
+		expect(sql).toContain("FROM traces")
+		expect(sql).toContain("FROM service_operations_minutely")
+		expect(sql).toContain("FROM service_operations_hourly")
+		// The rollups store the normalized name, so the pattern reads the column
+		// directly; the raw edges have to normalize first, which is the same
+		// expression they group by.
+		expect((sql.match(/NOT \(SpanName ILIKE '%\/health%'\)/g) || []).length).toBe(2)
+		expect(sql).toContain(`${NORMALIZED_SPAN_NAME_SQL} ILIKE '%/health%'`)
+	})
+
+	it("matches on the name alone, never on http.route", () => {
+		const { sql } = compileUnsafe(
+			serviceOperationsSummaryQuery({ serviceName: "api", excludeNamePatterns: ["%/health%"] }),
+			baseParams,
+		)
+		// A bare `SpanAttributes['http.route'] ILIKE` would be a predicate the
+		// rollup tiers have no column for.
+		expect(sql).not.toContain("SpanAttributes['http.route'] ILIKE")
+	})
+
+	it("adds nothing when no patterns are given", () => {
+		const withOption = compileUnsafe(
+			serviceOperationsSummaryQuery({ serviceName: "api", excludeNamePatterns: [] }),
+			baseParams,
+		).sql
+		expect(withOption).toBe(
+			compileUnsafe(serviceOperationsSummaryQuery({ serviceName: "api" }), baseParams).sql,
+		)
+		expect(withOption).not.toContain("ILIKE")
+	})
+
+	it("excludes on the rollback path too, so a rollout cannot change what is listed", () => {
+		const { sql } = compileUnsafe(
+			serviceOperationsSummaryRawQuery({ serviceName: "api", excludeNamePatterns: ["%/ping%"] }),
+			baseParams,
+		)
+		expect(sql).toContain("FROM traces")
+		expect(sql).toContain("ILIKE '%/ping%'")
+	})
+})

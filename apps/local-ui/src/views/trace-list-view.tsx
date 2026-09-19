@@ -8,6 +8,7 @@ import { formatDuration } from "@maple/ui/lib/format"
 import { cn } from "@maple/ui/lib/utils"
 import { useLocalTraces, type TraceFilters } from "../hooks/use-local-traces"
 import { useLocalTraceFacets } from "../hooks/use-local-trace-facets"
+import { useHideHealthChecks } from "../hooks/use-hide-health-checks"
 import { useQueryParams } from "../lib/router"
 import { DEFAULT_RANGE } from "../lib/time"
 import { DurationRangeFilter } from "@maple/ui/components/filters/duration-range-filter"
@@ -24,6 +25,7 @@ import {
 import { PageShell } from "../components/page-shell"
 import { parseAttributes } from "@maple/ui/lib/span-tree"
 import {
+	HideHealthChecksToggle,
 	Toolbar,
 	ToolbarSearch,
 	ToolbarStat,
@@ -48,10 +50,12 @@ export function TraceListView({ onSelectTrace }: TraceListViewProps) {
 	const [query, setParams] = useQueryParams()
 	const range = query.get("range") || DEFAULT_RANGE
 	const search = query.get("q") || undefined
+	const [hideHealthChecks, setHideHealthChecks] = useHideHealthChecks()
 
 	const filters: TraceFilters = {
 		range,
 		search,
+		hideHealthChecks,
 		service: query.get("service") || undefined,
 		span: query.get("span") || undefined,
 		errorsOnly: query.get("errors") === "1",
@@ -168,6 +172,7 @@ export function TraceListView({ onSelectTrace }: TraceListViewProps) {
 			/>
 			<ToolbarStats>
 				<ToolbarStat value={rows.length} label={hasNextPage ? "traces+" : "traces"} />
+				<HideHealthChecksToggle hidden={hideHealthChecks} onChange={setHideHealthChecks} />
 				<RefreshButton />
 				<TimeRangeSelect value={range} onChange={(next) => setParams({ range: next })} />
 			</ToolbarStats>
@@ -187,7 +192,9 @@ export function TraceListView({ onSelectTrace }: TraceListViewProps) {
 					hint={
 						hasActiveFilters || search
 							? "Try widening the time range or clearing filters."
-							: "Send OTLP spans to the local ingest endpoint to get started."
+							: hideHealthChecks
+								? "Send OTLP spans to the local ingest endpoint to get started — or untick “Hide health checks”, if all this service serves is probes."
+								: "Send OTLP spans to the local ingest endpoint to get started."
 					}
 				/>
 			) : (
