@@ -10,6 +10,7 @@ import {
 	GaugeIcon,
 	NetworkNodesIcon,
 	PulseIcon,
+	SitemapIcon,
 	SquareActivityChartIcon,
 } from "@maple/ui/components/icons"
 import { HomeView } from "./views/home-view"
@@ -21,6 +22,7 @@ import { MetricDetailView } from "./views/metric-detail-view"
 import { ErrorsView } from "./views/errors-view"
 import { ServicesListView } from "./views/services-list-view"
 import { ServiceDetailView } from "./views/service-detail-view"
+import { ServiceMapView } from "./views/service-map-view"
 import { SessionsListView } from "./views/sessions-list-view"
 import { SessionDetailView } from "./views/session-detail-view"
 import { AnalyticsView } from "./views/analytics-view"
@@ -41,12 +43,16 @@ type Route =
 	| { name: "metric-detail"; metricName: string }
 	| { name: "services" }
 	| { name: "service-detail"; serviceName: string }
+	| { name: "service-map" }
 	| { name: "errors" }
 	| { name: "sessions" }
 	| { name: "session-detail"; sessionId: string }
 	| { name: "analytics" }
 
 function parseRoute(path: string): Route {
+	// Ahead of the `/services` prefix test below, which this path does not match
+	// today and should not start matching if either name is ever shortened.
+	if (path.startsWith("/service-map")) return { name: "service-map" }
 	const traceDetail = path.match(/^\/traces\/(.+)$/)
 	if (traceDetail) return { name: "trace-detail", traceId: decodeURIComponent(traceDetail[1]) }
 	const metricDetail = path.match(/^\/metrics\/(.+)$/)
@@ -67,7 +73,16 @@ function parseRoute(path: string): Route {
 	return { name: "home" }
 }
 
-type Tab = "home" | "traces" | "logs" | "metrics" | "services" | "errors" | "sessions" | "analytics"
+type Tab =
+	| "home"
+	| "traces"
+	| "logs"
+	| "metrics"
+	| "services"
+	| "service-map"
+	| "errors"
+	| "sessions"
+	| "analytics"
 
 function activeTab(route: Route): Tab {
 	if (route.name === "traces" || route.name === "trace-detail") return "traces"
@@ -75,6 +90,7 @@ function activeTab(route: Route): Tab {
 	if (route.name === "logs") return "logs"
 	if (route.name === "metrics" || route.name === "metric-detail") return "metrics"
 	if (route.name === "services" || route.name === "service-detail") return "services"
+	if (route.name === "service-map") return "service-map"
 	if (route.name === "sessions" || route.name === "session-detail") return "sessions"
 	if (route.name === "analytics") return "analytics"
 	return "home"
@@ -142,6 +158,12 @@ export function App() {
 								onClick={() => switchTab("/services")}
 							/>
 							<NavTab
+								label="Service map"
+								icon={<SitemapIcon size={14} />}
+								active={tab === "service-map"}
+								onClick={() => switchTab("/service-map")}
+							/>
+							<NavTab
 								label="Errors"
 								icon={<CircleWarningIcon size={14} />}
 								active={tab === "errors"}
@@ -196,6 +218,12 @@ export function App() {
 								<ServiceDetailView
 									serviceName={route.serviceName}
 									onBack={() => navigate("/services", carry())}
+								/>
+							) : route.name === "service-map" ? (
+								<ServiceMapView
+									onSelectService={(serviceName) =>
+										navigate(`/services/${encodeURIComponent(serviceName)}`, carry())
+									}
 								/>
 							) : route.name === "services" ? (
 								<ServicesListView

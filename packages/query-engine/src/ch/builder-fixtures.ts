@@ -1075,6 +1075,26 @@ export const builderFixtures: ReadonlyArray<BuilderFixture> = [
 			CH.compileUnsafe(CH.serviceDependenciesForServiceQuery({ serviceName: "web" }), window),
 	},
 	{
+		// The local dashboard's map: the same join, one tier, whole window. No
+		// rollup branch to splice, because local mode never fills one.
+		module: "service-map",
+		name: "serviceMapEdgesQuery",
+		label: "default",
+		compile: () => CH.compileUnsafe(CH.serviceMapEdgesQuery(), window),
+	},
+	{
+		module: "service-map",
+		name: "serviceMapEdgesQuery",
+		label: "env-scoped",
+		compile: () => CH.compileUnsafe(CH.serviceMapEdgesQuery({ deploymentEnv: "production" }), window),
+	},
+	{
+		module: "service-map",
+		name: "serviceMapNodeStatsQuery",
+		label: "default",
+		compile: () => CH.compileUnsafe(CH.serviceMapNodeStatsQuery(), window),
+	},
+	{
 		// Hourly MV UNION ALL the two partial hours from raw traces. Absent from
 		// this catalog until 2026-08-30, which is how its splice drifted: the
 		// hourly branch floored the start to the hour while the raw branch covered
