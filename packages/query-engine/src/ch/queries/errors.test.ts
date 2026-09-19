@@ -5,6 +5,7 @@ import {
 	errorSampleStackQuery,
 	errorsTimeseriesQuery,
 	errorsSparkQuery,
+	errorVersionsQuery,
 	errorsSummaryQuery,
 	errorDetailTracesQuery,
 	errorsFacetsQuery,
@@ -116,6 +117,70 @@ describe("errorsByTypeQuery", () => {
 		const q = errorsByTypeQuery({ limit: 25 })
 		const { sql } = compileUnsafe(q, baseParams)
 		expect(sql).toContain("LIMIT 25")
+	})
+})
+
+// errorVersionsQuery — the per-build occurrence split behind "Introduced in"
+
+describe("errorVersionsQuery", () => {
+	it("splits one scan of the fingerprint-keyed table by deployed version", () => {
+		const { sql } = compileUnsafe(errorVersionsQuery({ fingerprintHashes: ["123", "456"] }), baseParams)
+		// Fingerprint-filtered, so it prunes on (OrgId, FingerprintHash, Timestamp).
+		expect(sql).toContain("FROM error_events")
+		expect(sql).not.toContain("FROM error_events_by_time")
+		expect(sql).toContain("toString(FingerprintHash) AS fingerprintHash")
+		expect(sql).toContain("ServiceVersion AS serviceVersion")
+		expect(sql).toContain("count() AS count")
+		expect(sql).toContain("min(Timestamp) AS firstSeen")
+		expect(sql).toContain("max(Timestamp) AS lastSeen")
+		expect(sql).toContain("GROUP BY fingerprintHash, serviceVersion")
+		expect(sql).toContain("ORDER BY fingerprintHash ASC, firstSeen ASC")
+		expect(sql).toContain("LIMIT 500")
+		expect(sql).toContain("FORMAT JSON")
+	})
+
+	it("asks for every listed fingerprint in one IN list, not one query each", () => {
+		const { sql } = compileUnsafe(errorVersionsQuery({ fingerprintHashes: ["123", "456"] }), baseParams)
+		expect(sql).toContain("FingerprintHash IN (toUInt64('123'), toUInt64('456'))")
+	})
+
+	it("keeps unversioned occurrences so the breakdown still sums to the row above it", () => {
+		// An exporter that never set `service.version` writes ''. Dropping those
+		// rows would leave a per-version table whose counts do not add up.
+		const { sql } = compileUnsafe(errorVersionsQuery({ fingerprintHashes: ["123"] }), baseParams)
+		expect(sql).not.toContain("ServiceVersion != ''")
+	})
+
+	it("drops synthetic issue keys instead of aborting on toUInt64", () => {
+		const { sql } = compileUnsafe(
+			errorVersionsQuery({ fingerprintHashes: ["alert:abc:all"] }),
+			baseParams,
+		)
+		expect(sql).toContain("1 = 0")
+		expect(sql).not.toContain("IN ()")
+	})
+
+	it("carries the list's own filters so the split describes the listed rows", () => {
+		const { sql } = compileUnsafe(
+			errorVersionsQuery({
+				fingerprintHashes: ["123"],
+				rootOnly: true,
+				services: ["api"],
+				deploymentEnvs: ["production"],
+				serviceVersions: ["1.4.2"],
+			}),
+			baseParams,
+		)
+		expect(sql).toContain("ParentSpanId = ''")
+		expect(sql).toContain("ServiceName IN ('api')")
+		expect(sql).toContain("DeploymentEnv IN ('production')")
+		expect(sql).toContain("ServiceVersion IN ('1.4.2')")
+	})
+
+	it("scopes to the org and derives single-tenant scope", () => {
+		const compiled = compileUnsafe(errorVersionsQuery({ fingerprintHashes: ["123"] }), baseParams)
+		expect(compiled.sql).toContain("OrgId = 'org_1'")
+		expect(compiled.tenantScope).toBe("single-tenant")
 	})
 })
 

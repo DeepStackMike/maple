@@ -12,6 +12,8 @@ export interface ErrorsFilters {
 	env?: string
 	/** Exact `ErrorLabel` match — the value the "Error Type" facet lists. */
 	errorType?: string
+	/** Exact `service.version` match — the value the "Version" facet lists. */
+	version?: string
 	/**
 	 * Restrict to root-span errors — the *unchecked* state of the sidebar's
 	 * "All span errors" box, which is how `apps/web` spelled the same filter.
@@ -27,6 +29,7 @@ function commonOpts(filters: ErrorsFilters) {
 		services: filters.service ? [filters.service] : undefined,
 		deploymentEnvs: filters.env ? [filters.env] : undefined,
 		errorLabels: filters.errorType ? [filters.errorType] : undefined,
+		serviceVersions: filters.version ? [filters.version] : undefined,
 	}
 }
 
@@ -67,6 +70,47 @@ export function useLocalErrorsByType(filters: ErrorsFilters) {
 	})
 }
 
+/**
+ * Per-build occurrence split for every fingerprint on the page, in one query.
+ *
+ * One request for the whole list, not one per row: the list shows fifty
+ * fingerprints and every one of them wants the version it was introduced in, and
+ * chDB runs local queries serially — fifty round trips would be the page's whole
+ * latency budget spent on a subtitle.
+ *
+ * Returned as a Map so a row looks its own versions up by hash instead of
+ * re-filtering the flat result on every render. Rows come back oldest-first
+ * within a fingerprint, which is the order "introduced in" reads off; the
+ * Compare-versions table re-sorts by recency for display.
+ */
+export function useLocalErrorVersions(fingerprintHashes: ReadonlyArray<string>, filters: ErrorsFilters) {
+	// The key is the hash list, not the row objects: counts change on every
+	// refetch and would evict a cache entry whose answer did not move.
+	const key = [...fingerprintHashes].sort().join(",")
+	return useQuery({
+		queryKey: ["local", "errors", "versions", key, filters],
+		enabled: fingerprintHashes.length > 0,
+		placeholderData: keepPreviousData,
+		queryFn: async (): Promise<Map<string, Array<CH.ErrorVersionsOutput>>> => {
+			const { startTime, endTime } = boundsForRange(filters.range)
+			const rows = await executeLocalCompiledQuery(
+				CH.compile(CH.errorVersionsQuery({ ...commonOpts(filters), fingerprintHashes }), {
+					orgId: LOCAL_ORG_ID,
+					startTime,
+					endTime,
+				}),
+			)
+			const byFingerprint = new Map<string, Array<CH.ErrorVersionsOutput>>()
+			for (const row of rows) {
+				const list = byFingerprint.get(row.fingerprintHash)
+				if (list) list.push(row)
+				else byFingerprint.set(row.fingerprintHash, [row])
+			}
+			return byFingerprint
+		},
+	})
+}
+
 export interface FacetOption {
 	name: string
 	count: number
@@ -76,6 +120,7 @@ export interface ErrorsFacets {
 	services: Array<FacetOption>
 	environments: Array<FacetOption>
 	errorTypes: Array<FacetOption>
+	versions: Array<FacetOption>
 }
 
 /**
@@ -110,6 +155,7 @@ export function useLocalErrorsFacets(filters: ErrorsFilters) {
 				services: pick("service"),
 				environments: pick("environment"),
 				errorTypes: pick("error_type"),
+				versions: pick("version"),
 			}
 		},
 	})

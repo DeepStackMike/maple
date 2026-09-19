@@ -239,6 +239,73 @@ export function errorSampleStackQuery(opts: ErrorSampleStackOpts) {
 		.format("JSON")
 }
 
+// Error versions — one fingerprint's occurrences, split by the build they ran on
+//
+// "Is this new?" is the first question asked of an error and the one the errors
+// list could not answer. `errorsByTypeQuery` already carries `firstSeen`, but a
+// timestamp only says *when*, and what a reader acts on is *which deploy*:
+// an error whose every occurrence is on `1.4.2` is a regression that shipped
+// this afternoon, and the same error spread evenly across six versions is a bug
+// that has always been there.
+//
+// `error_events.ServiceVersion` is `service.version` off the resource,
+// materialized on every row since the v6→v7 local migration
+// (`v6-to-v7-error-service-version.ts`), so this is a GROUP BY and not a join.
+//
+// Batched over `fingerprintHashes`, like `errorsSparkQuery`: the list renders
+// fifty rows and every one of them wants its introducing version, which as one
+// query per row is fifty round trips against a chDB process that runs them
+// serially. Fingerprint-filtered, so it rides `error_events`' (OrgId,
+// FingerprintHash, Timestamp) key rather than scanning the window.
+//
+// Rows with an empty `ServiceVersion` are kept, not dropped. They are what an
+// exporter that never set `service.version` produces, and dropping them would
+// leave a per-version table whose counts do not add up to the count in the list
+// row above it — the one thing a breakdown must never do.
+
+export interface ErrorVersionsOpts extends ErrorsSharedFilters {
+	fingerprintHashes: readonly string[]
+	rootOnly?: boolean
+	limit?: number
+}
+
+export interface ErrorVersionsOutput {
+	readonly fingerprintHash: string
+	/** `service.version` off the resource; `''` when the exporter set none. */
+	readonly serviceVersion: string
+	readonly count: number
+	readonly firstSeen: string
+	readonly lastSeen: string
+}
+
+export function errorVersionsQuery(opts: ErrorVersionsOpts) {
+	return from(ErrorEvents)
+		.select(($) => ({
+			// Identity UInt64: unwrapped it corrupts above 2^53.
+			fingerprintHash: CH.toString_($.FingerprintHash),
+			serviceVersion: $.ServiceVersion,
+			count: CH.count(),
+			firstSeen: CH.min_($.Timestamp),
+			lastSeen: CH.max_($.Timestamp),
+		}))
+		.where(($) => [
+			$.OrgId.eq(param.string("orgId")),
+			fingerprintHashIn($.FingerprintHash, opts.fingerprintHashes),
+			$.Timestamp.gte(param.dateTimeSeconds("startTime")),
+			$.Timestamp.lte(param.dateTimeSeconds("endTime")),
+			CH.whenTrue(!!opts.rootOnly, () => $.ParentSpanId.eq("")),
+			...sharedFilterConditions($, opts),
+		])
+		.groupBy("fingerprintHash", "serviceVersion")
+		// Grouped by fingerprint first so a truncating LIMIT cuts whole
+		// fingerprints off the tail rather than silently amputating the newest
+		// versions of every row on the page; oldest-first inside a fingerprint is
+		// the order "introduced in" reads off.
+		.orderBy(["fingerprintHash", "asc"], ["firstSeen", "asc"])
+		.limit(opts.limit ?? 500)
+		.format("JSON")
+}
+
 // Errors timeseries
 
 export interface ErrorsTimeseriesOpts {

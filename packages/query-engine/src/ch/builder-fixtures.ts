@@ -610,6 +610,16 @@ export const builderFixtures: ReadonlyArray<BuilderFixture> = [
 			}),
 	},
 	{
+		// local-ui use-local-errors.ts useLocalErrorVersions — the "Introduced in"
+		// line on every list row and the Compare-versions strip under an open one,
+		// batched over the whole page of fingerprints.
+		module: "errors",
+		name: "errorVersionsQuery",
+		label: "default",
+		compile: () =>
+			CH.compileUnsafe(CH.errorVersionsQuery({ fingerprintHashes: [FINGERPRINT] }), window),
+	},
+	{
 		module: "errors",
 		name: "errorIssueSampleTracesQuery",
 		label: "default",

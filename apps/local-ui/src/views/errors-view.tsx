@@ -20,11 +20,13 @@ import type { CH } from "@maple/query-engine"
 import {
 	useLocalErrorSampleStack,
 	useLocalErrorTraces,
+	useLocalErrorVersions,
 	useLocalErrorsByType,
 	useLocalErrorsFacets,
 	useLocalErrorsSummary,
 	type ErrorsFilters,
 } from "../hooks/use-local-errors"
+import { introducedVersion, versionsByRecency } from "../lib/error-versions"
 import { useQueryParams } from "../lib/router"
 import { DEFAULT_RANGE, formatRelativeTime } from "../lib/time"
 import { PageShell } from "../components/page-shell"
@@ -37,7 +39,10 @@ interface ErrorsViewProps {
 }
 
 /** Columns in the "Errors by Type" table — the colSpan an expanded row has to cover. */
-const TABLE_COLUMNS = 6
+const TABLE_COLUMNS = 7
+
+/** What a `ServiceVersion` of `''` reads as: the exporter never set one. */
+const UNVERSIONED = "unversioned"
 
 export function ErrorsView({ onSelectTrace }: ErrorsViewProps) {
 	const [query, setParams] = useQueryParams()
@@ -45,19 +50,20 @@ export function ErrorsView({ onSelectTrace }: ErrorsViewProps) {
 	const service = query.get("service") || undefined
 	const env = query.get("env") || undefined
 	const errorType = query.get("type") || undefined
+	const version = query.get("version") || undefined
 	const rootOnly = query.get("root") === "1"
 
-	const filters: ErrorsFilters = { service, env, errorType, rootOnly, range }
+	const filters: ErrorsFilters = { service, env, errorType, version, rootOnly, range }
 	const summary = useLocalErrorsSummary(filters)
 	const byType = useLocalErrorsByType(filters)
 	const facets = useLocalErrorsFacets(filters)
-	const hasActiveFilters = !!service || !!env || !!errorType || rootOnly
+	const hasActiveFilters = !!service || !!env || !!errorType || !!version || rootOnly
 
 	const sidebar = (
 		<FilterSidebarFrame className="w-56 shrink-0 px-4" waiting={facets.isFetching}>
 			<FilterSidebarHeader
 				canClear={hasActiveFilters}
-				onClear={() => setParams({ service: null, env: null, type: null, root: null })}
+				onClear={() => setParams({ service: null, env: null, type: null, version: null, root: null })}
 			/>
 			<FilterSidebarBody>
 				{/*
@@ -93,6 +99,16 @@ export function ErrorsView({ onSelectTrace }: ErrorsViewProps) {
 					selected={errorType ? [errorType] : []}
 					onChange={(vals) => setParams({ type: vals.at(-1) ?? null })}
 				/>
+				{/* Which deploy the error was seen on — the fastest way to tell a
+				    regression from something that was always broken. Blank versions
+				    are absent by construction: `errorsFacetsQuery` drops them, because
+				    a facet you cannot act on is noise. */}
+				<SearchableFilterSection
+					title="Version"
+					options={facets.data?.versions ?? []}
+					selected={version ? [version] : []}
+					onChange={(vals) => setParams({ version: vals.at(-1) ?? null })}
+				/>
 			</FilterSidebarBody>
 		</FilterSidebarFrame>
 	)
@@ -113,6 +129,12 @@ export function ErrorsView({ onSelectTrace }: ErrorsViewProps) {
 	)
 
 	const rows = byType.data ?? []
+	// One query for the whole page. Built off the rendered rows so it re-runs
+	// when the list does, and skipped entirely while the list is still empty.
+	const versions = useLocalErrorVersions(
+		rows.map((row) => row.fingerprintHash),
+		filters,
+	)
 
 	return (
 		<PageShell sidebar={sidebar} toolbar={toolbar}>
@@ -144,6 +166,7 @@ export function ErrorsView({ onSelectTrace }: ErrorsViewProps) {
 										<TableHead>Error Type</TableHead>
 										<TableHead className="text-right">Count</TableHead>
 										<TableHead className="text-right">Affected Services</TableHead>
+										<TableHead className="text-right">First Seen</TableHead>
 										<TableHead className="text-right">Last Seen</TableHead>
 										<TableHead className="w-8" />
 									</TableRow>
@@ -153,6 +176,7 @@ export function ErrorsView({ onSelectTrace }: ErrorsViewProps) {
 										<ErrorTypeRow
 											key={row.fingerprintHash}
 											row={row}
+											versions={versions.data?.get(row.fingerprintHash) ?? []}
 											filters={filters}
 											onSelectTrace={onSelectTrace}
 										/>
@@ -238,15 +262,18 @@ function KpiCard({
 
 function ErrorTypeRow({
 	row,
+	versions,
 	filters,
 	onSelectTrace,
 }: {
 	row: CH.ErrorsByTypeOutput
+	versions: ReadonlyArray<CH.ErrorVersionsOutput>
 	filters: ErrorsFilters
 	onSelectTrace: (traceId: string) => void
 }) {
 	const [expanded, setExpanded] = useState(false)
 	const toggle = () => setExpanded((prev) => !prev)
+	const introduced = introducedVersion(versions)
 
 	return (
 		<>
@@ -269,6 +296,14 @@ function ErrorTypeRow({
 								{row.sampleMessage}
 							</span>
 						) : null}
+						{introduced ? (
+							<span
+								className="block truncate text-[10px] text-muted-foreground"
+								title="Oldest version this error was seen on inside the selected time range — widen the range to look further back."
+							>
+								Introduced in {introduced}
+							</span>
+						) : null}
 					</button>
 				</TableCell>
 				<TableCell className="text-right">
@@ -278,6 +313,9 @@ function ErrorTypeRow({
 				</TableCell>
 				<TableCell className="text-right tabular-nums">
 					{formatNumber(row.affectedServicesCount)}
+				</TableCell>
+				<TableCell className="whitespace-nowrap text-right text-muted-foreground">
+					{formatRelativeTime(row.firstSeen)}
 				</TableCell>
 				<TableCell className="whitespace-nowrap text-right text-muted-foreground">
 					{formatRelativeTime(row.lastSeen)}
@@ -300,7 +338,12 @@ function ErrorTypeRow({
 			{expanded ? (
 				<TableRow className="bg-accent/30 hover:bg-accent/30">
 					<TableCell colSpan={TABLE_COLUMNS} className="px-4 py-3">
-						<ErrorTypeDetail row={row} filters={filters} onSelectTrace={onSelectTrace} />
+						<ErrorTypeDetail
+							row={row}
+							versions={versions}
+							filters={filters}
+							onSelectTrace={onSelectTrace}
+						/>
 					</TableCell>
 				</TableRow>
 			) : null}
@@ -310,10 +353,12 @@ function ErrorTypeRow({
 
 function ErrorTypeDetail({
 	row,
+	versions,
 	filters,
 	onSelectTrace,
 }: {
 	row: CH.ErrorsByTypeOutput
+	versions: ReadonlyArray<CH.ErrorVersionsOutput>
 	filters: ErrorsFilters
 	onSelectTrace: (traceId: string) => void
 }) {
@@ -322,6 +367,7 @@ function ErrorTypeDetail({
 
 	return (
 		<div className="space-y-3">
+			<CompareVersions rows={versions} />
 			<SampleStack
 				data={sample.data ?? null}
 				isPending={sample.isPending}
@@ -362,6 +408,61 @@ function ErrorTypeDetail({
 					))}
 				</ul>
 			)}
+		</div>
+	)
+}
+
+/**
+ * This fingerprint's occurrences, split by the build they ran on.
+ *
+ * The single most useful thing to know about an error is whether it is new, and
+ * a row per version answers it at a glance: all of the count on the newest build
+ * is a regression that shipped with it, and an even spread across six builds is
+ * something that was always there. Rows come from the same batched
+ * `errorVersionsQuery` the list's "Introduced in" line reads, so opening a row
+ * costs nothing extra.
+ *
+ * Nothing is drawn when there is one version and it is blank — that is every
+ * exporter that never set `service.version`, and a one-row table saying
+ * "unversioned" is the whole page's worth of chrome for no information.
+ */
+function CompareVersions({ rows }: { rows: ReadonlyArray<CH.ErrorVersionsOutput> }) {
+	if (rows.length === 0) return null
+	if (rows.length === 1 && !rows[0].serviceVersion) return null
+
+	const total = rows.reduce((sum, row) => sum + row.count, 0)
+
+	return (
+		<div className="space-y-1">
+			<h4 className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+				Compare versions
+			</h4>
+			<ul className="divide-y rounded-md border">
+				{versionsByRecency(rows).map((row) => (
+					<li
+						key={row.serviceVersion || UNVERSIONED}
+						className="flex items-center gap-3 px-2 py-1.5 text-xs"
+					>
+						<span
+							className={cn(
+								"min-w-0 flex-1 truncate font-mono",
+								row.serviceVersion ? "text-foreground" : "text-muted-foreground italic",
+							)}
+						>
+							{row.serviceVersion || UNVERSIONED}
+						</span>
+						<span className="shrink-0 tabular-nums text-muted-foreground">
+							{total > 0 ? formatErrorRate(row.count / total) : "—"}
+						</span>
+						<span className="w-14 shrink-0 text-right tabular-nums font-medium text-destructive">
+							{formatNumber(row.count)}
+						</span>
+						<span className="w-20 shrink-0 text-right tabular-nums text-muted-foreground">
+							{formatRelativeTime(row.lastSeen)}
+						</span>
+					</li>
+				))}
+			</ul>
 		</div>
 	)
 }

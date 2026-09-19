@@ -580,6 +580,23 @@ SELECT
         GROUP BY fingerprintHash
         FORMAT JSON
 
+-- builder:errors:errorVersionsQuery:default  [2df88e39]
+SELECT
+          toString(FingerprintHash) AS fingerprintHash,
+          ServiceVersion AS serviceVersion,
+          count() AS count,
+          min(Timestamp) AS firstSeen,
+          max(Timestamp) AS lastSeen
+        FROM error_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND FingerprintHash IN (toUInt64('11640393269246331608'))
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+        GROUP BY fingerprintHash, serviceVersion
+        ORDER BY fingerprintHash ASC, firstSeen ASC
+        LIMIT 500
+        FORMAT JSON
+
 -- builder:errors:spanDetailQuery:default  [64ddf7c1]
 SELECT
           TraceId AS traceId,
