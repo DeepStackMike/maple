@@ -2569,6 +2569,97 @@ SELECT
         GROUP BY OrgId, Hour, SourceService, TargetService, DeploymentEnv
         FORMAT JSON
 
+-- builder:service-map:serviceMapEdgesQuery:default  [ea2be780]
+SELECT
+          p.ServiceName AS callerService,
+          c.ServiceName AS calleeService,
+          count() AS callCount,
+          countIf(c.StatusCode = 'Error') AS errorCount,
+          avg(c.Duration) / 1000000 AS avgDurationMs,
+          quantile(0.95)(c.Duration) / 1000000 AS p95DurationMs
+        FROM (SELECT
+          OrgId AS OrgId,
+          Timestamp AS Timestamp,
+          TraceId AS TraceId,
+          SpanId AS SpanId,
+          ServiceName AS ServiceName,
+          DeploymentEnv AS DeploymentEnv
+        FROM service_map_spans
+        WHERE SpanKind IN ('Client', 'Producer')
+          AND Timestamp >= toDateTime('2026-01-01 10:30:00')
+          AND Timestamp < toDateTime('2026-01-03 14:15:00')
+          AND OrgId = 'org_sql_catalog') AS p
+        INNER JOIN (SELECT
+          TraceId AS TraceId,
+          ParentSpanId AS ParentSpanId,
+          ServiceName AS ServiceName,
+          Duration AS Duration,
+          StatusCode AS StatusCode,
+          TraceState AS TraceState
+        FROM service_map_children
+        WHERE Timestamp >= toDateTime('2026-01-01 10:30:00')
+          AND Timestamp < toDateTime('2026-01-03 14:15:00')
+          AND OrgId = 'org_sql_catalog') AS c ON (p.SpanId = c.ParentSpanId AND p.TraceId = c.TraceId)
+        WHERE p.ServiceName != c.ServiceName
+        GROUP BY callerService, calleeService
+        ORDER BY callCount DESC
+        LIMIT 200
+        FORMAT JSON
+
+-- builder:service-map:serviceMapEdgesQuery:env-scoped  [4fe5b62a]
+SELECT
+          p.ServiceName AS callerService,
+          c.ServiceName AS calleeService,
+          count() AS callCount,
+          countIf(c.StatusCode = 'Error') AS errorCount,
+          avg(c.Duration) / 1000000 AS avgDurationMs,
+          quantile(0.95)(c.Duration) / 1000000 AS p95DurationMs
+        FROM (SELECT
+          OrgId AS OrgId,
+          Timestamp AS Timestamp,
+          TraceId AS TraceId,
+          SpanId AS SpanId,
+          ServiceName AS ServiceName,
+          DeploymentEnv AS DeploymentEnv
+        FROM service_map_spans
+        WHERE SpanKind IN ('Client', 'Producer')
+          AND Timestamp >= toDateTime('2026-01-01 10:30:00')
+          AND Timestamp < toDateTime('2026-01-03 14:15:00')
+          AND OrgId = 'org_sql_catalog'
+          AND DeploymentEnv = 'production') AS p
+        INNER JOIN (SELECT
+          TraceId AS TraceId,
+          ParentSpanId AS ParentSpanId,
+          ServiceName AS ServiceName,
+          Duration AS Duration,
+          StatusCode AS StatusCode,
+          TraceState AS TraceState
+        FROM service_map_children
+        WHERE Timestamp >= toDateTime('2026-01-01 10:30:00')
+          AND Timestamp < toDateTime('2026-01-03 14:15:00')
+          AND OrgId = 'org_sql_catalog'
+          AND DeploymentEnv = 'production') AS c ON (p.SpanId = c.ParentSpanId AND p.TraceId = c.TraceId)
+        WHERE p.ServiceName != c.ServiceName
+        GROUP BY callerService, calleeService
+        ORDER BY callCount DESC
+        LIMIT 200
+        FORMAT JSON
+
+-- builder:service-map:serviceMapNodeStatsQuery:default  [76cfbe8d]
+SELECT
+          ServiceName AS serviceName,
+          count() AS spanCount,
+          countIf(StatusCode = 'Error') AS errorCount,
+          quantile(0.95)(Duration) / 1000000 AS p95DurationMs
+        FROM service_map_spans
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= toDateTime('2026-01-01 10:30:00')
+          AND Timestamp < toDateTime('2026-01-03 14:15:00')
+        GROUP BY serviceName
+        ORDER BY spanCount DESC
+        LIMIT 200
+        FORMAT JSON
+
 -- builder:service-operations:serviceOperationsSummaryQuery:default  [369067d7]
 SELECT
           bSpanName AS spanName,

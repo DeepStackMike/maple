@@ -11,6 +11,8 @@ import {
 	serviceDependenciesForServiceQuery,
 	serviceExternalEdgesSQL,
 	serviceMapEdgeJoinQuery,
+	serviceMapEdgesQuery,
+	serviceMapNodeStatsQuery,
 	servicePlatformsSQL,
 } from "./service-map"
 import { serviceMapEdgesRollupSQL, serviceMapResolutionsRollupSQL } from "./service-map-rollup"
@@ -460,6 +462,79 @@ describe("serviceDependenciesForServiceQuery", () => {
 		)
 		expect(sql).toContain("ServiceName = 'weird\\'service'")
 		expect(sql).toContain("SourceService = 'weird\\'service'")
+	})
+})
+
+// serviceMapEdgesQuery / serviceMapNodeStatsQuery — the single-tier read
+//
+// These exist because the spliced read above is only as complete as
+// `service_map_edges_hourly`, and in local mode that table has no writer at
+// all. The assertions that matter here are negative: no rollup table, and no
+// splice boundary confining the join to the window's partial hours.
+
+describe("serviceMapEdgesQuery", () => {
+	it("reads raw spans over the whole window, never the hourly rollup", () => {
+		const { sql } = compileUnsafe(serviceMapEdgesQuery(), baseParams)
+		expect(sql).toContain("FROM service_map_spans")
+		expect(sql).toContain("service_map_children")
+		expect(sql).not.toContain("service_map_edges_hourly")
+		expect(sql).not.toContain("UNION ALL")
+	})
+
+	it("bounds both join sides by the requested window and nothing else", () => {
+		const { sql } = compileUnsafe(serviceMapEdgesQuery(), baseParams)
+		expect(sql).toContain("Timestamp >= toDateTime('2024-01-01 00:00:00')")
+		expect(sql).toContain("Timestamp < toDateTime('2024-01-02 00:00:00')")
+		// `edgeHoursOnly`'s complement-of-the-interior predicate is what would cut
+		// a 24-hour window down to its two partial hours. It must not be here.
+		expect(sql).not.toContain("toStartOfHour")
+		expect(sql).not.toContain("INTERVAL 1 HOUR")
+	})
+
+	it("aggregates the callee's own latency and status per edge", () => {
+		const { sql } = compileUnsafe(serviceMapEdgesQuery(), baseParams)
+		expect(sql).toContain("countIf(c.StatusCode = 'Error') AS errorCount")
+		expect(sql).toContain("quantile(0.95)(c.Duration) / 1000000 AS p95DurationMs")
+		expect(sql).toContain("GROUP BY callerService, calleeService")
+		expect(sql).toContain("ORDER BY callCount DESC")
+	})
+
+	it("drops self-edges", () => {
+		const { sql } = compileUnsafe(serviceMapEdgesQuery(), baseParams)
+		expect(sql).toContain("p.ServiceName != c.ServiceName")
+	})
+
+	it("scopes both sides by org and derives single-tenant scope", () => {
+		const compiled = compileUnsafe(serviceMapEdgesQuery(), baseParams)
+		expect(compiled.sql.match(/OrgId = 'org_1'/g)).toHaveLength(2)
+		expect(compiled.tenantScope).toBe("single-tenant")
+	})
+
+	it("pushes deploymentEnv into both sides of the join", () => {
+		const { sql } = compileUnsafe(serviceMapEdgesQuery({ deploymentEnv: "production" }), baseParams)
+		expect(sql.match(/DeploymentEnv = 'production'/g)).toHaveLength(2)
+	})
+})
+
+describe("serviceMapNodeStatsQuery", () => {
+	it("counts the same raw span table the edges are joined from", () => {
+		const { sql } = compileUnsafe(serviceMapNodeStatsQuery(), baseParams)
+		expect(sql).toContain("FROM service_map_spans")
+		expect(sql).toContain("OrgId = 'org_1'")
+		expect(sql).toContain("Timestamp >= toDateTime('2024-01-01 00:00:00')")
+		expect(sql).toContain("Timestamp < toDateTime('2024-01-02 00:00:00')")
+		expect(sql).toContain("GROUP BY serviceName")
+	})
+
+	it("reports errors and p95 per service", () => {
+		const { sql } = compileUnsafe(serviceMapNodeStatsQuery(), baseParams)
+		expect(sql).toContain("countIf(StatusCode = 'Error') AS errorCount")
+		expect(sql).toContain("quantile(0.95)(Duration) / 1000000 AS p95DurationMs")
+	})
+
+	it("filters by deployment environment when asked", () => {
+		const { sql } = compileUnsafe(serviceMapNodeStatsQuery({ deploymentEnv: "staging" }), baseParams)
+		expect(sql).toContain("DeploymentEnv = 'staging'")
 	})
 })
 

@@ -397,6 +397,118 @@ export function serviceDependenciesForServiceQuery(opts: ServiceDependenciesForS
 	return serviceDependenciesQueryBase(opts)
 }
 
+// Service ↔ service edges from raw spans, in ONE tier
+//
+// `serviceDependenciesQueryBase` above is the cloud read path: every WHOLE hour
+// of the window comes from `service_map_edges_hourly`, and only the two partial
+// hours at the ends come from the live parent⋈child join. That split is correct
+// wherever the sealed hours actually exist — and the only thing that writes
+// them is `ServiceMapRollupService`, an `apps/api` cron. Local mode has no
+// scheduler and no Events API: `service_map_edges_hourly`'s sole writer is
+// `service_map_edges_hourly_ingest_mv`, which forwards rows POSTed into a
+// `Null` table that nothing local ever posts to. So locally the sealed branch
+// returns nothing, and asking for a day of edges renders whichever spans fall
+// in the two partial hours the live branch still covers — an hour of a day,
+// silently.
+//
+// Same projection, rollup tier removed: one pass of the join over the whole
+// range. There is no splice here and so nothing to tile — `rollup-splice`'s
+// invariants are about two tiers agreeing on a boundary, and this has one tier.
+//
+// Not a replacement for the spliced read. It rescans raw spans over the full
+// window instead of reading sealed aggregates, and `service_map_spans` is TTL'd
+// at 30 days where the hourly rollup keeps 365. It is the right shape for a
+// store that holds a developer's afternoon.
+
+export interface ServiceMapEdgesOpts {
+	deploymentEnv?: string
+	/** Edge cap, highest call count first. */
+	limit?: number
+}
+
+export interface ServiceMapEdgesOutput {
+	readonly callerService: string
+	readonly calleeService: string
+	readonly callCount: number
+	readonly errorCount: number
+	readonly avgDurationMs: number
+	/**
+	 * A real p95 over the window's child spans, not a merged digest and not a
+	 * max: this reads the raw durations, so `quantile` is available here in a
+	 * way it is not to `ServiceDependenciesOutput` (see `maxDurationMs` there).
+	 */
+	readonly p95DurationMs: number
+}
+
+/**
+ * Every caller→callee edge in `[startTime, endTime)`, for a service map drawn
+ * from raw spans.
+ *
+ * Latency and status are the CHILD span's — the callee's own view of the call —
+ * matching how the rollup defines an edge.
+ */
+export function serviceMapEdgesQuery(opts: ServiceMapEdgesOpts = {}) {
+	return serviceMapEdgeJoinSource({
+		rangeStart: CH.toDateTime(param.dateTimeString("startTime")),
+		rangeEnd: CH.toDateTime(param.dateTimeString("endTime")),
+		deploymentEnv: opts.deploymentEnv,
+	})
+		.select(($) => ({
+			callerService: $.ServiceName,
+			calleeService: $.c.ServiceName,
+			callCount: CH.count(),
+			errorCount: CH.countIf($.c.StatusCode.eq("Error")),
+			avgDurationMs: CH.avg($.c.Duration).div(1000000),
+			p95DurationMs: CH.quantile(0.95)($.c.Duration).div(1000000),
+		}))
+		.where(($) => [$.ServiceName.neq($.c.ServiceName)])
+		.groupBy("callerService", "calleeService")
+		.orderBy(["callCount", "desc"])
+		.limit(opts.limit ?? 200)
+		.format("JSON")
+}
+
+export interface ServiceMapNodeStatsOpts {
+	deploymentEnv?: string
+	limit?: number
+}
+
+export interface ServiceMapNodeStatsOutput {
+	readonly serviceName: string
+	readonly spanCount: number
+	readonly errorCount: number
+	readonly p95DurationMs: number
+}
+
+/**
+ * Per-service totals over the same rows the edges are joined from, so a node's
+ * tooltip and the edges around it cannot disagree about the window.
+ *
+ * Counts `service_map_spans`, which is the four RPC span kinds only — a
+ * service's internal spans are not in it. That makes this a count of calls the
+ * service made or served, not of everything it recorded; the Services tab's
+ * `serviceCatalogQuery` is the entry-point-span answer to a different question.
+ */
+export function serviceMapNodeStatsQuery(opts: ServiceMapNodeStatsOpts = {}) {
+	return from(ServiceMapSpans)
+		.select(($) => ({
+			serviceName: $.ServiceName,
+			spanCount: CH.count(),
+			errorCount: CH.countIf($.StatusCode.eq("Error")),
+			p95DurationMs: CH.quantile(0.95)($.Duration).div(1000000),
+		}))
+		.where(($) => [
+			$.OrgId.eq(param.string("orgId")),
+			$.Timestamp.gte(CH.toDateTime(param.dateTimeString("startTime"))),
+			$.Timestamp.lt(CH.toDateTime(param.dateTimeString("endTime"))),
+			opts.deploymentEnv ? $.DeploymentEnv.eq(opts.deploymentEnv) : undefined,
+		])
+		.groupBy("serviceName")
+		.orderBy(["spanCount", "desc"])
+		.limit(opts.limit ?? 200)
+		.format("JSON")
+}
+
 // Service ↔ database edges
 //
 // Surfaces DB calls (Client/Producer spans with `db.system.name` set) as a separate
