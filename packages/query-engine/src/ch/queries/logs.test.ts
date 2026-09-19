@@ -10,6 +10,7 @@ import {
 	getLogByKeyQuery,
 	errorRateByServiceQuery,
 	logsFacetsQuery,
+	traceSpanLogCountsQuery,
 } from "./logs"
 
 const baseParams = {
@@ -772,5 +773,43 @@ describe("environments filter", () => {
 		const matches = sql.match(/DeploymentEnv IN \('production'\)/g) || []
 		expect(matches.length).toBe(4)
 		expect(sql).not.toContain("ResourceAttributes")
+	})
+})
+
+// Per-span log counts
+
+describe("traceSpanLogCountsQuery", () => {
+	const traceId = "0af7651916cd43dd8448eb211c80319c"
+
+	it("groups by span and stays scoped to one trace, org and window", () => {
+		const { sql } = compileUnsafe(traceSpanLogCountsQuery({ traceId }), baseParams)
+		expect(sql).toContain("FROM logs")
+		expect(sql).toContain(`TraceId = '${traceId}'`)
+		expect(sql).toContain("OrgId = 'org_1'")
+		expect(sql).toContain("GROUP BY spanId")
+		// The partition key as well as the sub-second column: one prunes, the
+		// other bounds.
+		expect(sql).toContain("TimestampTime >=")
+		expect(sql).toContain("Timestamp >=")
+	})
+
+	// A count keyed on the span is only a marker if every row it counts has one.
+	it("drops trace-level logs that belong to no span", () => {
+		const { sql } = compileUnsafe(traceSpanLogCountsQuery({ traceId }), baseParams)
+		expect(sql).toContain("SpanId != ''")
+	})
+
+	// An exporter that fills only `severity_text` leaves the number at 0, and a
+	// log that says ERROR while counting as fine defeats the badge's whole point.
+	it("counts an error by either spelling of severity", () => {
+		const { sql } = compileUnsafe(traceSpanLogCountsQuery({ traceId }), baseParams)
+		expect(sql).toContain("SeverityNumber >= 17")
+		expect(sql).toContain("SeverityText IN ('ERROR', 'FATAL')")
+		expect(sql).toMatch(/countIf\(.*SeverityNumber >= 17.* OR .*SeverityText IN.*\)/)
+	})
+
+	it("escapes a trace id rather than interpolating it raw", () => {
+		const { sql } = compileUnsafe(traceSpanLogCountsQuery({ traceId: "abc'--" }), baseParams)
+		expect(sql).not.toContain("TraceId = 'abc'--'")
 	})
 })

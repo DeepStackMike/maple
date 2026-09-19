@@ -1209,6 +1209,16 @@ export const builderFixtures: ReadonlyArray<BuilderFixture> = [
 			),
 	},
 
+	{
+		// The waterfall's log markers: one grouped scan per trace, so a 200-span
+		// trace decorates every row without 200 per-span queries. Reached only
+		// from apps/local-ui's `useLocalTraceLogCounts`, never through a pipe.
+		module: "logs",
+		name: "traceSpanLogCountsQuery",
+		label: "default",
+		compile: () => CH.compileUnsafe(CH.traceSpanLogCountsQuery({ traceId: TRACE_ID }), window),
+	},
+
 	// Trace-list enrichment fixtures.
 	{
 		module: "traces",
@@ -1258,6 +1268,14 @@ export const builderFixtures: ReadonlyArray<BuilderFixture> = [
 				CH.logsBreakdownQuery({ groupBy: "environment", limit: null, source: "raw" }),
 				window,
 			),
+	},
+	{
+		// The local dashboard's project selector. Grouped over raw `traces` on
+		// purpose — see the builder for why the cheaper MV cannot answer it.
+		module: "traces",
+		name: "resourceNamespacesQuery",
+		label: "default",
+		compile: () => CH.compileUnsafe(CH.resourceNamespacesQuery(), window),
 	},
 
 	// ----- activity: the only deliberately cross-org builders in the product.

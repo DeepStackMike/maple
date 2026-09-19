@@ -4,6 +4,7 @@ import {
 	slowTracesQuery,
 	spanSearchQuery,
 	traceListQuery,
+	resourceNamespacesQuery,
 	traceServicesByTraceIdsQuery,
 	traceSummariesQuery,
 	tracesListQuery,
@@ -630,5 +631,39 @@ describe("commit-sha exclusion", () => {
 		expect(
 			canUseTracesAggregatesMv({ rootOnly: true, excludedCommitShas: ["abc"] }, undefined, 3600),
 		).toBe(false)
+	})
+})
+
+describe("resourceNamespacesQuery", () => {
+	it("lists distinct namespaces from the raw traces table, scoped and bounded", () => {
+		const { sql } = compileUnsafe(resourceNamespacesQuery(), baseParams)
+		expect(sql).toContain("FROM traces")
+		expect(sql).toContain("OrgId = 'org_1'")
+		expect(sql).toContain("ResourceAttributes['service.namespace'] AS namespace")
+		expect(sql).toContain("GROUP BY namespace")
+		expect(sql).toContain("Timestamp >=")
+		expect(sql).toContain("Timestamp <=")
+	})
+
+	// Entry-point spans only would hide a project whose services never start a
+	// trace of their own, and a selector that cannot offer a project is worse
+	// than one that costs a scan.
+	it("does not read the entry-point projection", () => {
+		const { sql } = compileUnsafe(resourceNamespacesQuery(), baseParams)
+		expect(sql).not.toContain("service_overview_spans")
+	})
+
+	// A service that set no namespace is not a project called "" — it is what
+	// "All projects" is the only way to see.
+	it("drops the services that set no namespace", () => {
+		const { sql } = compileUnsafe(resourceNamespacesQuery(), baseParams)
+		expect(sql).toContain("ResourceAttributes['service.namespace'] != ''")
+	})
+
+	it("offers the busiest project first, and caps the list", () => {
+		const { sql } = compileUnsafe(resourceNamespacesQuery(), baseParams)
+		expect(sql).toContain("ORDER BY spanCount DESC, namespace ASC")
+		expect(sql).toContain("LIMIT 100")
+		expect(compileUnsafe(resourceNamespacesQuery({ limit: 5 }), baseParams).sql).toContain("LIMIT 5")
 	})
 })

@@ -5,6 +5,8 @@ import { cn } from "../../lib/utils"
 import { getServiceColor } from "../../lib/colors"
 import { formatDuration } from "../../lib/format"
 import { describeSpan } from "../../lib/span-category"
+import { SpanLogMarkerBadge } from "./span-log-marker"
+import type { SpanLogMarker } from "./trace-view-context"
 import type { TimelineBar } from "./trace-timeline-types"
 import { DEPTH_INDENT, ROW_HEIGHT } from "./trace-timeline-types"
 
@@ -21,6 +23,10 @@ interface TraceTimelineRowProps {
 	matched: boolean
 	/** A single-service trace repeats one name down every row — the header already said it. */
 	showService: boolean
+	/** Log counts for this span, when the caller has them. */
+	logMarker?: SpanLogMarker
+	/** Clicking the log marker; keyed by span id so this row stays memoized. */
+	onOpenLogs?: (spanId: string) => void
 	onSelect: (spanId: string) => void
 	/** `wholeSubtree` comes from an Alt/Option-click. */
 	onToggleCollapse: (spanId: string, wholeSubtree: boolean) => void
@@ -52,6 +58,8 @@ function TraceTimelineRowImpl({
 	dimmed,
 	matched,
 	showService,
+	logMarker,
+	onOpenLogs,
 	onSelect,
 	onToggleCollapse,
 	onZoomSpan,
@@ -157,6 +165,10 @@ function TraceTimelineRowImpl({
 						{cacheInfo.result}
 					</span>
 				)}
+				<SpanLogMarkerBadge
+					marker={logMarker}
+					onOpen={onOpenLogs ? () => onOpenLogs(spanId) : undefined}
+				/>
 				{bar.isCollapsed && bar.childCount > 0 && (
 					<span
 						className="flex items-center gap-0.5 shrink-0 text-[9px] text-muted-foreground/70"

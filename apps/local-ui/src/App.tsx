@@ -28,6 +28,7 @@ import { SessionDetailView } from "./views/session-detail-view"
 import { AnalyticsView } from "./views/analytics-view"
 import { navigate, useLocation } from "./lib/router"
 import { ConnectButton } from "./components/connect-button"
+import { NamespaceSelect } from "./components/namespace-select"
 import { LocalLockup } from "./components/local-lockup"
 import { IngestStatus } from "./components/ingest-status"
 import { DisconnectedState } from "./components/view-states"
@@ -110,13 +111,19 @@ export function App() {
 	// so opening an item and returning preserves the list's filters.
 	const carry = () => new URLSearchParams(query)
 
-	// Switching top-level tabs keeps the cross-cutting filters (service + range).
+	// Switching top-level tabs keeps the cross-cutting filters (service, range
+	// and project). `ns` belongs here for a stronger reason than the other two:
+	// it is a standing choice made in the header, not in the view being left, so
+	// dropping it would make switching tabs silently undo a selection that is
+	// still on screen.
 	const switchTab = (target: string) => {
 		const shared = new URLSearchParams()
 		const service = query.get("service")
 		const range = query.get("range")
+		const namespace = query.get("ns")
 		if (service) shared.set("service", service)
 		if (range) shared.set("range", range)
+		if (namespace) shared.set("ns", namespace)
 		navigate(target, shared)
 	}
 
@@ -182,6 +189,7 @@ export function App() {
 								onClick={() => switchTab("/analytics")}
 							/>
 							<div className="ml-auto flex items-center gap-3">
+								<NamespaceSelect />
 								<IngestStatus />
 								<ConnectButton />
 							</div>

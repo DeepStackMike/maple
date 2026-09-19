@@ -30,7 +30,15 @@ function flattenVisible(nodes: SpanNode[], expanded: Set<string>, out: SpanNode[
 }
 
 export function SpanHierarchy() {
-	const { rootSpans, totalDurationMs, traceStartTime, selectedSpanId, onSelectSpan } = useTraceView()
+	const {
+		rootSpans,
+		totalDurationMs,
+		traceStartTime,
+		selectedSpanId,
+		onSelectSpan,
+		spanLogMarkers,
+		onOpenSpanLogs,
+	} = useTraceView()
 
 	const [expandedSpans, setExpandedSpans] = React.useState<Set<string>>(() => {
 		return computeDefaultExpandedSpanIds(rootSpans, { keepVisibleSpanId: selectedSpanId })
@@ -235,6 +243,8 @@ export function SpanHierarchy() {
 									onToggle={toggleSpan}
 									isSelected={selectedSpanId === node.spanId}
 									onSelect={onSelectSpan}
+									logMarker={spanLogMarkers?.get(node.spanId)}
+									onOpenLogs={onOpenSpanLogs}
 								/>
 							</div>
 						)

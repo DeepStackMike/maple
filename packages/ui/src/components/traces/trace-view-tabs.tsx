@@ -5,7 +5,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "../ui/tabs"
 import { SpanHierarchy } from "./span-hierarchy"
 import { TraceTimeline } from "./trace-timeline"
 import { TraceFlowView } from "./flow-view"
-import { TraceViewProvider } from "./trace-view-context"
+import { TraceViewProvider, type SpanLogMarker } from "./trace-view-context"
 import { DEFAULT_COLOR_BY, type ColorByField } from "./color-by"
 import type { SpanNode, Span } from "../../lib/types"
 
@@ -17,6 +17,14 @@ interface TraceViewTabsProps {
 	services: string[]
 	selectedSpanId?: string
 	onSelectSpan?: (span: SpanNode) => void
+	/**
+	 * Per-span log counts, keyed by span id. Omit them and the views render as
+	 * they always have — the marker is a decoration a caller opts into by
+	 * having the counts, not something a trace is expected to carry.
+	 */
+	spanLogMarkers?: ReadonlyMap<string, SpanLogMarker>
+	/** Clicking a log marker; typically "select this span and show its logs". */
+	onOpenSpanLogs?: (span: SpanNode) => void
 }
 
 export function TraceViewTabs({
@@ -27,6 +35,8 @@ export function TraceViewTabs({
 	services,
 	selectedSpanId,
 	onSelectSpan,
+	spanLogMarkers,
+	onOpenSpanLogs,
 }: TraceViewTabsProps) {
 	// _spans is reserved for future Flow view implementation
 	const [colorBy, setColorBy] = React.useState<ColorByField>(DEFAULT_COLOR_BY)
@@ -41,6 +51,8 @@ export function TraceViewTabs({
 			onSelectSpan={onSelectSpan}
 			colorBy={colorBy}
 			setColorBy={setColorBy}
+			spanLogMarkers={spanLogMarkers}
+			onOpenSpanLogs={onOpenSpanLogs}
 		>
 			<Tabs defaultValue="timeline" className="flex flex-col h-full">
 				<TabsList variant="underline" className="shrink-0">

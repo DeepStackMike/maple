@@ -1817,3 +1817,57 @@ export function traceServicesByTraceIdsQuery(opts: TraceServicesByTraceIdsOpts) 
 		.limit(opts.traceIds.length)
 		.format("JSON")
 }
+
+// Resource namespaces
+
+export interface ResourceNamespacesOpts {
+	readonly limit?: number
+}
+
+export interface ResourceNamespacesOutput {
+	/** The `service.namespace` resource attribute's value. Never empty. */
+	readonly namespace: string
+	readonly spanCount: number
+}
+
+/**
+ * Every `service.namespace` that reported a span in the window, busiest first.
+ *
+ * The attribute is how an OTel resource says which *project* a service belongs
+ * to, and a machine running several at once — a local Maple's whole reason to
+ * exist — has no other way to tell them apart: two projects can both have a
+ * service called `api`, and neither the service name nor the environment
+ * separates them.
+ *
+ * **Read off raw `traces`, not `service_overview_spans`,** which carries
+ * `ServiceNamespace` as a pre-extracted column and would be far cheaper to
+ * scan. That projection holds entry-point spans only, so a project whose
+ * services never start a trace of their own — a worker, a library instrumented
+ * inside someone else's request — would be missing from a list whose whole job
+ * is to name every project. A filter that cannot offer a project is worse than
+ * a filter that costs a scan, and the window this backs is a selector's, not a
+ * dashboard's.
+ *
+ * The count is a byproduct of the grouping (`DISTINCT` would cost the same) and
+ * orders the list by how much each project is actually doing, which is a better
+ * first option than whichever name sorts first alphabetically.
+ */
+export function resourceNamespacesQuery(opts: ResourceNamespacesOpts = {}) {
+	return from(Traces)
+		.select(($) => ({
+			namespace: $.ResourceAttributes.get("service.namespace"),
+			spanCount: CH.count(),
+		}))
+		.where(($) => [
+			$.OrgId.eq(param.string("orgId")),
+			$.Timestamp.gte(param.dateTimeString("startTime")),
+			$.Timestamp.lte(param.dateTimeString("endTime")),
+			// Services that set no namespace are not a project called "" — they are
+			// the ones an "All projects" selection is the only way to see.
+			$.ResourceAttributes.get("service.namespace").neq(""),
+		])
+		.groupBy("namespace")
+		.orderBy(["spanCount", "desc"], ["namespace", "asc"])
+		.limit(opts.limit ?? 100)
+		.format("JSON")
+}

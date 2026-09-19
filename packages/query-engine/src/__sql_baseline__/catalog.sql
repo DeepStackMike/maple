@@ -1108,6 +1108,22 @@ SELECT
         LIMIT 20
         FORMAT JSON
 
+-- builder:logs:traceSpanLogCountsQuery:default  [522acca1]
+SELECT
+          SpanId AS spanId,
+          count() AS logCount,
+          countIf((SeverityNumber >= 17 OR SeverityText IN ('ERROR', 'FATAL'))) AS errorLogCount
+        FROM logs
+        WHERE OrgId = 'org_sql_catalog'
+          AND TimestampTime >= '2026-01-01 10:30:00'
+          AND TimestampTime <= '2026-01-03 14:15:00'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND TraceId = '0af7651916cd43dd8448eb211c80319c'
+          AND SpanId != ''
+        GROUP BY spanId
+        FORMAT JSON
+
 -- builder:product-events:productEventNamesQuery:default  [4e7d15bf]
 SELECT
           EventName AS eventName,
@@ -3642,6 +3658,20 @@ SELECT
         GROUP BY traceId
         ORDER BY startTime ASC
         LIMIT 200
+        FORMAT JSON
+
+-- builder:traces:resourceNamespacesQuery:default  [1ea89a80]
+SELECT
+          ResourceAttributes['service.namespace'] AS namespace,
+          count() AS spanCount
+        FROM traces
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND ResourceAttributes['service.namespace'] != ''
+        GROUP BY namespace
+        ORDER BY spanCount DESC, namespace ASC
+        LIMIT 100
         FORMAT JSON
 
 -- builder:traces:traceListQuery:default  [b47ce2af]
