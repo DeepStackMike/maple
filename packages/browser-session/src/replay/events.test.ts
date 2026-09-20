@@ -19,7 +19,7 @@ vi.mock("./capture/console", () => ({
 		emitRef = emit
 	}),
 }))
-vi.mock("./capture/network", () => ({ installNetworkCapture: () => () => {} }))
+vi.mock("../capture/network", () => ({ installNetworkCapture: () => () => {} }))
 
 vi.mock("../session/session", () => ({
 	markActivity: vi.fn(),

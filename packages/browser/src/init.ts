@@ -7,6 +7,7 @@ import {
 	getSession,
 	hasConsent,
 	type IdentifyInput,
+	installNetworkCapture,
 	mayPersistIdentifier,
 	normalizeIdentity,
 	onConsentChange,
@@ -81,6 +82,7 @@ export function init(rawConfig: MapleBrowserConfig): MapleBrowserHandle {
 	let stopped = false
 	let rotateOnNextStart = false
 	let shutdownTracing: (() => Promise<void>) | undefined
+	let stopNetworkCapture: (() => void) | undefined
 	let stopErrorCapture: (() => void) | undefined
 	// Bumped by every start and stop, so a replay chunk that lands after a
 	// consent revoke (or a rotation) never attaches a recorder to a dead runtime.
@@ -103,6 +105,21 @@ export function init(rawConfig: MapleBrowserConfig): MapleBrowserHandle {
 			},
 			session.id,
 		)
+		// BEFORE `setupTracing`, and installed once for the page rather than per
+		// runtime: whoever wraps `window.fetch` last is the *outer* wrapper, and
+		// only the inner one runs inside the span `FetchInstrumentation` opens
+		// around the request. Installed after it, the capture reads
+		// `activeTraceId()` with no span active and every network row lands with
+		// `trace_id: ""`, unlinkable from the trace it produced. The replay chunk
+		// still calls `installNetworkCapture` for hosts that never get here; that
+		// call is a no-op once this one has run.
+		//
+		// The emit resolves the live sink per event instead of capturing this
+		// one, so rows follow session rotation and stop when consent is revoked
+		// (no sink, no row) even though the patch outlives both.
+		if (recordReplay && !stopNetworkCapture) {
+			stopNetworkCapture = installNetworkCapture((ev) => getActiveSink()?.emit(ev), sink.ignoreUrl)
+		}
 		if (config.tracingEnabled && !shutdownTracing) shutdownTracing = setupTracing(config)
 		// After `setupTracing`: the handlers span through the global provider it
 		// registers, so registering them first would drop the errors of the very
@@ -210,6 +227,10 @@ export function init(rawConfig: MapleBrowserConfig): MapleBrowserHandle {
 			stopErrorCapture = undefined
 			await shutdownTracing?.()
 			shutdownTracing = undefined
+			// After the tracing shutdown, not before: the instrumentation wraps this
+			// capture, so unwinding outside-in is what restores the native `fetch`.
+			stopNetworkCapture?.()
+			stopNetworkCapture = undefined
 			setActiveTraceIdProvider(() => undefined)
 			active = undefined
 			activeConfig = undefined

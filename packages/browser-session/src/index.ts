@@ -10,6 +10,7 @@ export {
 	resetConsentForTests,
 	setConsent,
 } from "./identity/consent"
+export { installNetworkCapture, isNetworkCaptureInstalled } from "./capture/network"
 export type { SessionEvent, SessionEventSink } from "./events/events-sink"
 export {
 	clearPendingEvents,
