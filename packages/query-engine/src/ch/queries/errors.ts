@@ -32,7 +32,7 @@ import {
 	nameExclusionCondition,
 	type FacetOutput,
 } from "./query-helpers"
-import { deploymentEnvExpr } from "@maple/domain/tinybird/semconv-renames"
+import { envLabel, resourceEnvLabel } from "./environment"
 import { httpDisplaySpanName } from "../../traces-shared"
 import { CHNumber } from "../schema"
 
@@ -115,7 +115,7 @@ const sharedFilterConditions = (
 ): Array<CH.Condition | undefined> => [
 	opts.services?.length && except !== "services" ? CH.inList($.ServiceName, opts.services) : undefined,
 	opts.deploymentEnvs?.length && except !== "deploymentEnvs"
-		? CH.inList($.DeploymentEnv, opts.deploymentEnvs)
+		? CH.inList(envLabel($.DeploymentEnv), opts.deploymentEnvs)
 		: undefined,
 	opts.errorLabels?.length && except !== "errorLabels"
 		? CH.inList($.ErrorLabel, opts.errorLabels)
@@ -127,7 +127,7 @@ const sharedFilterConditions = (
 		? CH.notInList($.ServiceName, opts.excludedServices)
 		: undefined,
 	opts.excludedDeploymentEnvs?.length && except !== "deploymentEnvs"
-		? CH.notInList($.DeploymentEnv, opts.excludedDeploymentEnvs)
+		? CH.notInList(envLabel($.DeploymentEnv), opts.excludedDeploymentEnvs)
 		: undefined,
 	opts.excludedErrorLabels?.length && except !== "errorLabels"
 		? CH.notInList($.ErrorLabel, opts.excludedErrorLabels)
@@ -281,31 +281,33 @@ export interface ErrorVersionsOutput {
 }
 
 export function errorVersionsQuery(opts: ErrorVersionsOpts) {
-	return from(ErrorEvents)
-		.select(($) => ({
-			// Identity UInt64: unwrapped it corrupts above 2^53.
-			fingerprintHash: CH.toString_($.FingerprintHash),
-			serviceVersion: $.ServiceVersion,
-			count: CH.count(),
-			firstSeen: CH.min_($.Timestamp),
-			lastSeen: CH.max_($.Timestamp),
-		}))
-		.where(($) => [
-			$.OrgId.eq(param.string("orgId")),
-			fingerprintHashIn($.FingerprintHash, opts.fingerprintHashes),
-			$.Timestamp.gte(param.dateTimeSeconds("startTime")),
-			$.Timestamp.lte(param.dateTimeSeconds("endTime")),
-			CH.whenTrue(!!opts.rootOnly, () => $.ParentSpanId.eq("")),
-			...sharedFilterConditions($, opts),
-		])
-		.groupBy("fingerprintHash", "serviceVersion")
-		// Grouped by fingerprint first so a truncating LIMIT cuts whole
-		// fingerprints off the tail rather than silently amputating the newest
-		// versions of every row on the page; oldest-first inside a fingerprint is
-		// the order "introduced in" reads off.
-		.orderBy(["fingerprintHash", "asc"], ["firstSeen", "asc"])
-		.limit(opts.limit ?? 500)
-		.format("JSON")
+	return (
+		from(ErrorEvents)
+			.select(($) => ({
+				// Identity UInt64: unwrapped it corrupts above 2^53.
+				fingerprintHash: CH.toString_($.FingerprintHash),
+				serviceVersion: $.ServiceVersion,
+				count: CH.count(),
+				firstSeen: CH.min_($.Timestamp),
+				lastSeen: CH.max_($.Timestamp),
+			}))
+			.where(($) => [
+				$.OrgId.eq(param.string("orgId")),
+				fingerprintHashIn($.FingerprintHash, opts.fingerprintHashes),
+				$.Timestamp.gte(param.dateTimeSeconds("startTime")),
+				$.Timestamp.lte(param.dateTimeSeconds("endTime")),
+				CH.whenTrue(!!opts.rootOnly, () => $.ParentSpanId.eq("")),
+				...sharedFilterConditions($, opts),
+			])
+			.groupBy("fingerprintHash", "serviceVersion")
+			// Grouped by fingerprint first so a truncating LIMIT cuts whole
+			// fingerprints off the tail rather than silently amputating the newest
+			// versions of every row on the page; oldest-first inside a fingerprint is
+			// the order "introduced in" reads off.
+			.orderBy(["fingerprintHash", "asc"], ["firstSeen", "asc"])
+			.limit(opts.limit ?? 500)
+			.format("JSON")
+	)
 }
 
 // Errors timeseries
@@ -701,7 +703,7 @@ export function tracesDurationStatsQuery(opts: TracesDurationStatsOpts) {
 			CH.when(httpMethods, (v: readonly string[]) => inclusionCondition($.HttpMethod, v)),
 			CH.when(httpStatusCodes, (v: readonly string[]) => inclusionCondition($.HttpStatusCode, v)),
 			CH.when(envs, (v: readonly string[]) =>
-				matchOrIn($.DeploymentEnv, v, mm?.deploymentEnv === "contains"),
+				matchOrIn(envLabel($.DeploymentEnv), v, mm?.deploymentEnv === "contains"),
 			),
 			CH.when(namespaces, (v: readonly string[]) =>
 				matchOrIn($.ServiceNamespace, v, mm?.serviceNamespace === "contains"),
@@ -798,7 +800,9 @@ export function tracesFacetsQuery(opts: TracesFacetsOpts): CHUnionQuery<TracesFa
 		if (httpMethods) conditions.push(inclusionCondition($.HttpMethod, httpMethods))
 		if (httpStatusCodes) conditions.push(inclusionCondition($.HttpStatusCode, httpStatusCodes))
 		if (envs) {
-			conditions.push(matchOrIn($.DeploymentEnv, envs, opts.matchModes?.deploymentEnv === "contains"))
+			conditions.push(
+				matchOrIn(envLabel($.DeploymentEnv), envs, opts.matchModes?.deploymentEnv === "contains"),
+			)
 		}
 		if (namespaces) {
 			conditions.push(
@@ -870,10 +874,14 @@ export function tracesFacetsQuery(opts: TracesFacetsOpts): CHUnionQuery<TracesFa
 		facetType: string,
 		extraWhere?: ($: ColumnAccessor<typeof TraceListMv.columns>) => CH.Condition,
 		limit = 50,
+		// The environment branch reads its column through `envLabel` so an untagged
+		// span is offered as `unknown` rather than not offered at all; everything
+		// else takes the column as it stands.
+		nameExpr?: ($: ColumnAccessor<typeof TraceListMv.columns>) => CH.Expr<string>,
 	) =>
 		from(TraceListMv)
 			.select(($) => ({
-				name: $[colName],
+				name: nameExpr ? nameExpr($) : $[colName],
 				count: CH.count(),
 				facetType: CH.lit(facetType),
 			}))
@@ -888,7 +896,7 @@ export function tracesFacetsQuery(opts: TracesFacetsOpts): CHUnionQuery<TracesFa
 		httpMethod: () => makeFacetQuery("HttpMethod", "httpMethod", ($) => $.HttpMethod.neq(""), 20),
 		httpStatus: () => makeFacetQuery("HttpStatusCode", "httpStatus", ($) => $.HttpStatusCode.neq(""), 20),
 		deploymentEnv: () =>
-			makeFacetQuery("DeploymentEnv", "deploymentEnv", ($) => $.DeploymentEnv.neq(""), 20),
+			makeFacetQuery("DeploymentEnv", "deploymentEnv", undefined, 20, ($) => envLabel($.DeploymentEnv)),
 		serviceNamespace: () =>
 			makeFacetQuery("ServiceNamespace", "serviceNamespace", ($) => $.ServiceNamespace.neq(""), 20),
 	} satisfies Record<TracesFacetDimension, () => ReturnType<typeof makeFacetQuery>>
@@ -961,11 +969,11 @@ export function errorsFacetsQuery(opts: ErrorsFacetsOpts): CHUnionQuery<ErrorsFa
 
 	const envQuery = from(table)
 		.select(($) => ({
-			name: $.DeploymentEnv,
+			name: envLabel($.DeploymentEnv),
 			count: issueCount($),
 			facetType: CH.lit("environment"),
 		}))
-		.where(($) => [...baseWhere("deploymentEnvs")($), $.DeploymentEnv.neq("")])
+		.where(baseWhere("deploymentEnvs"))
 		.groupBy("name")
 		.orderBy(["count", "desc"])
 		.limit(100)
@@ -1061,7 +1069,9 @@ export function errorsSummaryQuery(opts: ErrorsSummaryOpts) {
 					$.Timestamp.gte(param.dateTimeSeconds("startTime")),
 					$.Timestamp.lte(param.dateTimeSeconds("endTime")),
 					opts.services?.length ? CH.inList($.ServiceName, opts.services) : undefined,
-					opts.deploymentEnvs?.length ? CH.inList($.DeploymentEnv, opts.deploymentEnvs) : undefined,
+					opts.deploymentEnvs?.length
+						? CH.inList(envLabel($.DeploymentEnv), opts.deploymentEnvs)
+						: undefined,
 				]),
 		)
 	}
@@ -1078,7 +1088,7 @@ export function errorsSummaryQuery(opts: ErrorsSummaryOpts) {
 					$.Timestamp.gte(param.dateTimeString("startTime")),
 					$.Timestamp.lte(param.dateTimeString("endTime")),
 					opts.services?.length ? CH.inList($.ServiceName, opts.services) : undefined,
-					CH.inList(deploymentEnvExpr($.ResourceAttributes), deploymentEnvs),
+					CH.inList(resourceEnvLabel($.ResourceAttributes), deploymentEnvs),
 				]),
 		)
 	}
@@ -1142,7 +1152,9 @@ export function errorIssuesQuery(opts: ErrorIssuesOpts) {
 			$.Timestamp.gte(param.dateTimeSeconds("startTime")),
 			$.Timestamp.lte(param.dateTimeSeconds("endTime")),
 			opts.services?.length ? CH.inList($.ServiceName, opts.services) : undefined,
-			opts.deploymentEnvs?.length ? CH.inList($.DeploymentEnv, opts.deploymentEnvs) : undefined,
+			opts.deploymentEnvs?.length
+				? CH.inList(envLabel($.DeploymentEnv), opts.deploymentEnvs)
+				: undefined,
 			opts.fingerprintHashes?.length
 				? fingerprintHashIn($.FingerprintHash, opts.fingerprintHashes)
 				: undefined,
@@ -1243,7 +1255,9 @@ export function errorFingerprintsQuery(opts: ErrorFingerprintsOpts) {
 			$.Timestamp.gte(param.dateTimeSeconds("startTime")),
 			$.Timestamp.lte(param.dateTimeSeconds("endTime")),
 			opts.services?.length ? CH.inList($.ServiceName, opts.services) : undefined,
-			opts.deploymentEnvs?.length ? CH.inList($.DeploymentEnv, opts.deploymentEnvs) : undefined,
+			opts.deploymentEnvs?.length
+				? CH.inList(envLabel($.DeploymentEnv), opts.deploymentEnvs)
+				: undefined,
 		])
 		.groupBy("fingerprintHash")
 		.limit(opts.limit ?? 1000)
@@ -1354,7 +1368,7 @@ export function errorIssueVersionsSinceQuery(opts: { limit?: number } = {}) {
 export function errorIssueEnvironmentsQuery(opts: { limit?: number } = {}) {
 	return from(ErrorEvents)
 		.select(($) => ({
-			name: $.DeploymentEnv,
+			name: envLabel($.DeploymentEnv),
 			count: CH.count(),
 		}))
 		.where(($) => [
@@ -1362,7 +1376,6 @@ export function errorIssueEnvironmentsQuery(opts: { limit?: number } = {}) {
 			$.FingerprintHash.eq(CH.toUInt64(param.string("fingerprintHash"))),
 			$.Timestamp.gte(param.dateTimeSeconds("startTime")),
 			$.Timestamp.lte(param.dateTimeSeconds("endTime")),
-			$.DeploymentEnv.neq(""),
 		])
 		.groupBy("name")
 		.orderBy(["count", "desc"])
@@ -1498,10 +1511,7 @@ export function errorSessionsQuery(opts: ErrorSessionsOpts) {
 			deviceType: CH.argMax($.DeviceType, $.Version),
 			errorCount: CH.argMax($.ErrorCount, $.Version),
 		}))
-		.where(($) => [
-			$.OrgId.eq(param.string("orgId")),
-			$.StartTime.lte(param.dateTimeString("endTime")),
-		])
+		.where(($) => [$.OrgId.eq(param.string("orgId")), $.StartTime.lte(param.dateTimeString("endTime"))])
 		.groupBy("sessionId")
 
 	// LEFT, so a session whose meta row never arrived (a tab closed before the

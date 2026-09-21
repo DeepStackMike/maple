@@ -69,7 +69,7 @@ describe("logs facet filters", () => {
 		const { sql } = compileUnsafe(logsTimeseriesQuery({ ...opts, bucketSeconds: 3600 }), baseParams)
 		expect(sql).toContain("FROM logs_aggregates_hourly")
 		expect(sql).toContain("ServiceName NOT IN ('noisy')")
-		expect(sql).toContain("DeploymentEnv NOT IN ('staging')")
+		expect(sql).toContain("coalesce(nullIf(DeploymentEnv, ''), 'unknown') NOT IN ('staging')")
 	})
 })
 
@@ -276,7 +276,7 @@ describe("logsTimeseriesQuery MV routing", () => {
 		const q = logsTimeseriesQuery({ bucketSeconds: 3600, environments: ["production"] })
 		const { sql } = compileUnsafe(q, baseParams)
 		expect(sql).toContain("FROM logs_aggregates_hourly")
-		expect(sql).toContain("DeploymentEnv IN ('production')")
+		expect(sql).toContain("coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')")
 		expect(sql).not.toContain("ResourceAttributes")
 	})
 
@@ -290,7 +290,7 @@ describe("logsTimeseriesQuery MV routing", () => {
 		expect(sql).toContain("FROM logs")
 		expect(sql).not.toContain("logs_aggregates_hourly")
 		expect(sql).toContain(
-			"positionCaseInsensitive(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), 'prod')",
+			"positionCaseInsensitive(coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown'), 'prod')",
 		)
 	})
 })
@@ -327,9 +327,9 @@ describe("logsBreakdownQuery", () => {
 	it("groups by the MV's DeploymentEnv column and by the raw resource map, in one splice", () => {
 		const { sql } = compileUnsafe(logsBreakdownQuery({ groupBy: "environment" }), baseParams)
 		expect(sql).toContain("UNION ALL")
-		expect(sql).toContain("DeploymentEnv AS name")
+		expect(sql).toContain("coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name")
 		expect(sql).toContain(
-			"coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) AS name",
+			"coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') AS name",
 		)
 	})
 
@@ -341,7 +341,7 @@ describe("logsBreakdownQuery", () => {
 		expect(sql).toContain("FROM logs")
 		expect(sql).not.toContain("logs_aggregates_hourly")
 		expect(sql).toContain(
-			"coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) AS name",
+			"coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') AS name",
 		)
 		expect(sql).not.toContain("LIMIT")
 	})
@@ -363,7 +363,7 @@ describe("logsBreakdownQuery", () => {
 		expect(sql).toContain("FROM logs")
 		expect(sql).not.toContain("logs_aggregates_hourly")
 		expect(sql).toContain(
-			"positionCaseInsensitive(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), 'prod')",
+			"positionCaseInsensitive(coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown'), 'prod')",
 		)
 	})
 
@@ -666,7 +666,7 @@ describe("logsFacetsQuery", () => {
 		expect(sql).toContain("ServiceNamespace AS namespace")
 		expect(sql).toContain("sum(Count) AS count")
 		// Env facet reads the top-level MV column, not the resource-attr map.
-		expect(sql).toContain("DeploymentEnv AS deploymentEnv")
+		expect(sql).toContain("coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS deploymentEnv")
 		expect(sql).toContain("ORDER BY count DESC")
 	})
 
@@ -694,7 +694,7 @@ describe("logsFacetsQuery", () => {
 		expect(sql).toContain("FROM logs")
 		expect(sql).not.toContain("logs_aggregates_hourly")
 		expect(sql).toContain(
-			"positionCaseInsensitive(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), 'prod')",
+			"positionCaseInsensitive(coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown'), 'prod')",
 		)
 	})
 
@@ -730,7 +730,7 @@ describe("environments filter", () => {
 		const q = logsListQuery({ environments: ["production"] })
 		const { sql } = compileUnsafe(q, baseParams)
 		expect(sql).toContain(
-			"coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production')",
+			"coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')",
 		)
 	})
 
@@ -738,7 +738,7 @@ describe("environments filter", () => {
 		const q = logsListQuery({ environments: ["production", "staging"] })
 		const { sql } = compileUnsafe(q, baseParams)
 		expect(sql).toContain(
-			"coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production', 'staging')",
+			"coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production', 'staging')",
 		)
 	})
 
@@ -746,7 +746,7 @@ describe("environments filter", () => {
 		const q = logsListQuery({ environments: ["prod"], matchModes: { deploymentEnv: "contains" } })
 		const { sql } = compileUnsafe(q, baseParams)
 		expect(sql).toContain(
-			"positionCaseInsensitive(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), 'prod')",
+			"positionCaseInsensitive(coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown'), 'prod')",
 		)
 	})
 
@@ -754,7 +754,7 @@ describe("environments filter", () => {
 		const q = logsCountQuery({ environments: ["production"] })
 		const { sql } = compileUnsafe(q, baseParams)
 		expect(sql).toContain(
-			"coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production')",
+			"coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')",
 		)
 	})
 
@@ -762,7 +762,7 @@ describe("environments filter", () => {
 		const q = logsTimeseriesQuery({ environments: ["production"] })
 		const { sql } = compileUnsafe(q, baseParams)
 		expect(sql).toContain(
-			"coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production')",
+			"coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')",
 		)
 	})
 
@@ -770,7 +770,8 @@ describe("environments filter", () => {
 		const q = logsFacetsQuery({ environments: ["production"] })
 		const { sql } = compileUnionUnsafe(q, baseParams)
 		expect(sql).toContain("FROM logs_aggregates_hourly")
-		const matches = sql.match(/DeploymentEnv IN \('production'\)/g) || []
+		const matches =
+			sql.match(/coalesce\(nullIf\(DeploymentEnv, ''\), 'unknown'\) IN \('production'\)/g) || []
 		expect(matches.length).toBe(4)
 		expect(sql).not.toContain("ResourceAttributes")
 	})

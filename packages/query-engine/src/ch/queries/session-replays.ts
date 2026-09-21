@@ -23,7 +23,7 @@ import { param } from "@maple-dev/clickhouse-builder"
 import { from, fromQuery, type ColumnAccessor, type CHQuery } from "@maple-dev/clickhouse-builder"
 import { unionAll, type CHUnionQuery } from "@maple-dev/clickhouse-builder"
 import { SessionReplays, SessionReplayEvents, TraceDetailSpans } from "../tables"
-import { deploymentEnvExpr } from "@maple/domain/tinybird/semconv-renames"
+import { resourceEnvLabel } from "./environment"
 import { sessionActivityAggregateQuery, sessionEventMatchQuery } from "./session-events"
 import type { FacetOutput } from "./query-helpers"
 
@@ -248,7 +248,7 @@ export function sessionReplaysListQuery(
 			$.StartTime.gte(param.dateTimeString("startTime")),
 			$.StartTime.lte(param.dateTimeString("endTime")),
 			CH.when(opts.serviceName, (v: string) => $.ServiceName.eq(v)),
-			CH.when(opts.environment, (v: string) => deploymentEnvExpr($.ResourceAttributes).eq(v)),
+			CH.when(opts.environment, (v: string) => resourceEnvLabel($.ResourceAttributes).eq(v)),
 			CH.when(opts.browser, (v: string) => $.BrowserName.eq(v)),
 			CH.when(opts.country, (v: string) => $.Country.eq(v)),
 			CH.when(opts.deviceType, (v: string) => $.DeviceType.eq(v)),
@@ -504,7 +504,7 @@ export function sessionReplaysFacetsQuery(
 		exclude === "service" ? undefined : CH.when(opts.serviceName, (v: string) => $.ServiceName.eq(v)),
 		// No facet branch of its own — the environment is a page-wide scope, so it
 		// narrows every dimension's counts rather than listing itself.
-		CH.when(opts.environment, (v: string) => deploymentEnvExpr($.ResourceAttributes).eq(v)),
+		CH.when(opts.environment, (v: string) => resourceEnvLabel($.ResourceAttributes).eq(v)),
 		exclude === "browser" ? undefined : CH.when(opts.browser, (v: string) => $.BrowserName.eq(v)),
 		exclude === "country" ? undefined : CH.when(opts.country, (v: string) => $.Country.eq(v)),
 		exclude === "device" ? undefined : CH.when(opts.deviceType, (v: string) => $.DeviceType.eq(v)),
@@ -606,7 +606,7 @@ export function sessionReplaysFacetsQuery(
 				// (it is the one that must drop `hasErrors`), so the environment has to
 				// be repeated here — without it the "Has errors" count would span every
 				// deployment while the facets beside it named one.
-				CH.when(opts.environment, (v: string) => deploymentEnvExpr($.ResourceAttributes).eq(v)),
+				CH.when(opts.environment, (v: string) => resourceEnvLabel($.ResourceAttributes).eq(v)),
 				CH.when(opts.browser, (v: string) => $.BrowserName.eq(v)),
 				CH.when(opts.country, (v: string) => $.Country.eq(v)),
 				CH.when(opts.deviceType, (v: string) => $.DeviceType.eq(v)),
@@ -645,6 +645,41 @@ export function sessionReplaysFacetsQuery(
 // Sessions whose finalized value is empty are dropped rather than grouped, the
 // same rule the facet branches apply: a key nobody writes renders as an empty
 // card instead of as one giant blank row.
+
+// Session environments
+//
+// The deployment environments browser sessions were recorded under, for the
+// header selector. `serviceEnvironmentsQuery` cannot answer this on its own: it
+// reads the service-overview windows, which are built from spans, and a browser
+// session is not a span. A Maple whose only untagged telemetry is its sessions —
+// the common case, since the SDK has no environment to read off a process — would
+// otherwise never be offered `unknown`, while the Sessions list sat full of rows
+// no environment could reach. The selector unions the two lists.
+//
+// Grouped over the raw table rather than a rollup because there is none, and
+// windowed so the date partitions prune. No `argMax` finalization: the resource
+// map is written identically on both row versions (see this file's header), so
+// the pre-aggregation read is the same answer at a fraction of the work.
+
+export interface SessionEnvironmentsOutput {
+	readonly environment: string
+}
+
+export function sessionEnvironmentsQuery(opts: { limit?: number } = {}) {
+	return from(SessionReplays)
+		.select(($) => ({
+			environment: resourceEnvLabel($.ResourceAttributes),
+		}))
+		.where(($) => [
+			$.OrgId.eq(param.string("orgId")),
+			$.StartTime.gte(param.dateTimeString("startTime")),
+			$.StartTime.lte(param.dateTimeString("endTime")),
+		])
+		.groupBy("environment")
+		.orderBy(["environment", "asc"])
+		.limit(opts.limit ?? 100)
+		.format("JSON")
+}
 
 export interface SessionResourceAttributeBreakdownOpts {
 	/** The `ResourceAttributes` key to group sessions by, e.g. `geo.locality.name`. */
@@ -696,7 +731,7 @@ export function sessionResourceAttributeBreakdownQuery(
 		$.OrgId.eq(param.string("orgId")),
 		$.StartTime.gte(param.dateTimeString("startTime")),
 		$.StartTime.lte(param.dateTimeString("endTime")),
-		CH.when(opts.environment, (v: string) => deploymentEnvExpr($.ResourceAttributes).eq(v)),
+		CH.when(opts.environment, (v: string) => resourceEnvLabel($.ResourceAttributes).eq(v)),
 	]
 
 	if (qualifierKey === undefined) {

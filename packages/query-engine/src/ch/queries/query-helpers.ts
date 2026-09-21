@@ -9,7 +9,7 @@ import { param } from "@maple-dev/clickhouse-builder"
 import type { ColumnAccessor } from "@maple-dev/clickhouse-builder"
 import type { ServiceOverviewSpans, Traces, TracesAggregatesHourly } from "../tables"
 import { MetricsSum, MetricsGauge, MetricsHistogram, MetricsExpHistogram } from "../tables"
-import { deploymentEnvExpr } from "@maple/domain/tinybird/semconv-renames"
+import { envLabel, resourceEnvLabel } from "./environment"
 import { buildAttrFilterCondition, httpDisplaySpanName } from "../../traces-shared"
 import type { AttributeIndexMode } from "../../capabilities"
 import * as T from "@maple-dev/clickhouse-builder/types"
@@ -183,7 +183,7 @@ export const facetAttrExpr = (
 	attrKey: string,
 ): CH.Expr<string> =>
 	attrKey === "deployment.environment.name"
-		? deploymentEnvExpr(resourceAttributes)
+		? resourceEnvLabel(resourceAttributes)
 		: resourceAttributes.get(attrKey)
 
 /**
@@ -331,12 +331,12 @@ export function tracesBaseWhereConditions(
 		if (mm?.deploymentEnv === "contains" && opts.environments.length === 1) {
 			conditions.push(
 				CH.positionCaseInsensitive(
-					deploymentEnvExpr($.ResourceAttributes),
+					resourceEnvLabel($.ResourceAttributes),
 					CH.lit(opts.environments[0]),
 				).gt(0),
 			)
 		} else {
-			conditions.push(CH.inList(deploymentEnvExpr($.ResourceAttributes), opts.environments))
+			conditions.push(CH.inList(resourceEnvLabel($.ResourceAttributes), opts.environments))
 		}
 	}
 	if (opts.namespaces?.length) {
@@ -381,7 +381,7 @@ export function tracesBaseWhereConditions(
 		)
 	}
 	if (opts.excludedEnvironments?.length) {
-		conditions.push(CH.notInList(deploymentEnvExpr($.ResourceAttributes), opts.excludedEnvironments))
+		conditions.push(CH.notInList(resourceEnvLabel($.ResourceAttributes), opts.excludedEnvironments))
 	}
 	if (opts.excludedNamespaces?.length) {
 		conditions.push(CH.notInList($.ResourceAttributes.get("service.namespace"), opts.excludedNamespaces))
@@ -465,9 +465,11 @@ export function serviceOverviewWhereConditions(
 
 	if (opts.environments?.length) {
 		if (mm?.deploymentEnv === "contains" && opts.environments.length === 1) {
-			conditions.push(CH.positionCaseInsensitive($.DeploymentEnv, CH.lit(opts.environments[0])).gt(0))
+			conditions.push(
+				CH.positionCaseInsensitive(envLabel($.DeploymentEnv), CH.lit(opts.environments[0])).gt(0),
+			)
 		} else {
-			conditions.push(CH.inList($.DeploymentEnv, opts.environments))
+			conditions.push(CH.inList(envLabel($.DeploymentEnv), opts.environments))
 		}
 	}
 	if (opts.namespaces?.length) {
@@ -484,7 +486,7 @@ export function serviceOverviewWhereConditions(
 		conditions.push(CH.notInList($.ServiceName, opts.excludedServiceNames))
 	}
 	if (opts.excludedEnvironments?.length) {
-		conditions.push(CH.notInList($.DeploymentEnv, opts.excludedEnvironments))
+		conditions.push(CH.notInList(envLabel($.DeploymentEnv), opts.excludedEnvironments))
 	}
 	if (opts.excludedNamespaces?.length) {
 		conditions.push(CH.notInList($.ServiceNamespace, opts.excludedNamespaces))
@@ -568,9 +570,11 @@ export function tracesAggregatesWhereConditions(
 
 	if (opts.environments?.length) {
 		if (mm?.deploymentEnv === "contains" && opts.environments.length === 1) {
-			conditions.push(CH.positionCaseInsensitive($.DeploymentEnv, CH.lit(opts.environments[0])).gt(0))
+			conditions.push(
+				CH.positionCaseInsensitive(envLabel($.DeploymentEnv), CH.lit(opts.environments[0])).gt(0),
+			)
 		} else {
-			conditions.push(CH.inList($.DeploymentEnv, opts.environments))
+			conditions.push(CH.inList(envLabel($.DeploymentEnv), opts.environments))
 		}
 	}
 	if (opts.excludedServiceNames?.length) {
@@ -580,7 +584,7 @@ export function tracesAggregatesWhereConditions(
 		conditions.push(CH.notInList($.SpanName, opts.excludedSpanNames))
 	}
 	if (opts.excludedEnvironments?.length) {
-		conditions.push(CH.notInList($.DeploymentEnv, opts.excludedEnvironments))
+		conditions.push(CH.notInList(envLabel($.DeploymentEnv), opts.excludedEnvironments))
 	}
 
 	// Note: minDurationMs/maxDurationMs filtering is intentionally *not* supported

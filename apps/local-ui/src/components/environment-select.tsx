@@ -2,7 +2,7 @@ import { NativeSelect, NativeSelectOption } from "@maple/ui/components/ui/native
 import { LayersIcon } from "@maple/ui/components/icons"
 import { useLocalEnvironments } from "../hooks/use-local-environments"
 import { useEnvironment } from "../hooks/use-environment"
-import { ALL_ENVIRONMENTS_LABEL } from "../lib/environment"
+import { ALL_ENVIRONMENTS_LABEL, environmentLabel } from "../lib/environment"
 
 /**
  * The deployment-environment selector, in the header beside the project one.
@@ -13,9 +13,11 @@ import { ALL_ENVIRONMENTS_LABEL } from "../lib/environment"
  *
  * **Renders nothing when there is nothing to choose between.** A Maple whose
  * services set no `deployment.environment.name` — which is most local runs —
- * would otherwise get a permanent control offering "All environments" and
- * nothing else. A single environment is hidden too: naming the only deployment
- * there is adds a control without adding a choice.
+ * offers exactly one environment, `unknown`, and a control that can only say
+ * "All environments" or "Unknown" is a control with no choice in it. So the
+ * single-environment case stays hidden, `unknown` included: it earns its place
+ * in the header only once there is a *named* environment to tell it apart from,
+ * which is exactly when a reader needs to ask which rows forgot to say.
  */
 export function EnvironmentSelect() {
 	const environments = useLocalEnvironments()
@@ -39,11 +41,13 @@ export function EnvironmentSelect() {
 			>
 				<NativeSelectOption value="">{ALL_ENVIRONMENTS_LABEL}</NativeSelectOption>
 				{missingSelection ? (
-					<NativeSelectOption value={environment}>{environment}</NativeSelectOption>
+					<NativeSelectOption value={environment}>
+						{environmentLabel(environment)}
+					</NativeSelectOption>
 				) : null}
 				{options.map((option) => (
 					<NativeSelectOption key={option} value={option}>
-						{option}
+						{environmentLabel(option)}
 					</NativeSelectOption>
 				))}
 			</NativeSelect>

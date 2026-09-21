@@ -10,6 +10,7 @@ import {
 	sessionsForTraceQuery,
 	sessionTraceSummariesQuery,
 	sessionSpansQuery,
+	sessionEnvironmentsQuery,
 } from "./session-replays"
 
 const baseParams = { orgId: "org_1" }
@@ -653,7 +654,7 @@ describe("sessionSpansQuery", () => {
 
 describe("environment scope", () => {
 	const ENV_PREDICATE =
-		"coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'"
+		"coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'"
 
 	it("filters the list pre-aggregation, beside the other version-invariant columns", () => {
 		const { sql } = compileUnsafe(sessionReplaysListQuery({ environment: "production" }), {
@@ -688,5 +689,35 @@ describe("environment scope", () => {
 	it("emits no environment predicate at all when none is chosen", () => {
 		const { sql } = compileUnsafe(sessionReplaysListQuery({}), { ...baseParams, ...WINDOW })
 		expect(sql).not.toContain("deployment.environment")
+	})
+})
+
+// sessionEnvironmentsQuery
+
+describe("sessionEnvironmentsQuery", () => {
+	// The header selector's option list for sessions. The whole reason it exists
+	// is the row the service-overview windows cannot report: a session recorded
+	// with no `deployment.environment.name`, which this projects as `unknown` so
+	// the same value can be selected straight back.
+	it("groups sessions by environment, naming the untagged ones `unknown`", () => {
+		const { sql } = compileUnsafe(sessionEnvironmentsQuery(), { ...baseParams, ...WINDOW })
+		expect(sql).toContain("FROM session_replays")
+		expect(sql).toContain(
+			"coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), " +
+				"ResourceAttributes['deployment.environment']), ''), 'unknown') AS environment",
+		)
+		expect(sql).toContain("GROUP BY environment")
+		expect(sql).toContain("ORDER BY environment ASC")
+		// No empty-value guard: `unknown` IS the empty value, named.
+		expect(sql).not.toContain("!= ''")
+	})
+
+	// Version-invariant, so it reads the raw rows rather than finalizing them —
+	// twice the rows, none of the aggregation, the same answer.
+	it("does not finalize the ReplacingMergeTree versions", () => {
+		const { sql } = compileUnsafe(sessionEnvironmentsQuery(), { ...baseParams, ...WINDOW })
+		expect(sql).not.toContain("argMax")
+		expect(sql).toContain("OrgId = 'org_1'")
+		expect(sql).toContain("StartTime >= ")
 	})
 })

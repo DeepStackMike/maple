@@ -390,7 +390,7 @@ describe("productEventPropertyValuesQuery", () => {
 
 describe("environment scope", () => {
 	const ENV_PREDICATE =
-		"coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'"
+		"coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'"
 
 	it("narrows the event list through session_replays, not through a column", () => {
 		const { sql } = compileUnsafe(

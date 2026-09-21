@@ -80,9 +80,9 @@ describe("serviceOperationsSummaryQuery", () => {
 		const q = serviceOperationsSummaryQuery({ serviceName: "api", environments: ["production"] })
 		const { sql } = compileUnsafe(q, baseParams)
 		expect(sql).toContain(
-			"coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production')",
+			"coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')",
 		)
-		expect(sql).toContain("DeploymentEnv IN ('production')")
+		expect(sql).toContain("coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')")
 	})
 
 	it("preserves internal operations by applying no SpanKind filter", () => {

@@ -120,7 +120,7 @@ describe("errorsByTypeQuery", () => {
 	it("applies deploymentEnvs filter", () => {
 		const q = errorsByTypeQuery({ deploymentEnvs: ["production"] })
 		const { sql } = compileUnsafe(q, baseParams)
-		expect(sql).toContain("DeploymentEnv IN ('production')")
+		expect(sql).toContain("coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')")
 	})
 
 	it("filters by fingerprint hash (stable identity round-trip)", () => {
@@ -192,7 +192,7 @@ describe("errorVersionsQuery", () => {
 		)
 		expect(sql).toContain("ParentSpanId = ''")
 		expect(sql).toContain("ServiceName IN ('api')")
-		expect(sql).toContain("DeploymentEnv IN ('production')")
+		expect(sql).toContain("coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')")
 		expect(sql).toContain("ServiceVersion IN ('1.4.2')")
 	})
 
@@ -256,7 +256,7 @@ describe("errorsSummaryQuery", () => {
 		const q = errorsSummaryQuery({ deploymentEnvs: ["production"] })
 		const { sql } = compileUnsafe(q, baseParams)
 		expect(sql).toContain(
-			"coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production')",
+			"coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')",
 		)
 		expect(sql).toContain("FROM traces")
 	})
@@ -459,7 +459,7 @@ describe("errorsByTypeQuery exclusions", () => {
 		})
 		const { sql } = compileUnsafe(q, baseParams)
 		expect(sql).toContain("ServiceName NOT IN ('noisy')")
-		expect(sql).toContain("DeploymentEnv NOT IN ('staging')")
+		expect(sql).toContain("coalesce(nullIf(DeploymentEnv, ''), 'unknown') NOT IN ('staging')")
 		expect(sql).toContain("ErrorLabel NOT IN ('TimeoutError')")
 		expect(sql).toContain("ServiceVersion NOT IN ('1.4.2')")
 	})
@@ -509,7 +509,7 @@ describe("errorsFacetsQuery", () => {
 		expect(sql).not.toContain("FROM error_events_by_time")
 		expect(sql).toContain("ParentSpanId = ''")
 		expect(sql).toContain("ServiceName IN ('api')")
-		expect(sql).toContain("DeploymentEnv IN ('prod')")
+		expect(sql).toContain("coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('prod')")
 		expect(sql).toContain("FingerprintHash IN (toUInt64('123'))")
 	})
 
@@ -533,9 +533,9 @@ describe("errorsFacetsQuery", () => {
 		const envBranch = branches.find((b) => b.includes("'environment' AS facetType"))
 
 		expect(serviceBranch).not.toContain("ServiceName IN ('api')")
-		expect(serviceBranch).toContain("DeploymentEnv IN ('prod')")
+		expect(serviceBranch).toContain("coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('prod')")
 		expect(envBranch).toContain("ServiceName IN ('api')")
-		expect(envBranch).not.toContain("DeploymentEnv IN ('prod')")
+		expect(envBranch).not.toContain("coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('prod')")
 	})
 
 	it("leaves a section's own EXCLUSIONS unfiltered too", () => {
@@ -549,9 +549,9 @@ describe("errorsFacetsQuery", () => {
 		const envBranch = branches.find((b) => b.includes("'environment' AS facetType"))
 
 		expect(serviceBranch).not.toContain("ServiceName NOT IN ('noisy')")
-		expect(serviceBranch).toContain("DeploymentEnv NOT IN ('staging')")
+		expect(serviceBranch).toContain("coalesce(nullIf(DeploymentEnv, ''), 'unknown') NOT IN ('staging')")
 		expect(envBranch).toContain("ServiceName NOT IN ('noisy')")
-		expect(envBranch).not.toContain("DeploymentEnv NOT IN ('staging')")
+		expect(envBranch).not.toContain("coalesce(nullIf(DeploymentEnv, ''), 'unknown') NOT IN ('staging')")
 	})
 
 	it("emits NOT IN for every excluded dimension", () => {
@@ -563,7 +563,7 @@ describe("errorsFacetsQuery", () => {
 		})
 		const { sql } = compileUnionUnsafe(q, baseParams)
 		expect(sql).toContain("ServiceName NOT IN ('noisy')")
-		expect(sql).toContain("DeploymentEnv NOT IN ('staging')")
+		expect(sql).toContain("coalesce(nullIf(DeploymentEnv, ''), 'unknown') NOT IN ('staging')")
 		expect(sql).toContain("ErrorLabel NOT IN ('TimeoutError')")
 		expect(sql).toContain("ServiceVersion NOT IN ('1.4.2')")
 	})
@@ -624,7 +624,7 @@ describe("errorFingerprintsQuery", () => {
 		expect(sql).toContain("FROM error_events_by_time")
 		expect(sql).toContain("toString(FingerprintHash) AS fingerprintHash")
 		expect(sql).toContain("ServiceName IN ('api')")
-		expect(sql).toContain("DeploymentEnv IN ('production')")
+		expect(sql).toContain("coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')")
 		expect(sql).toContain("GROUP BY fingerprintHash")
 		expect(sql).toContain("LIMIT 1000")
 		expect(sql).toContain("FORMAT JSON")
@@ -729,12 +729,27 @@ describe("tracesFacetsQuery", () => {
 		expect(sql).toContain("LIMIT 50")
 	})
 
-	it("keeps the non-service branch empty-value guard when facet-scoped", () => {
+	// The environment facet has no empty-value guard, unlike every other branch:
+	// an untagged span is a real population the reader has to be able to pick out,
+	// so `envLabel` offers it as `unknown` instead of the branch dropping it. The
+	// filter reads the column through the same expression, so the option and the
+	// rows behind it are the same set.
+	it("offers the untagged environment as `unknown` rather than guarding it away", () => {
 		const q = tracesFacetsQuery({ facet: "deploymentEnv" })
 		const { sql } = compileUnionUnsafe(q, baseParams)
 		expect(sql).not.toContain("UNION ALL")
 		expect(sql).toContain("'deploymentEnv' AS facetType")
-		expect(sql).toContain("DeploymentEnv != ''")
+		expect(sql).toContain("coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name")
+		expect(sql).not.toContain("DeploymentEnv != ''")
+		expect(sql).toContain("LIMIT 20")
+	})
+
+	it("keeps the non-service branch empty-value guard when facet-scoped", () => {
+		const q = tracesFacetsQuery({ facet: "spanName" })
+		const { sql } = compileUnionUnsafe(q, baseParams)
+		expect(sql).not.toContain("UNION ALL")
+		expect(sql).toContain("'spanName' AS facetType")
+		expect(sql).toContain("SpanName != ''")
 		expect(sql).toContain("LIMIT 20")
 	})
 })

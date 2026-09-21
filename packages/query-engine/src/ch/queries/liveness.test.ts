@@ -57,7 +57,7 @@ describe("serviceLivenessQuery", () => {
 			...livenessParams,
 			deploymentEnv: "production",
 		}).sql
-		expect(scoped).toContain("DeploymentEnv = 'production'")
+		expect(scoped).toContain("coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'")
 	})
 
 	it("decodes BYO-ClickHouse string counts to numbers", () => {

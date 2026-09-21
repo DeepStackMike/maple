@@ -12,7 +12,7 @@ import { unionAll, type CHUnionQuery } from "@maple-dev/clickhouse-builder"
 import { Logs, LogsAggregatesHourly } from "../tables"
 import { finalizeTimeseries } from "./series-cap"
 import type { AttributeFilter } from "@maple/domain/query-engine"
-import { deploymentEnvExpr } from "@maple/domain/tinybird/semconv-renames"
+import { envLabel, resourceEnvLabel } from "./environment"
 import { buildAttrFilterCondition } from "../../traces-shared"
 import type { AttributeIndexMode, LogBodySearchMode } from "../../capabilities"
 import { edgeCondition, interiorConditions } from "./rollup-splice"
@@ -125,7 +125,7 @@ function environmentCondition(
 	opts: LogsQueryOpts,
 ): CH.Condition | undefined {
 	if (!opts.environments?.length) return undefined
-	const envAttr = deploymentEnvExpr($.ResourceAttributes)
+	const envAttr = resourceEnvLabel($.ResourceAttributes)
 	const needle = opts.matchModes?.deploymentEnv === "contains" ? soleValue(opts.environments) : undefined
 	if (needle !== undefined) return CH.positionCaseInsensitive(envAttr, CH.lit(needle)).gt(0)
 	return CH.inList(envAttr, opts.environments)
@@ -177,7 +177,7 @@ function rawEnvNamespaceConditions(
 		environmentCondition($, opts),
 		namespaceCondition($, opts),
 		opts.excludedEnvironments?.length
-			? CH.notInList(deploymentEnvExpr($.ResourceAttributes), opts.excludedEnvironments)
+			? CH.notInList(resourceEnvLabel($.ResourceAttributes), opts.excludedEnvironments)
 			: undefined,
 		opts.excludedNamespaces?.length
 			? CH.notInList($.ResourceAttributes.get("service.namespace"), opts.excludedNamespaces)
@@ -199,7 +199,7 @@ function mvFacetConditions(
 		mvEnvironmentCondition($, opts),
 		mvNamespaceCondition($, opts),
 		opts.excludedEnvironments?.length
-			? CH.notInList($.DeploymentEnv, opts.excludedEnvironments)
+			? CH.notInList(envLabel($.DeploymentEnv), opts.excludedEnvironments)
 			: undefined,
 		opts.excludedNamespaces?.length
 			? CH.notInList($.ServiceNamespace, opts.excludedNamespaces)
@@ -300,7 +300,7 @@ function mvEnvironmentCondition(
 	opts: LogsQueryOpts,
 ): CH.Condition | undefined {
 	if (!opts.environments?.length) return undefined
-	return CH.inList($.DeploymentEnv, opts.environments)
+	return CH.inList(envLabel($.DeploymentEnv), opts.environments)
 }
 
 function mvNamespaceCondition(
@@ -429,7 +429,7 @@ function rawBreakdownName(
 	groupBy: LogsBreakdownOpts["groupBy"],
 ): CH.Expr<string> {
 	if (groupBy === "severity") return $.SeverityText
-	if (groupBy === "environment") return deploymentEnvExpr($.ResourceAttributes)
+	if (groupBy === "environment") return resourceEnvLabel($.ResourceAttributes)
 	return $.ServiceName
 }
 
@@ -438,7 +438,7 @@ function mvBreakdownName(
 	groupBy: LogsBreakdownOpts["groupBy"],
 ): CH.Expr<string> {
 	if (groupBy === "severity") return $.SeverityText
-	if (groupBy === "environment") return $.DeploymentEnv
+	if (groupBy === "environment") return envLabel($.DeploymentEnv)
 	return $.ServiceName
 }
 
@@ -882,7 +882,7 @@ function logsFacetsQueryFromMv(
 		$.Hour.lte(param.dateTimeSeconds("endTime")),
 		CH.when(opts.serviceName, (v: string) => $.ServiceName.eq(v)),
 		CH.when(opts.severity, (v: string) => $.SeverityText.eq(v)),
-		opts.environments?.length ? CH.inList($.DeploymentEnv, opts.environments) : undefined,
+		opts.environments?.length ? CH.inList(envLabel($.DeploymentEnv), opts.environments) : undefined,
 		mvNamespaceCondition($, opts),
 	]
 
@@ -914,12 +914,12 @@ function logsFacetsQueryFromMv(
 		.select(($) => ({
 			severityText: CH.lit(""),
 			serviceName: CH.lit(""),
-			deploymentEnv: $.DeploymentEnv,
+			deploymentEnv: envLabel($.DeploymentEnv),
 			namespace: CH.lit(""),
 			count: CH.sum($.Count),
 			facetType: CH.lit("deploymentEnv"),
 		}))
-		.where(($) => [...baseWhere($), $.DeploymentEnv.neq("")])
+		.where(baseWhere)
 		.groupBy("deploymentEnv")
 
 	const namespaceQuery = from(LogsAggregatesHourly)
@@ -991,12 +991,12 @@ function logsFacetsQueryFromRaw(
 		.select(($) => ({
 			severityText: CH.lit(""),
 			serviceName: CH.lit(""),
-			deploymentEnv: deploymentEnvExpr($.ResourceAttributes),
+			deploymentEnv: resourceEnvLabel($.ResourceAttributes),
 			namespace: CH.lit(""),
 			count: CH.count(),
 			facetType: CH.lit("deploymentEnv"),
 		}))
-		.where(($) => [...baseWhere($), deploymentEnvExpr($.ResourceAttributes).neq("")])
+		.where(baseWhere)
 		.groupBy("deploymentEnv")
 
 	const namespaceQuery = from(Logs)

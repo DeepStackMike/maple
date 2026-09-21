@@ -5,6 +5,7 @@
 import type { TracesMetric } from "@maple/domain/query-engine"
 import { compileFnCall, subqueryCond, subqueryExpr, untypedSubqueryExpr } from "@maple-dev/clickhouse-builder"
 import * as CH from "@maple-dev/clickhouse-builder/expr"
+import { envLabel, resourceEnvLabel } from "./environment"
 import { param } from "@maple-dev/clickhouse-builder"
 import { from, fromUnion, unionAll, type CHQuery, type ColumnAccessor } from "@maple-dev/clickhouse-builder"
 import type { Table } from "@maple-dev/clickhouse-builder"
@@ -286,7 +287,7 @@ function buildBreakdownGroupExpr(
 		case "namespace":
 			return $.ResourceAttributes.get("service.namespace")
 		case "environment":
-			return $.ResourceAttributes.get("deployment.environment")
+			return resourceEnvLabel($.ResourceAttributes)
 		case "span_name":
 			return $.SpanName
 		case "status_code":
@@ -310,7 +311,7 @@ function buildMvBreakdownGroupExpr(
 		case "namespace":
 			return $.ServiceNamespace
 		case "environment":
-			return $.DeploymentEnv
+			return envLabel($.DeploymentEnv)
 		case "status_code":
 			return $.StatusCode
 		case "service":
@@ -528,14 +529,14 @@ export function tracesTimeseriesQuery(
 		) => [
 			$.OrgId.eq(param.string("orgId")),
 			opts.serviceName ? $.ServiceName.eq(opts.serviceName) : undefined,
-			opts.environments?.length ? CH.inList($.DeploymentEnv, opts.environments) : undefined,
+			opts.environments?.length ? CH.inList(envLabel($.DeploymentEnv), opts.environments) : undefined,
 			opts.namespaces?.length ? CH.inList($.ServiceNamespace, opts.namespaces) : undefined,
 			opts.commitShas?.length ? CH.inList($.CommitSha, opts.commitShas) : undefined,
 			opts.excludedServiceNames?.length
 				? CH.notInList($.ServiceName, opts.excludedServiceNames)
 				: undefined,
 			opts.excludedEnvironments?.length
-				? CH.notInList($.DeploymentEnv, opts.excludedEnvironments)
+				? CH.notInList(envLabel($.DeploymentEnv), opts.excludedEnvironments)
 				: undefined,
 			opts.excludedNamespaces?.length
 				? CH.notInList($.ServiceNamespace, opts.excludedNamespaces)
@@ -1104,7 +1105,7 @@ export function slowTracesQuery(opts: SlowTracesOpts) {
 			$.Timestamp.gte(param.dateTimeSeconds("startTime")),
 			$.Timestamp.lte(param.dateTimeSeconds("endTime")),
 			CH.when(opts.service, (v: string) => $.ServiceName.eq(v)),
-			CH.when(opts.environment, (v: string) => $.DeploymentEnv.eq(v)),
+			CH.when(opts.environment, (v: string) => envLabel($.DeploymentEnv).eq(v)),
 		])
 		.orderBy(["durationMs", "desc"])
 		.limit(opts.limit ?? 10)
@@ -1578,7 +1579,7 @@ function traceListMvWhereConditions(
 	if (opts.environments?.length) {
 		conditions.push(
 			matchOrIn(
-				$.DeploymentEnv,
+				envLabel($.DeploymentEnv),
 				opts.environments,
 				mm?.deploymentEnv === "contains" && opts.environments.length === 1,
 			),
@@ -1611,7 +1612,7 @@ function traceListMvWhereConditions(
 		conditions.push(CH.notInList($.SpanName, opts.excludedSpanNames))
 	}
 	if (opts.excludedEnvironments?.length) {
-		conditions.push(CH.notInList($.DeploymentEnv, opts.excludedEnvironments))
+		conditions.push(CH.notInList(envLabel($.DeploymentEnv), opts.excludedEnvironments))
 	}
 	if (opts.excludedNamespaces?.length) {
 		conditions.push(CH.notInList($.ServiceNamespace, opts.excludedNamespaces))

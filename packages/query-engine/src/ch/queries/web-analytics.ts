@@ -13,7 +13,7 @@ import { param, from, inSubquery, unionAll, compileFnCall } from "@maple-dev/cli
 import type { ColumnAccessor, CHQuery, CHUnionQuery } from "@maple-dev/clickhouse-builder"
 import { SessionReplays, SessionEvents, ProductEvents } from "../tables"
 import { isBotCond } from "../user-agent"
-import { deploymentEnvExpr } from "@maple/domain/tinybird/semconv-renames"
+import { resourceEnvLabel } from "./environment"
 import type { FacetOutput } from "./query-helpers"
 import { WEB_ANALYTICS_LIVE_WINDOW_SECONDS, WEB_ANALYTICS_UNSET } from "@maple/domain/query-engine"
 
@@ -386,7 +386,7 @@ export function replaysWhere(
 		// No `exclude` arm, for the same reason `traffic` has none: the environment
 		// is the population this page is about, not one of the dimensions it
 		// offers to slice.
-		CH.when(filters.environment, (v: string) => deploymentEnvExpr($.ResourceAttributes).eq(v)),
+		CH.when(filters.environment, (v: string) => resourceEnvLabel($.ResourceAttributes).eq(v)),
 		trafficCondition($, filters),
 		eventSemiJoin($.SessionId, filters, exclude),
 	]

@@ -26,6 +26,7 @@
 // arithmetic over strings.
 
 import * as CH from "@maple-dev/clickhouse-builder/expr"
+import { envLabel } from "./environment"
 import { from, param, unionAll, type CHUnionQuery } from "@maple-dev/clickhouse-builder"
 import { Logs, ServiceOperationsMinutely, ServiceOverviewSpans } from "../tables"
 
@@ -68,7 +69,7 @@ export function serviceLivenessQuery(opts: ServiceLivenessOpts = {}) {
 			$.ServiceName.eq(param.string("serviceName")),
 			$.Minute.gte(param.dateTimeSeconds("startTime")),
 			$.Minute.lte(param.dateTimeSeconds("endTime")),
-			opts.scopeToEnvironment ? $.DeploymentEnv.eq(param.string("deploymentEnv")) : undefined,
+			opts.scopeToEnvironment ? envLabel($.DeploymentEnv).eq(param.string("deploymentEnv")) : undefined,
 		])
 		.format("JSON")
 }

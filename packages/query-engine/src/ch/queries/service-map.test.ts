@@ -112,9 +112,9 @@ describe("serviceExternalEdgesSQL", () => {
 				baseParams,
 			),
 		)
-		expect(sql).toContain("DeploymentEnv = 'production'")
+		expect(sql).toContain("coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'")
 		expect(sql).toContain(
-			"coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'",
+			"coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'",
 		)
 	})
 
@@ -440,7 +440,7 @@ describe("serviceDependenciesForServiceQuery", () => {
 			}),
 			baseParams,
 		)
-		const matches = sql.match(/DeploymentEnv = 'production'/g)
+		const matches = sql.match(/coalesce\(nullIf\(DeploymentEnv, ''\), 'unknown'\) = 'production'/g)
 		// hourly branch + parent subquery + child subquery in the live join.
 		expect(matches && matches.length >= 3).toBe(true)
 	})
@@ -512,7 +512,9 @@ describe("serviceMapEdgesQuery", () => {
 
 	it("pushes deploymentEnv into both sides of the join", () => {
 		const { sql } = compileUnsafe(serviceMapEdgesQuery({ deploymentEnv: "production" }), baseParams)
-		expect(sql.match(/DeploymentEnv = 'production'/g)).toHaveLength(2)
+		expect(sql.match(/coalesce\(nullIf\(DeploymentEnv, ''\), 'unknown'\) = 'production'/g)).toHaveLength(
+			2,
+		)
 	})
 })
 
@@ -534,7 +536,7 @@ describe("serviceMapNodeStatsQuery", () => {
 
 	it("filters by deployment environment when asked", () => {
 		const { sql } = compileUnsafe(serviceMapNodeStatsQuery({ deploymentEnv: "staging" }), baseParams)
-		expect(sql).toContain("DeploymentEnv = 'staging'")
+		expect(sql).toContain("coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'staging'")
 	})
 })
 
@@ -648,9 +650,9 @@ describe("serviceDbEdgesForServiceQuery", () => {
 			}),
 			baseParams,
 		)
-		expect(sql).toContain("DeploymentEnv = 'production'")
+		expect(sql).toContain("coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'")
 		expect(sql).toContain(
-			"coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'",
+			"coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'",
 		)
 	})
 
@@ -691,7 +693,7 @@ describe("service-map database query summaries", () => {
 		// sealed rollup branch — complete hours only
 		expect(sql).toContain("FROM service_map_db_query_shapes_hourly")
 		expect(sql).toContain("DbSystem = 'postgresql'")
-		expect(sql).toContain("DeploymentEnv = 'production'")
+		expect(sql).toContain("coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'")
 		// `baseParams` is hour-aligned, so the first whole hour IS the start hour.
 		expect(sql).toContain("Hour >= if(toDateTime('2024-01-01 00:00:00') = ")
 		expect(sql).toContain("Hour < toStartOfHour(toDateTime('2024-01-02 00:00:00'))")
@@ -703,7 +705,7 @@ describe("service-map database query summaries", () => {
 		expect(sql).toContain("OrgId = 'org_1'")
 		expect(sql).toContain("ServiceName = 'artifacts-api'")
 		expect(sql).toContain(
-			"coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'",
+			"coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'",
 		)
 		expect(sql).toContain(
 			"coalesce(nullIf(SpanAttributes['db.system.name'], ''), SpanAttributes['db.system']) = 'postgresql'",
@@ -838,7 +840,7 @@ describe("service-map database query summaries", () => {
 		expect(sql).toContain("= 'post\\'gres'")
 		expect(sql).toContain("ServiceName = 'svc\\'one'")
 		expect(sql).toContain(
-			"coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'prod\\'west'",
+			"coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'prod\\'west'",
 		)
 	})
 

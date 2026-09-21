@@ -354,7 +354,6 @@ const EXEMPT_BUILDERS: ReadonlySet<string> = new Set([
 	"service-operations/serviceOperationsTimeseriesRawQuery",
 	"services/serviceHealthSnapshotQuery",
 	"services/serviceHealthBaselineQuery",
-	"services/serviceEnvironmentsQuery",
 	"services/serviceUsageWithPreviousQuery",
 	"traces/traceSummariesQuery",
 ])

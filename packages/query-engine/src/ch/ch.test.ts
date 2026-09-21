@@ -511,7 +511,7 @@ describe("tracesTimeseriesQuery", () => {
 		const { sql } = compileUnsafe(q, baseParams)
 		expect(sql).toContain("FROM traces")
 		expect(sql).toContain(
-			"coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production', 'staging')",
+			"coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production', 'staging')",
 		)
 	})
 
@@ -524,7 +524,7 @@ describe("tracesTimeseriesQuery", () => {
 		})
 		const { sql } = compileUnsafe(q, baseParams)
 		expect(sql).toContain("FROM service_overview_spans")
-		expect(sql).toContain("DeploymentEnv IN ('production')")
+		expect(sql).toContain("coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')")
 	})
 
 	it("filters by attribute filters (equals)", () => {
@@ -798,7 +798,7 @@ describe("tracesBreakdownQuery", () => {
 		})
 		const { sql } = compileUnsafe(q, baseParams)
 		expect(sql).toContain("FROM service_overview_spans")
-		expect(sql).toContain("DeploymentEnv IN ('prod')")
+		expect(sql).toContain("coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('prod')")
 		expect(sql).not.toContain("ResourceAttributes")
 	})
 

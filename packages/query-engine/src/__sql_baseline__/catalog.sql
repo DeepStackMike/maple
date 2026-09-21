@@ -71,7 +71,7 @@ SELECT
         GROUP BY containerName
         FORMAT JSON
 
--- builder:containers:containerFacetsQuery:default  [4d105ebe]
+-- builder:containers:containerFacetsQuery:default  [76d3591e]
 SELECT
           ResourceAttributes['container.name'] AS name,
           uniq(ResourceAttributes['container.id']) AS count,
@@ -153,7 +153,7 @@ SELECT
         LIMIT 100
 UNION ALL
 SELECT
-          coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) AS name,
+          coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') AS name,
           uniq(ResourceAttributes['container.id']) AS count,
           'environment' AS facetType
         FROM metrics_gauge
@@ -163,7 +163,7 @@ SELECT
           AND ResourceAttributes['container.name'] != ''
           AND ResourceAttributes['k8s.pod.name'] = ''
           AND MetricName IN ('container.cpu.utilization')
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) != ''
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') != ''
         GROUP BY name
         ORDER BY count DESC
         LIMIT 50
@@ -421,7 +421,7 @@ SELECT
         GROUP BY containerName, hostName) AS containers
         FORMAT JSON
 
--- builder:errors:errorFingerprintsQuery:envFiltered  [f1269c9f]
+-- builder:errors:errorFingerprintsQuery:envFiltered  [ec27f2c0]
 SELECT
           toString(FingerprintHash) AS fingerprintHash
         FROM error_events_by_time
@@ -429,21 +429,20 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName IN ('api')
-          AND DeploymentEnv IN ('production')
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')
         GROUP BY fingerprintHash
         LIMIT 1000
         FORMAT JSON
 
--- builder:errors:errorIssueEnvironmentsQuery:default  [16b2e68d]
+-- builder:errors:errorIssueEnvironmentsQuery:default  [bb8c559c]
 SELECT
-          DeploymentEnv AS name,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
           count() AS count
         FROM error_events
         WHERE OrgId = 'org_sql_catalog'
           AND FingerprintHash = toUInt64('11640393269246331608')
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-          AND DeploymentEnv != ''
         GROUP BY name
         ORDER BY count DESC
         LIMIT 20
@@ -819,7 +818,7 @@ SELECT
         LIMIT 1
 FORMAT JSON
 
--- builder:infra:nodeFacetsQuery:default  [483ce011]
+-- builder:infra:nodeFacetsQuery:default  [aff88d39]
 SELECT
           ResourceAttributes['k8s.node.name'] AS name,
           uniq(ResourceAttributes['k8s.node.name']) AS count,
@@ -853,7 +852,7 @@ SELECT
         LIMIT 50
 UNION ALL
 SELECT
-          coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) AS name,
+          coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') AS name,
           uniq(ResourceAttributes['k8s.node.name']) AS count,
           'environment' AS facetType
         FROM metrics_gauge
@@ -863,7 +862,7 @@ SELECT
           AND ResourceAttributes['k8s.node.name'] != ''
           AND ResourceAttributes['k8s.pod.name'] = ''
           AND MetricName IN ('k8s.node.cpu.usage')
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) != ''
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') != ''
         GROUP BY name
         ORDER BY count DESC
         LIMIT 50
@@ -885,7 +884,7 @@ SELECT
         ORDER BY bucket ASC
         FORMAT JSON
 
--- builder:infra:podFacetsQuery:default  [c7a651d6]
+-- builder:infra:podFacetsQuery:default  [41ba3676]
 SELECT
           ResourceAttributes['k8s.pod.name'] AS name,
           uniq(ResourceAttributes['k8s.pod.uid']) AS count,
@@ -1007,7 +1006,7 @@ SELECT
         LIMIT 100
 UNION ALL
 SELECT
-          coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) AS name,
+          coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') AS name,
           uniq(ResourceAttributes['k8s.pod.uid']) AS count,
           'environment' AS facetType
         FROM metrics_gauge
@@ -1016,7 +1015,7 @@ SELECT
           AND TimeUnix <= '2026-01-03 14:15:00'
           AND ResourceAttributes['k8s.pod.name'] != ''
           AND MetricName IN ('k8s.pod.cpu.usage')
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) != ''
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') != ''
         GROUP BY name
         ORDER BY count DESC
         LIMIT 50
@@ -1053,7 +1052,7 @@ SELECT
         ORDER BY bucket ASC
         FORMAT JSON
 
--- builder:infra:workloadFacetsQuery:default  [b424bb44]
+-- builder:infra:workloadFacetsQuery:default  [5f7cdf9c]
 SELECT
           ResourceAttributes['k8s.deployment.name'] AS name,
           uniq(ResourceAttributes['k8s.deployment.name']) AS count,
@@ -1100,7 +1099,7 @@ SELECT
         LIMIT 50
 UNION ALL
 SELECT
-          coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) AS name,
+          coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') AS name,
           uniq(ResourceAttributes['k8s.deployment.name']) AS count,
           'environment' AS facetType
         FROM metrics_gauge
@@ -1109,7 +1108,7 @@ SELECT
           AND TimeUnix <= '2026-01-03 14:15:00'
           AND ResourceAttributes['k8s.deployment.name'] != ''
           AND MetricName IN ('k8s.pod.cpu.usage')
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) != ''
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') != ''
         GROUP BY name
         ORDER BY count DESC
         LIMIT 50
@@ -1162,9 +1161,9 @@ SELECT
         ORDER BY bucket ASC
         FORMAT JSON
 
--- builder:logs:logsBreakdownQuery:environment-raw  [a56f43db]
+-- builder:logs:logsBreakdownQuery:environment-raw  [19380124]
 SELECT
-          coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) AS name,
+          coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') AS name,
           count() AS count
         FROM logs
         WHERE OrgId = 'org_sql_catalog'
@@ -1254,7 +1253,7 @@ SELECT
         LIMIT 100
         FORMAT JSON
 
--- builder:product-events:productEventNamesQuery:environment-scoped  [a25be0d0]
+-- builder:product-events:productEventNamesQuery:environment-scoped  [baa513e3]
 SELECT
           EventName AS eventName,
           Kind AS kind,
@@ -1272,14 +1271,14 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
         GROUP BY sessionId)
         GROUP BY eventName, kind
         ORDER BY count DESC, eventName ASC
         LIMIT 100
         FORMAT JSON
 
--- builder:product-events:productEventNamesQuery:filtered  [66fb0435]
+-- builder:product-events:productEventNamesQuery:filtered  [ac42c198]
 SELECT
           EventName AS eventName,
           Kind AS kind,
@@ -1317,7 +1316,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM product_events
@@ -1527,7 +1526,7 @@ SELECT
         ORDER BY step ASC
         FORMAT JSON
 
--- builder:product-events:productEventsFunnelQuery:session-step-filtered  [8c09a4bf]
+-- builder:product-events:productEventsFunnelQuery:session-step-filtered  [b524ba59]
 SELECT
           arrayJoin([1, 2, 3, 4]) AS step,
           arrayElement(counts, step) AS count
@@ -1598,7 +1597,7 @@ SELECT
           AND s.UtmMedium = 'social'
           AND s.UtmCampaign = 'launch'
           AND s.VisitorIsNew = 1
-          AND coalesce(nullIf(s.ResourceAttributes['deployment.environment.name'], ''), s.ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(s.ResourceAttributes['deployment.environment.name'], ''), s.ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND s.SessionId IN (SELECT
           SessionId AS sessionId
         FROM product_events
@@ -1671,7 +1670,7 @@ SELECT
           AND s.UtmMedium = 'social'
           AND s.UtmCampaign = 'launch'
           AND s.VisitorIsNew = 1
-          AND coalesce(nullIf(s.ResourceAttributes['deployment.environment.name'], ''), s.ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(s.ResourceAttributes['deployment.environment.name'], ''), s.ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND s.SessionId IN (SELECT
           SessionId AS sessionId
         FROM product_events
@@ -1743,7 +1742,7 @@ SELECT
         ORDER BY bucket ASC
         FORMAT JSON
 
--- builder:product-events:productEventTimeseriesQuery:filtered  [86094347]
+-- builder:product-events:productEventTimeseriesQuery:filtered  [94f95aee]
 SELECT
           toStartOfInterval(Timestamp, INTERVAL 900 SECOND) AS bucket,
           count() AS count,
@@ -1778,7 +1777,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM product_events
@@ -1901,7 +1900,7 @@ SELECT
         LIMIT 50
         FORMAT JSON
 
--- builder:service-endpoints:serviceEndpointsSummaryQuery:envFiltered  [55532472]
+-- builder:service-endpoints:serviceEndpointsSummaryQuery:envFiltered  [f3256499]
 SELECT
           bSpanName AS spanName,
           sum(bSpanCount) AS spanCount,
@@ -1927,7 +1926,7 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production')
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')
           AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfMinute(toDateTime('2026-01-01 10:30:00')), toStartOfMinute(toDateTime('2026-01-01 10:30:00')), toStartOfMinute(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 MINUTE) OR Timestamp >= toStartOfMinute(toDateTime('2026-01-03 14:15:00')))
           AND match(if(((SpanName LIKE 'http.server %' OR SpanName IN ('GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS')) AND (SpanAttributes['http.route'] != '' OR SpanAttributes['url.path'] != '')), concat(if(SpanName LIKE 'http.server %', replaceOne(SpanName, 'http.server ', ''), SpanName), ' ', if(SpanAttributes['http.route'] != '', SpanAttributes['http.route'], SpanAttributes['url.path'])), SpanName), '^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) ')
         GROUP BY bSpanName
@@ -1943,7 +1942,7 @@ SELECT
         FROM service_operations_minutely
         WHERE OrgId = 'org_sql_catalog'
           AND ServiceName = 'api'
-          AND DeploymentEnv IN ('production')
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')
           AND Minute >= if(toDateTime('2026-01-01 10:30:00') = toStartOfMinute(toDateTime('2026-01-01 10:30:00')), toStartOfMinute(toDateTime('2026-01-01 10:30:00')), toStartOfMinute(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 MINUTE)
           AND Minute < toStartOfMinute(toDateTime('2026-01-03 14:15:00'))
           AND (Minute < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Minute >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
@@ -1961,7 +1960,7 @@ SELECT
         FROM service_operations_hourly
         WHERE OrgId = 'org_sql_catalog'
           AND ServiceName = 'api'
-          AND DeploymentEnv IN ('production')
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')
           AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
           AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
           AND match(SpanName, '^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) ')
@@ -2142,7 +2141,7 @@ SELECT
         LIMIT 200
         FORMAT JSON
 
--- builder:service-map:serviceDbEdgesSQL:env-scoped  [64270f13]
+-- builder:service-map:serviceDbEdgesSQL:env-scoped  [9e90f959]
 SELECT
           sourceService AS sourceService,
           dbSystem AS dbSystem,
@@ -2169,7 +2168,7 @@ SELECT
           AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
           AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
           AND DbSystem != ''
-          AND DeploymentEnv = 'production'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
         GROUP BY sourceService, dbSystem, dbNamespace
 UNION ALL
 SELECT
@@ -2190,7 +2189,7 @@ SELECT
           AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
           AND SpanKind IN ('Client', 'Producer')
           AND coalesce(nullIf(SpanAttributes['db.system.name'], ''), SpanAttributes['db.system']) != ''
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
         GROUP BY sourceService, dbSystem, dbNamespace
 ) AS edges
         GROUP BY sourceService, dbSystem, dbNamespace
@@ -2545,7 +2544,7 @@ SELECT
         LIMIT 200
         FORMAT JSON
 
--- builder:service-map:serviceDependenciesSQL:env-scoped  [89695720]
+-- builder:service-map:serviceDependenciesSQL:env-scoped  [04bb09d7]
 SELECT
           sourceService AS sourceService,
           targetService AS targetService,
@@ -2567,7 +2566,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
           AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
-          AND DeploymentEnv = 'production'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
         GROUP BY sourceService, targetService
 UNION ALL
 SELECT
@@ -2590,7 +2589,7 @@ SELECT
           AND Timestamp >= toDateTime('2026-01-01 10:30:00')
           AND Timestamp < toDateTime('2026-01-03 14:15:00')
           AND OrgId = 'org_sql_catalog'
-          AND DeploymentEnv = 'production'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
           AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))) AS p
         INNER JOIN (SELECT
           TraceId AS TraceId,
@@ -2603,7 +2602,7 @@ SELECT
         WHERE Timestamp >= toDateTime('2026-01-01 10:30:00')
           AND Timestamp < toDateTime('2026-01-03 14:15:00')
           AND OrgId = 'org_sql_catalog'
-          AND DeploymentEnv = 'production'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
           AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))) AS c ON (p.SpanId = c.ParentSpanId AND p.TraceId = c.TraceId)
         WHERE p.ServiceName != c.ServiceName
         GROUP BY sourceService, targetService
@@ -2682,7 +2681,7 @@ SELECT
         LIMIT 200
         FORMAT JSON
 
--- builder:service-map:serviceExternalEdgesSQL:env-scoped  [f137812a]
+-- builder:service-map:serviceExternalEdgesSQL:env-scoped  [856955eb]
 SELECT
           sourceService AS sourceService,
           targetType AS targetType,
@@ -2712,7 +2711,7 @@ SELECT
           AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
           AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
           AND TargetName != ''
-          AND DeploymentEnv = 'production'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
         GROUP BY sourceService, targetType, targetSystem, targetName
 UNION ALL
 SELECT
@@ -2735,7 +2734,7 @@ SELECT
           AND SpanKind IN ('Client', 'Producer')
           AND SpanAttributes['db.system.name'] = ''
           AND ((((((SpanAttributes['server.address'] != '' OR SpanAttributes['http.host'] != '') OR SpanAttributes['url.authority'] != '') OR coalesce(nullIf(SpanAttributes['messaging.destination.name'], ''), SpanAttributes['messaging.destination']) != '') OR SpanAttributes['messaging.system'] != '') OR SpanAttributes['rpc.service'] != '') OR SpanAttributes['rpc.system'] != '')
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
         GROUP BY sourceService, targetType, targetSystem, targetName
         HAVING targetName != ''
 ) AS edges
@@ -2747,7 +2746,7 @@ SELECT
           AND Hour >= toStartOfHour(toDateTime('2026-01-01 10:30:00'))
           AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
           AND ParentServerAddress != ''
-          AND DeploymentEnv = 'production'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
         GROUP BY ParentServerAddress)))
         GROUP BY sourceService, targetType, targetSystem, targetName
         ORDER BY callCount DESC
@@ -2795,7 +2794,7 @@ SELECT
         GROUP BY OrgId, Hour, SourceService, TargetService, DeploymentEnv
         FORMAT JSON
 
--- builder:service-map:serviceMapEdgeJoinQuery:scoped-to-service  [184fee2b]
+-- builder:service-map:serviceMapEdgeJoinQuery:scoped-to-service  [bc2b8a2d]
 SELECT
           p.OrgId AS OrgId,
           toStartOfHour(p.Timestamp) AS Hour,
@@ -2821,7 +2820,7 @@ SELECT
           AND Timestamp >= toDateTime('2026-01-01 10:30:00')
           AND Timestamp < toDateTime('2026-01-03 14:15:00')
           AND OrgId = 'org_sql_catalog'
-          AND DeploymentEnv = 'production'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
           AND ServiceName = 'web') AS p
         INNER JOIN (SELECT
           TraceId AS TraceId,
@@ -2834,7 +2833,7 @@ SELECT
         WHERE Timestamp >= toDateTime('2026-01-01 10:30:00')
           AND Timestamp < toDateTime('2026-01-03 14:15:00')
           AND OrgId = 'org_sql_catalog'
-          AND DeploymentEnv = 'production') AS c ON (p.SpanId = c.ParentSpanId AND p.TraceId = c.TraceId)
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production') AS c ON (p.SpanId = c.ParentSpanId AND p.TraceId = c.TraceId)
         WHERE p.ServiceName != c.ServiceName
         GROUP BY OrgId, Hour, SourceService, TargetService, DeploymentEnv
         FORMAT JSON
@@ -2876,7 +2875,7 @@ SELECT
         LIMIT 200
         FORMAT JSON
 
--- builder:service-map:serviceMapEdgesQuery:env-scoped  [4fe5b62a]
+-- builder:service-map:serviceMapEdgesQuery:env-scoped  [cf0a7904]
 SELECT
           p.ServiceName AS callerService,
           c.ServiceName AS calleeService,
@@ -2896,7 +2895,7 @@ SELECT
           AND Timestamp >= toDateTime('2026-01-01 10:30:00')
           AND Timestamp < toDateTime('2026-01-03 14:15:00')
           AND OrgId = 'org_sql_catalog'
-          AND DeploymentEnv = 'production') AS p
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production') AS p
         INNER JOIN (SELECT
           TraceId AS TraceId,
           ParentSpanId AS ParentSpanId,
@@ -2908,7 +2907,7 @@ SELECT
         WHERE Timestamp >= toDateTime('2026-01-01 10:30:00')
           AND Timestamp < toDateTime('2026-01-03 14:15:00')
           AND OrgId = 'org_sql_catalog'
-          AND DeploymentEnv = 'production') AS c ON (p.SpanId = c.ParentSpanId AND p.TraceId = c.TraceId)
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production') AS c ON (p.SpanId = c.ParentSpanId AND p.TraceId = c.TraceId)
         WHERE p.ServiceName != c.ServiceName
         GROUP BY callerService, calleeService
         ORDER BY callCount DESC
@@ -2995,7 +2994,7 @@ SELECT
         LIMIT 50
         FORMAT JSON
 
--- builder:service-operations:serviceOperationsSummaryQuery:envFiltered  [df13f9c7]
+-- builder:service-operations:serviceOperationsSummaryQuery:envFiltered  [d0431a7e]
 SELECT
           bSpanName AS spanName,
           sum(bSpanCount) AS spanCount,
@@ -3021,7 +3020,7 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production')
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')
           AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfMinute(toDateTime('2026-01-01 10:30:00')), toStartOfMinute(toDateTime('2026-01-01 10:30:00')), toStartOfMinute(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 MINUTE) OR Timestamp >= toStartOfMinute(toDateTime('2026-01-03 14:15:00')))
         GROUP BY bSpanName
 UNION ALL
@@ -3036,7 +3035,7 @@ SELECT
         FROM service_operations_minutely
         WHERE OrgId = 'org_sql_catalog'
           AND ServiceName = 'api'
-          AND DeploymentEnv IN ('production')
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')
           AND Minute >= if(toDateTime('2026-01-01 10:30:00') = toStartOfMinute(toDateTime('2026-01-01 10:30:00')), toStartOfMinute(toDateTime('2026-01-01 10:30:00')), toStartOfMinute(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 MINUTE)
           AND Minute < toStartOfMinute(toDateTime('2026-01-03 14:15:00'))
           AND (Minute < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Minute >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
@@ -3053,7 +3052,7 @@ SELECT
         FROM service_operations_hourly
         WHERE OrgId = 'org_sql_catalog'
           AND ServiceName = 'api'
-          AND DeploymentEnv IN ('production')
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')
           AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
           AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
         GROUP BY bSpanName
@@ -3099,7 +3098,7 @@ SELECT
         LIMIT 10000
         FORMAT JSON
 
--- builder:services:serviceCatalogQuery:default  [4475276a]
+-- builder:services:serviceCatalogQuery:default  [944ee112]
 SELECT
           bServiceName AS serviceName,
           arraySort(arrayFilter(x -> x != '', arrayDistinct(groupArray(bServiceNamespace)))) AS serviceNamespaces,
@@ -3116,7 +3115,7 @@ SELECT
           toStartOfHour(Timestamp) AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           count() AS bSpanCount,
           sum(SampleRate) AS bEstimatedSpanCount,
@@ -3138,7 +3137,7 @@ SELECT
           Hour AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           sum(SpanCount) AS bSpanCount,
           sum(EstimatedSpanCount) AS bEstimatedSpanCount,
@@ -3161,7 +3160,7 @@ SELECT
         OFFSET 0
         FORMAT JSON
 
--- builder:services:serviceCatalogQuery:filtered  [4a803960]
+-- builder:services:serviceCatalogQuery:filtered  [a40403a4]
 SELECT
           bServiceName AS serviceName,
           arraySort(arrayFilter(x -> x != '', arrayDistinct(groupArray(bServiceNamespace)))) AS serviceNamespaces,
@@ -3178,7 +3177,7 @@ SELECT
           toStartOfHour(Timestamp) AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           count() AS bSpanCount,
           sum(SampleRate) AS bEstimatedSpanCount,
@@ -3194,7 +3193,7 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND DeploymentEnv IN ('production')
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')
           AND ServiceNamespace IN ('backend')
           AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
         GROUP BY bBucket, bServiceName, bServiceNamespace, bEnvironment, bCommitSha
@@ -3203,7 +3202,7 @@ SELECT
           Hour AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           sum(SpanCount) AS bSpanCount,
           sum(EstimatedSpanCount) AS bEstimatedSpanCount,
@@ -3217,7 +3216,7 @@ SELECT
         FROM service_overview_hourly
         WHERE OrgId = 'org_sql_catalog'
           AND ServiceName = 'api'
-          AND DeploymentEnv IN ('production')
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')
           AND ServiceNamespace IN ('backend')
           AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
           AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
@@ -3227,6 +3226,122 @@ SELECT
         ORDER BY estimatedSpanCount DESC, serviceName ASC
         LIMIT 50
         OFFSET 0
+        FORMAT JSON
+
+-- builder:services:serviceCatalogQuery:unknown-environment  [1d2e4ad6]
+SELECT
+          bServiceName AS serviceName,
+          arraySort(arrayFilter(x -> x != '', arrayDistinct(groupArray(bServiceNamespace)))) AS serviceNamespaces,
+          arraySort(arrayFilter(x -> x != '', arrayDistinct(groupArray(bEnvironment)))) AS deploymentEnvironments,
+          sum(bSpanCount) AS spanCount,
+          sum(bErrorCount) AS errorCount,
+          sum(bEstimatedErrorCount) AS estimatedErrorCount,
+          sum(bEstimatedSpanCount) AS estimatedSpanCount,
+          arrayElement(quantilesTDigestMerge(0.5, 0.95, 0.99)(bDurationQuantiles), 1) / 1000000 AS p50LatencyMs,
+          arrayElement(quantilesTDigestMerge(0.5, 0.95, 0.99)(bDurationQuantiles), 2) / 1000000 AS p95LatencyMs,
+          arrayElement(quantilesTDigestMerge(0.5, 0.95, 0.99)(bDurationQuantiles), 3) / 1000000 AS p99LatencyMs
+        FROM (
+SELECT
+          toStartOfHour(Timestamp) AS bBucket,
+          ServiceName AS bServiceName,
+          ServiceNamespace AS bServiceNamespace,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
+          CommitSha AS bCommitSha,
+          count() AS bSpanCount,
+          sum(SampleRate) AS bEstimatedSpanCount,
+          countIf(StatusCode = 'Error') AS bErrorCount,
+          sumIf(SampleRate, StatusCode = 'Error') AS bEstimatedErrorCount,
+          sum(toFloat64(Duration)) AS bDurationSum,
+          quantilesTDigestState(0.5, 0.95, 0.99)(Duration) AS bDurationQuantiles,
+          min(Timestamp) AS bFirstSeen,
+          countIf((StatusCode != 'Error' AND Duration < 500000000)) AS bApdexSatisfiedCount,
+          countIf(((StatusCode != 'Error' AND Duration >= 500000000) AND Duration < 2000000000)) AS bApdexToleratingCount
+        FROM service_overview_spans
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('unknown')
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
+        GROUP BY bBucket, bServiceName, bServiceNamespace, bEnvironment, bCommitSha
+UNION ALL
+SELECT
+          Hour AS bBucket,
+          ServiceName AS bServiceName,
+          ServiceNamespace AS bServiceNamespace,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
+          CommitSha AS bCommitSha,
+          sum(SpanCount) AS bSpanCount,
+          sum(EstimatedSpanCount) AS bEstimatedSpanCount,
+          sum(ErrorCount) AS bErrorCount,
+          sum(EstimatedErrorCount) AS bEstimatedErrorCount,
+          sum(DurationSum) AS bDurationSum,
+          quantilesTDigestMergeState(0.5, 0.95, 0.99)(DurationQuantiles) AS bDurationQuantiles,
+          min(FirstSeen) AS bFirstSeen,
+          sum(ApdexSatisfiedCount) AS bApdexSatisfiedCount,
+          sum(ApdexToleratingCount) AS bApdexToleratingCount
+        FROM service_overview_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('unknown')
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+        GROUP BY bBucket, bServiceName, bServiceNamespace, bEnvironment, bCommitSha
+) AS service_windows
+        GROUP BY serviceName
+        ORDER BY estimatedSpanCount DESC, serviceName ASC
+        LIMIT 50
+        OFFSET 0
+        FORMAT JSON
+
+-- builder:services:serviceEnvironmentsQuery:default  [b29adfed]
+SELECT
+          bEnvironment AS environment
+        FROM (
+SELECT
+          toStartOfHour(Timestamp) AS bBucket,
+          ServiceName AS bServiceName,
+          ServiceNamespace AS bServiceNamespace,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
+          CommitSha AS bCommitSha,
+          count() AS bSpanCount,
+          sum(SampleRate) AS bEstimatedSpanCount,
+          countIf(StatusCode = 'Error') AS bErrorCount,
+          sumIf(SampleRate, StatusCode = 'Error') AS bEstimatedErrorCount,
+          sum(toFloat64(Duration)) AS bDurationSum,
+          quantilesTDigestState(0.5, 0.95, 0.99)(Duration) AS bDurationQuantiles,
+          min(Timestamp) AS bFirstSeen,
+          countIf((StatusCode != 'Error' AND Duration < 500000000)) AS bApdexSatisfiedCount,
+          countIf(((StatusCode != 'Error' AND Duration >= 500000000) AND Duration < 2000000000)) AS bApdexToleratingCount
+        FROM service_overview_spans
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
+        GROUP BY bBucket, bServiceName, bServiceNamespace, bEnvironment, bCommitSha
+UNION ALL
+SELECT
+          Hour AS bBucket,
+          ServiceName AS bServiceName,
+          ServiceNamespace AS bServiceNamespace,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
+          CommitSha AS bCommitSha,
+          sum(SpanCount) AS bSpanCount,
+          sum(EstimatedSpanCount) AS bEstimatedSpanCount,
+          sum(ErrorCount) AS bErrorCount,
+          sum(EstimatedErrorCount) AS bEstimatedErrorCount,
+          sum(DurationSum) AS bDurationSum,
+          quantilesTDigestMergeState(0.5, 0.95, 0.99)(DurationQuantiles) AS bDurationQuantiles,
+          min(FirstSeen) AS bFirstSeen,
+          sum(ApdexSatisfiedCount) AS bApdexSatisfiedCount,
+          sum(ApdexToleratingCount) AS bApdexToleratingCount
+        FROM service_overview_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+        GROUP BY bBucket, bServiceName, bServiceNamespace, bEnvironment, bCommitSha
+) AS service_windows
+        GROUP BY environment
+        ORDER BY environment ASC
+        LIMIT 100
         FORMAT JSON
 
 -- builder:session-events:sessionActivityQuery:default  [daf1704b]
@@ -3321,6 +3436,18 @@ SELECT
           AND StartTime <= '2026-01-03 14:15:00'
         ORDER BY version DESC
         LIMIT 1
+        FORMAT JSON
+
+-- builder:session-replays:sessionEnvironmentsQuery:default  [7e206c67]
+SELECT
+          coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') AS environment
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+        GROUP BY environment
+        ORDER BY environment ASC
+        LIMIT 100
         FORMAT JSON
 
 -- builder:session-replays:sessionReplayChunkIndexQuery:default  [2e322b20]
@@ -3485,7 +3612,7 @@ SELECT
           AND ErrorCount > 0
 FORMAT JSON
 
--- builder:session-replays:sessionReplaysFacetsQuery:environment-scoped  [ba02e085]
+-- builder:session-replays:sessionReplaysFacetsQuery:environment-scoped  [30d28a8a]
 SELECT
           ServiceName AS name,
           uniq(SessionId) AS count,
@@ -3494,7 +3621,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND ServiceName != ''
         GROUP BY name
         ORDER BY count DESC
@@ -3508,7 +3635,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND BrowserName != ''
         GROUP BY name
         ORDER BY count DESC
@@ -3522,7 +3649,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND Country != ''
         GROUP BY name
         ORDER BY count DESC
@@ -3536,7 +3663,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND DeviceType != ''
         GROUP BY name
         ORDER BY count DESC
@@ -3550,7 +3677,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND GroupName != ''
         GROUP BY name
         ORDER BY count DESC
@@ -3564,7 +3691,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND DurationMs > 0
         GROUP BY name
         LIMIT 40
@@ -3577,7 +3704,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND DurationMs > 0
 UNION ALL
 SELECT
@@ -3588,7 +3715,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND DurationMs > 0
 UNION ALL
 SELECT
@@ -3599,7 +3726,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND ErrorCount > 0
 FORMAT JSON
 
@@ -3729,6 +3856,124 @@ SELECT
           AND ErrorCount > 0
 FORMAT JSON
 
+-- builder:session-replays:sessionReplaysFacetsQuery:unknown-environment-scoped  [30d28a8a]
+SELECT
+          ServiceName AS name,
+          uniq(SessionId) AS count,
+          'service' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'unknown'
+          AND ServiceName != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          BrowserName AS name,
+          uniq(SessionId) AS count,
+          'browser' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'unknown'
+          AND BrowserName != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          Country AS name,
+          uniq(SessionId) AS count,
+          'country' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'unknown'
+          AND Country != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          DeviceType AS name,
+          uniq(SessionId) AS count,
+          'device' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'unknown'
+          AND DeviceType != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          GroupName AS name,
+          uniq(SessionId) AS count,
+          'group' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'unknown'
+          AND GroupName != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          toString(toUInt64(round(pow(2, floor(log2(greatest(DurationMs, 1000) / 1000) * 2) / 2) * 1000))) AS name,
+          uniq(SessionId) AS count,
+          'durationBucket' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'unknown'
+          AND DurationMs > 0
+        GROUP BY name
+        LIMIT 40
+UNION ALL
+SELECT
+          'p50' AS name,
+          toUInt64(ifNotFinite(round(quantile(0.5)(assumeNotNull(DurationMs))), 0)) AS count,
+          'durationStat' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'unknown'
+          AND DurationMs > 0
+UNION ALL
+SELECT
+          'p95' AS name,
+          toUInt64(ifNotFinite(round(quantile(0.95)(assumeNotNull(DurationMs))), 0)) AS count,
+          'durationStat' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'unknown'
+          AND DurationMs > 0
+UNION ALL
+SELECT
+          'error' AS name,
+          uniq(SessionId) AS count,
+          'error' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'unknown'
+          AND ErrorCount > 0
+FORMAT JSON
+
 -- builder:session-replays:sessionReplaysListQuery:default  [291656ac]
 SELECT
           SessionId AS sessionId,
@@ -3765,7 +4010,7 @@ SELECT
         OFFSET 0
         FORMAT JSON
 
--- builder:session-replays:sessionReplaysListQuery:environment-scoped  [9fd7eb05]
+-- builder:session-replays:sessionReplaysListQuery:environment-scoped  [e9af3782]
 SELECT
           SessionId AS sessionId,
           argMax(StartTime, Version) AS startTime,
@@ -3795,7 +4040,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
         GROUP BY sessionId
         ORDER BY startTime DESC, sessionId DESC
         LIMIT 50
@@ -3883,6 +4128,43 @@ SELECT
         OFFSET 0
         FORMAT JSON
 
+-- builder:session-replays:sessionReplaysListQuery:unknown-environment-scoped  [e9af3782]
+SELECT
+          SessionId AS sessionId,
+          argMax(StartTime, Version) AS startTime,
+          argMax(EndTime, Version) AS endTime,
+          argMax(DurationMs, Version) AS durationMs,
+          argMax(Status, Version) AS status,
+          argMax(UserId, Version) AS userId,
+          argMax(UserName, Version) AS userName,
+          argMax(UserEmail, Version) AS userEmail,
+          argMax(GroupId, Version) AS groupId,
+          argMax(GroupName, Version) AS groupName,
+          argMax(VisitorId, Version) AS visitorId,
+          argMax(UtmSource, Version) AS utmSource,
+          argMax(EntryPath, Version) AS entryPath,
+          argMax(UrlInitial, Version) AS urlInitial,
+          argMax(BrowserName, Version) AS browserName,
+          argMax(OsName, Version) AS osName,
+          argMax(DeviceType, Version) AS deviceType,
+          argMax(Country, Version) AS country,
+          argMax(ServiceName, Version) AS serviceName,
+          argMax(PageViews, Version) AS pageViews,
+          argMax(ClickCount, Version) AS clickCount,
+          argMax(ErrorCount, Version) AS errorCount,
+          length(argMax(TraceIds, Version)) AS traceCount,
+          argMax(ResourceAttributes['maple.session.recorded'], Version) AS recorded
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'unknown'
+        GROUP BY sessionId
+        ORDER BY startTime DESC, sessionId DESC
+        LIMIT 50
+        OFFSET 0
+        FORMAT JSON
+
 -- builder:session-replays:sessionResourceAttributeBreakdownQuery:default  [c8084ddc]
 SELECT
           value AS name,
@@ -3901,7 +4183,7 @@ SELECT
         LIMIT 50
         FORMAT JSON
 
--- builder:session-replays:sessionResourceAttributeBreakdownQuery:environment-scoped  [1ce9fb5b]
+-- builder:session-replays:sessionResourceAttributeBreakdownQuery:environment-scoped  [7c35adde]
 SELECT
           value AS name,
           count() AS count
@@ -3912,7 +4194,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
         GROUP BY sessionId) AS sessions
         WHERE value != ''
         GROUP BY name
@@ -4122,7 +4404,7 @@ SELECT
         LIMIT 2
         FORMAT JSON
 
--- builder:web-analytics:webAnalyticsBreakdownsQuery:all-dimensions-filtered  [43703ecb]
+-- builder:web-analytics:webAnalyticsBreakdownsQuery:all-dimensions-filtered  [1f53cf2d]
 SELECT
           if(ReferrerHost = '', '(none)', ReferrerHost) AS name,
           uniq(SessionId) AS count,
@@ -4150,7 +4432,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM session_events
@@ -4191,7 +4473,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM session_events
@@ -4233,7 +4515,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM session_events
@@ -4275,7 +4557,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM session_events
@@ -4317,7 +4599,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM session_events
@@ -4359,7 +4641,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM session_events
@@ -4401,7 +4683,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM session_events
@@ -4442,7 +4724,7 @@ SELECT
           AND UtmSource = 'twitter'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM session_events
@@ -4483,7 +4765,7 @@ SELECT
           AND UtmSource = 'twitter'
           AND UtmMedium = 'social'
           AND VisitorIsNew = 1
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM session_events
@@ -4524,7 +4806,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM session_events
@@ -4566,7 +4848,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM session_events
@@ -4608,7 +4890,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM session_events
@@ -4624,7 +4906,7 @@ SELECT
         LIMIT 50
 FORMAT JSON
 
--- builder:web-analytics:webAnalyticsBreakdownsQuery:all-dimensions-filtered-rollup  [bfd5606f]
+-- builder:web-analytics:webAnalyticsBreakdownsQuery:all-dimensions-filtered-rollup  [b2ce7911]
 SELECT
           if(ReferrerHost = '', '(none)', ReferrerHost) AS name,
           uniq(SessionId) AS count,
@@ -4652,7 +4934,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM product_events
@@ -4693,7 +4975,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM product_events
@@ -4735,7 +5017,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM product_events
@@ -4777,7 +5059,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM product_events
@@ -4819,7 +5101,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM product_events
@@ -4861,7 +5143,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM product_events
@@ -4903,7 +5185,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM product_events
@@ -4944,7 +5226,7 @@ SELECT
           AND UtmSource = 'twitter'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM product_events
@@ -4985,7 +5267,7 @@ SELECT
           AND UtmSource = 'twitter'
           AND UtmMedium = 'social'
           AND VisitorIsNew = 1
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM product_events
@@ -5026,7 +5308,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM product_events
@@ -5068,7 +5350,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM product_events
@@ -5110,7 +5392,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM product_events
@@ -5434,7 +5716,7 @@ SELECT
         LIMIT 50
 FORMAT JSON
 
--- builder:web-analytics:webAnalyticsBreakdownsQuery:environment-scoped  [ca66bd46]
+-- builder:web-analytics:webAnalyticsBreakdownsQuery:environment-scoped  [3c051662]
 SELECT
           if(ReferrerHost = '', '(none)', ReferrerHost) AS name,
           uniq(SessionId) AS count,
@@ -5443,7 +5725,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
         GROUP BY name
         ORDER BY count DESC
         LIMIT 50
@@ -5456,7 +5738,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND Country != ''
         GROUP BY name
         ORDER BY count DESC
@@ -5470,7 +5752,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND DeviceType != ''
         GROUP BY name
         ORDER BY count DESC
@@ -5484,7 +5766,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND BrowserName != ''
         GROUP BY name
         ORDER BY count DESC
@@ -5498,7 +5780,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND OsName != ''
         GROUP BY name
         ORDER BY count DESC
@@ -5512,7 +5794,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND Language != ''
         GROUP BY name
         ORDER BY count DESC
@@ -5526,7 +5808,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
         GROUP BY name
         ORDER BY count DESC
         LIMIT 50
@@ -5539,7 +5821,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
         GROUP BY name
         ORDER BY count DESC
         LIMIT 50
@@ -5552,7 +5834,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
         GROUP BY name
         ORDER BY count DESC
         LIMIT 50
@@ -5565,7 +5847,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND EntryPath != ''
         GROUP BY name
         ORDER BY count DESC
@@ -5579,7 +5861,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND ExitPath != ''
         GROUP BY name
         ORDER BY count DESC
@@ -5593,14 +5875,14 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND Host != ''
         GROUP BY name
         ORDER BY count DESC
         LIMIT 50
 FORMAT JSON
 
--- builder:web-analytics:webAnalyticsBreakdownsQuery:environment-scoped-rollup  [ca66bd46]
+-- builder:web-analytics:webAnalyticsBreakdownsQuery:environment-scoped-rollup  [3c051662]
 SELECT
           if(ReferrerHost = '', '(none)', ReferrerHost) AS name,
           uniq(SessionId) AS count,
@@ -5609,7 +5891,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
         GROUP BY name
         ORDER BY count DESC
         LIMIT 50
@@ -5622,7 +5904,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND Country != ''
         GROUP BY name
         ORDER BY count DESC
@@ -5636,7 +5918,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND DeviceType != ''
         GROUP BY name
         ORDER BY count DESC
@@ -5650,7 +5932,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND BrowserName != ''
         GROUP BY name
         ORDER BY count DESC
@@ -5664,7 +5946,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND OsName != ''
         GROUP BY name
         ORDER BY count DESC
@@ -5678,7 +5960,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND Language != ''
         GROUP BY name
         ORDER BY count DESC
@@ -5692,7 +5974,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
         GROUP BY name
         ORDER BY count DESC
         LIMIT 50
@@ -5705,7 +5987,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
         GROUP BY name
         ORDER BY count DESC
         LIMIT 50
@@ -5718,7 +6000,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
         GROUP BY name
         ORDER BY count DESC
         LIMIT 50
@@ -5731,7 +6013,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND EntryPath != ''
         GROUP BY name
         ORDER BY count DESC
@@ -5745,7 +6027,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND ExitPath != ''
         GROUP BY name
         ORDER BY count DESC
@@ -5759,7 +6041,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND Host != ''
         GROUP BY name
         ORDER BY count DESC
@@ -5902,7 +6184,7 @@ SELECT
           AND coalesce(LastActivityAt, StartTime) >= toDateTime('2026-01-03 14:15:00') - INTERVAL 300 SECOND
         FORMAT JSON
 
--- builder:web-analytics:webAnalyticsLiveQuery:filtered  [8e9559d7]
+-- builder:web-analytics:webAnalyticsLiveQuery:filtered  [13c72434]
 SELECT
           uniqIf(VisitorId, VisitorId != '') AS visitors,
           uniq(SessionId) AS sessions
@@ -5930,7 +6212,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM session_events
@@ -5943,7 +6225,7 @@ SELECT
           AND coalesce(LastActivityAt, StartTime) >= toDateTime('2026-01-03 14:15:00') - INTERVAL 300 SECOND
         FORMAT JSON
 
--- builder:web-analytics:webAnalyticsLiveQuery:filtered-rollup  [83d6e214]
+-- builder:web-analytics:webAnalyticsLiveQuery:filtered-rollup  [7e4f7ef3]
 SELECT
           uniqIf(VisitorId, VisitorId != '') AS visitors,
           uniq(SessionId) AS sessions
@@ -5971,7 +6253,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM product_events
@@ -6132,7 +6414,7 @@ SELECT
         ORDER BY bucket ASC
         FORMAT JSON
 
--- builder:web-analytics:webAnalyticsPageviewsTimeseriesQuery:environment-scoped  [53bdf20f]
+-- builder:web-analytics:webAnalyticsPageviewsTimeseriesQuery:environment-scoped  [c2ec0260]
 SELECT
           toStartOfInterval(Timestamp, INTERVAL 3600 SECOND) AS bucket,
           count() AS pageViews,
@@ -6148,13 +6430,13 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
         GROUP BY sessionId)
         GROUP BY bucket
         ORDER BY bucket ASC
         FORMAT JSON
 
--- builder:web-analytics:webAnalyticsPageviewsTimeseriesQuery:environment-scoped-rollup  [a81b42b0]
+-- builder:web-analytics:webAnalyticsPageviewsTimeseriesQuery:environment-scoped-rollup  [4292864b]
 SELECT
           toStartOfInterval(Timestamp, INTERVAL 3600 SECOND) AS bucket,
           count() AS pageViews,
@@ -6170,7 +6452,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
         GROUP BY sessionId)
         GROUP BY bucket
         ORDER BY bucket ASC
@@ -6222,6 +6504,50 @@ SELECT
         ORDER BY bucket ASC
         FORMAT JSON
 
+-- builder:web-analytics:webAnalyticsPageviewsTimeseriesQuery:unknown-environment-scoped  [c2ec0260]
+SELECT
+          toStartOfInterval(Timestamp, INTERVAL 3600 SECOND) AS bucket,
+          count() AS pageViews,
+          uniq(SessionId) AS sessions
+        FROM session_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Type = 'navigation'
+          AND SessionId IN (SELECT
+          SessionId AS sessionId
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'unknown'
+        GROUP BY sessionId)
+        GROUP BY bucket
+        ORDER BY bucket ASC
+        FORMAT JSON
+
+-- builder:web-analytics:webAnalyticsPageviewsTimeseriesQuery:unknown-environment-scoped-rollup  [4292864b]
+SELECT
+          toStartOfInterval(Timestamp, INTERVAL 3600 SECOND) AS bucket,
+          count() AS pageViews,
+          uniq(SessionId) AS sessions
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Kind = 'navigation'
+          AND SessionId IN (SELECT
+          SessionId AS sessionId
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'unknown'
+        GROUP BY sessionId)
+        GROUP BY bucket
+        ORDER BY bucket ASC
+        FORMAT JSON
+
 -- builder:web-analytics:webAnalyticsSummaryQuery:default  [9a0359fc]
 SELECT
           uniqIf(VisitorId, VisitorId != '') AS visitors,
@@ -6252,7 +6578,7 @@ SELECT
           AND StartTime <= '2026-01-03 14:15:00'
         FORMAT JSON
 
--- builder:web-analytics:webAnalyticsSummaryQuery:filtered  [06e79a99]
+-- builder:web-analytics:webAnalyticsSummaryQuery:filtered  [72678758]
 SELECT
           uniqIf(VisitorId, VisitorId != '') AS visitors,
           uniq(SessionId) AS sessions,
@@ -6285,7 +6611,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM session_events
@@ -6297,7 +6623,7 @@ SELECT
         GROUP BY sessionId)
         FORMAT JSON
 
--- builder:web-analytics:webAnalyticsSummaryQuery:filtered-rollup  [5cff5d40]
+-- builder:web-analytics:webAnalyticsSummaryQuery:filtered-rollup  [24dd55e5]
 SELECT
           uniqIf(VisitorId, VisitorId != '') AS visitors,
           uniq(SessionId) AS sessions,
@@ -6330,7 +6656,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM product_events
@@ -6398,7 +6724,7 @@ SELECT
         LIMIT 1
         FORMAT JSON
 
--- pipe:custom_traces_breakdown:all-scoped:baseline  [311ca1dd]
+-- pipe:custom_traces_breakdown:all-scoped:baseline  [697d1e4c]
 SELECT
           'all' AS name,
           sum(SampleRate) AS count,
@@ -6415,7 +6741,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-          AND DeploymentEnv IN ('production')
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')
           AND ServiceNamespace IN ('commerce')
         GROUP BY name
         ORDER BY count DESC
@@ -6488,9 +6814,9 @@ SELECT
         LIMIT 10
         FORMAT JSON
 
--- pipe:custom_traces_breakdown:by-environment:baseline  [de3cd3da]
+-- pipe:custom_traces_breakdown:by-environment:baseline  [5f44e419]
 SELECT
-          DeploymentEnv AS name,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
           sum(SampleRate) AS count,
           count() AS spanCount,
           avg(Duration) / 1000000 AS avgDuration,
@@ -6792,16 +7118,15 @@ SELECT
         ORDER BY startTime DESC
         FORMAT JSON
 
--- pipe:error_issue_environments:default:baseline  [16b2e68d]
+-- pipe:error_issue_environments:default:baseline  [bb8c559c]
 SELECT
-          DeploymentEnv AS name,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
           count() AS count
         FROM error_events
         WHERE OrgId = 'org_sql_catalog'
           AND FingerprintHash = toUInt64('11640393269246331608')
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-          AND DeploymentEnv != ''
         GROUP BY name
         ORDER BY count DESC
         LIMIT 20
@@ -6912,7 +7237,7 @@ SELECT
         LIMIT 50
         FORMAT JSON
 
--- pipe:errors_by_type:fingerprint-scoped:baseline  [1a02650c]
+-- pipe:errors_by_type:fingerprint-scoped:baseline  [79e53181]
 SELECT
           toString(FingerprintHash) AS fingerprintHash,
           any(ErrorLabel) AS errorLabel,
@@ -6925,14 +7250,14 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-          AND DeploymentEnv IN ('production')
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')
           AND FingerprintHash IN (toUInt64('11640393269246331608'))
         GROUP BY fingerprintHash
         ORDER BY count DESC
         LIMIT 1
         FORMAT JSON
 
--- pipe:errors_facets:default:baseline  [fe66f114]
+-- pipe:errors_facets:default:baseline  [89fabd83]
 SELECT
           ServiceName AS name,
           uniq(FingerprintHash) AS count,
@@ -6946,14 +7271,13 @@ SELECT
         LIMIT 100
 UNION ALL
 SELECT
-          DeploymentEnv AS name,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
           uniq(FingerprintHash) AS count,
           'environment' AS facetType
         FROM error_events_by_time
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-          AND DeploymentEnv != ''
         GROUP BY name
         ORDER BY count DESC
         LIMIT 100
@@ -7633,7 +7957,7 @@ SELECT
         LIMIT 100
         FORMAT JSON
 
--- pipe:list_traces:filtered:baseline  [5702a482]
+-- pipe:list_traces:filtered:baseline  [7087488a]
 SELECT
           TraceId AS traceId,
           Timestamp AS startTime,
@@ -7659,7 +7983,7 @@ SELECT
           AND StatusCode = 'Error'
           AND Duration >= 5000000
           AND Duration <= 5000000000
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production')
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')
           AND if(SpanAttributes['http.method'] != '', SpanAttributes['http.method'], SpanAttributes['http.request.method']) = 'GET'
           AND ResourceAttributes['service.namespace'] = 'core'
           AND Timestamp >= (SELECT min(ts) FROM (SELECT
@@ -7674,7 +7998,7 @@ SELECT
           AND StatusCode = 'Error'
           AND Duration >= 5000000
           AND Duration <= 5000000000
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production')
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')
           AND if(SpanAttributes['http.method'] != '', SpanAttributes['http.method'], SpanAttributes['http.request.method']) = 'GET'
           AND ResourceAttributes['service.namespace'] = 'core'
         ORDER BY ts DESC
@@ -7683,7 +8007,7 @@ SELECT
         LIMIT 25
         FORMAT JSON
 
--- pipe:list_traces:filtered:bloom  [14239a36]
+-- pipe:list_traces:filtered:bloom  [fe0c8228]
 SELECT
           TraceId AS traceId,
           Timestamp AS startTime,
@@ -7709,7 +8033,7 @@ SELECT
           AND StatusCode = 'Error'
           AND Duration >= 5000000
           AND Duration <= 5000000000
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production')
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')
           AND (((has(mapKeys(SpanAttributes), 'http.method') OR has(mapKeys(SpanAttributes), 'http.request.method')) AND has(mapValues(SpanAttributes), 'GET')) AND if(SpanAttributes['http.method'] != '', SpanAttributes['http.method'], SpanAttributes['http.request.method']) = 'GET')
           AND ((has(mapKeys(ResourceAttributes), 'service.namespace') AND has(mapValues(ResourceAttributes), 'core')) AND ResourceAttributes['service.namespace'] = 'core')
           AND Timestamp >= (SELECT min(ts) FROM (SELECT
@@ -7724,7 +8048,7 @@ SELECT
           AND StatusCode = 'Error'
           AND Duration >= 5000000
           AND Duration <= 5000000000
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production')
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')
           AND (((has(mapKeys(SpanAttributes), 'http.method') OR has(mapKeys(SpanAttributes), 'http.request.method')) AND has(mapValues(SpanAttributes), 'GET')) AND if(SpanAttributes['http.method'] != '', SpanAttributes['http.method'], SpanAttributes['http.request.method']) = 'GET')
           AND ((has(mapKeys(ResourceAttributes), 'service.namespace') AND has(mapValues(ResourceAttributes), 'core')) AND ResourceAttributes['service.namespace'] = 'core')
         ORDER BY ts DESC
@@ -7733,7 +8057,7 @@ SELECT
         LIMIT 25
         FORMAT JSON
 
--- pipe:list_traces:filtered:text  [2303278a]
+-- pipe:list_traces:filtered:text  [4c662966]
 SELECT
           TraceId AS traceId,
           Timestamp AS startTime,
@@ -7759,7 +8083,7 @@ SELECT
           AND StatusCode = 'Error'
           AND Duration >= 5000000
           AND Duration <= 5000000000
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production')
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')
           AND ((has(SpanAttributeItems, concat('http.method', char(31), 'GET')) OR has(SpanAttributeItems, concat('http.request.method', char(31), 'GET'))) AND if(SpanAttributes['http.method'] != '', SpanAttributes['http.method'], SpanAttributes['http.request.method']) = 'GET')
           AND (has(ResourceAttributeItems, concat('service.namespace', char(31), 'core')) AND ResourceAttributes['service.namespace'] = 'core')
           AND Timestamp >= (SELECT min(ts) FROM (SELECT
@@ -7774,7 +8098,7 @@ SELECT
           AND StatusCode = 'Error'
           AND Duration >= 5000000
           AND Duration <= 5000000000
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production')
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')
           AND ((has(SpanAttributeItems, concat('http.method', char(31), 'GET')) OR has(SpanAttributeItems, concat('http.request.method', char(31), 'GET'))) AND if(SpanAttributes['http.method'] != '', SpanAttributes['http.method'], SpanAttributes['http.request.method']) = 'GET')
           AND (has(ResourceAttributeItems, concat('service.namespace', char(31), 'core')) AND ResourceAttributes['service.namespace'] = 'core')
         ORDER BY ts DESC
@@ -7888,7 +8212,7 @@ SELECT
           AND Body ILIKE '%timeout%'
         FORMAT JSON
 
--- pipe:logs_facets:default:baseline  [14a32e81]
+-- pipe:logs_facets:default:baseline  [41d7db34]
 SELECT * FROM (
 SELECT
           SeverityText AS severityText,
@@ -7919,7 +8243,7 @@ UNION ALL
 SELECT
           '' AS severityText,
           '' AS serviceName,
-          DeploymentEnv AS deploymentEnv,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS deploymentEnv,
           '' AS namespace,
           sum(Count) AS count,
           'deploymentEnv' AS facetType
@@ -7927,7 +8251,6 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Hour >= '2026-01-01 10:30:00'
           AND Hour <= '2026-01-03 14:15:00'
-          AND DeploymentEnv != ''
         GROUP BY deploymentEnv
 UNION ALL
 SELECT
@@ -7948,7 +8271,7 @@ ORDER BY count DESC
 LIMIT 500
 FORMAT JSON
 
--- pipe:logs_facets:default:bloom  [14a32e81]
+-- pipe:logs_facets:default:bloom  [41d7db34]
 SELECT * FROM (
 SELECT
           SeverityText AS severityText,
@@ -7979,7 +8302,7 @@ UNION ALL
 SELECT
           '' AS severityText,
           '' AS serviceName,
-          DeploymentEnv AS deploymentEnv,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS deploymentEnv,
           '' AS namespace,
           sum(Count) AS count,
           'deploymentEnv' AS facetType
@@ -7987,7 +8310,6 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Hour >= '2026-01-01 10:30:00'
           AND Hour <= '2026-01-03 14:15:00'
-          AND DeploymentEnv != ''
         GROUP BY deploymentEnv
 UNION ALL
 SELECT
@@ -8008,7 +8330,7 @@ ORDER BY count DESC
 LIMIT 500
 FORMAT JSON
 
--- pipe:logs_facets:default:text  [14a32e81]
+-- pipe:logs_facets:default:text  [41d7db34]
 SELECT * FROM (
 SELECT
           SeverityText AS severityText,
@@ -8039,7 +8361,7 @@ UNION ALL
 SELECT
           '' AS severityText,
           '' AS serviceName,
-          DeploymentEnv AS deploymentEnv,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS deploymentEnv,
           '' AS namespace,
           sum(Count) AS count,
           'deploymentEnv' AS facetType
@@ -8047,7 +8369,6 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Hour >= '2026-01-01 10:30:00'
           AND Hour <= '2026-01-03 14:15:00'
-          AND DeploymentEnv != ''
         GROUP BY deploymentEnv
 UNION ALL
 SELECT
@@ -8241,7 +8562,7 @@ SELECT
         ORDER BY bucket ASC
         FORMAT JSON
 
--- pipe:service_apdex_time_series:default:baseline  [2ecafa98]
+-- pipe:service_apdex_time_series:default:baseline  [b50556f0]
 SELECT
           toStartOfInterval(bBucket, INTERVAL 60 SECOND) AS bucket,
           sum(bSpanCount) AS totalCount,
@@ -8253,7 +8574,7 @@ SELECT
           toStartOfMinute(Timestamp) AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           count() AS bSpanCount,
           sum(SampleRate) AS bEstimatedSpanCount,
@@ -8276,7 +8597,7 @@ SELECT
           Minute AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           sum(SpanCount) AS bSpanCount,
           sum(EstimatedSpanCount) AS bEstimatedSpanCount,
@@ -8298,7 +8619,7 @@ SELECT
         ORDER BY bucket ASC
         FORMAT JSON
 
--- pipe:service_dependencies:default:baseline  [89695720]
+-- pipe:service_dependencies:default:baseline  [04bb09d7]
 SELECT
           sourceService AS sourceService,
           targetService AS targetService,
@@ -8320,7 +8641,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
           AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
-          AND DeploymentEnv = 'production'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
         GROUP BY sourceService, targetService
 UNION ALL
 SELECT
@@ -8343,7 +8664,7 @@ SELECT
           AND Timestamp >= toDateTime('2026-01-01 10:30:00')
           AND Timestamp < toDateTime('2026-01-03 14:15:00')
           AND OrgId = 'org_sql_catalog'
-          AND DeploymentEnv = 'production'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
           AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))) AS p
         INNER JOIN (SELECT
           TraceId AS TraceId,
@@ -8356,7 +8677,7 @@ SELECT
         WHERE Timestamp >= toDateTime('2026-01-01 10:30:00')
           AND Timestamp < toDateTime('2026-01-03 14:15:00')
           AND OrgId = 'org_sql_catalog'
-          AND DeploymentEnv = 'production'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
           AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))) AS c ON (p.SpanId = c.ParentSpanId AND p.TraceId = c.TraceId)
         WHERE p.ServiceName != c.ServiceName
         GROUP BY sourceService, targetService
@@ -8366,7 +8687,7 @@ SELECT
         LIMIT 200
         FORMAT JSON
 
--- pipe:service_overview_compare:default:baseline  [e5fa9dec]
+-- pipe:service_overview_compare:default:baseline  [fa1fe524]
 SELECT 'current' AS period, * FROM (
 SELECT
           cServiceName AS serviceName,
@@ -8398,7 +8719,7 @@ SELECT
           toStartOfHour(Timestamp) AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           count() AS bSpanCount,
           sum(SampleRate) AS bEstimatedSpanCount,
@@ -8420,7 +8741,7 @@ SELECT
           Hour AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           sum(SpanCount) AS bSpanCount,
           sum(EstimatedSpanCount) AS bEstimatedSpanCount,
@@ -8474,7 +8795,7 @@ SELECT
           toStartOfHour(Timestamp) AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           count() AS bSpanCount,
           sum(SampleRate) AS bEstimatedSpanCount,
@@ -8496,7 +8817,7 @@ SELECT
           Hour AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           sum(SpanCount) AS bSpanCount,
           sum(EstimatedSpanCount) AS bEstimatedSpanCount,
@@ -8520,7 +8841,7 @@ SELECT
 )
 FORMAT JSON
 
--- pipe:service_overview_compare:namespace-scoped:baseline  [bda7caf4]
+-- pipe:service_overview_compare:namespace-scoped:baseline  [54e2720c]
 SELECT 'current' AS period, * FROM (
 SELECT
           cServiceName AS serviceName,
@@ -8552,7 +8873,7 @@ SELECT
           toStartOfHour(Timestamp) AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           count() AS bSpanCount,
           sum(SampleRate) AS bEstimatedSpanCount,
@@ -8567,7 +8888,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-          AND DeploymentEnv IN ('production')
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')
           AND ServiceNamespace IN ('commerce')
           AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
         GROUP BY bBucket, bServiceName, bServiceNamespace, bEnvironment, bCommitSha
@@ -8576,7 +8897,7 @@ SELECT
           Hour AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           sum(SpanCount) AS bSpanCount,
           sum(EstimatedSpanCount) AS bEstimatedSpanCount,
@@ -8589,7 +8910,7 @@ SELECT
           sum(ApdexToleratingCount) AS bApdexToleratingCount
         FROM service_overview_hourly
         WHERE OrgId = 'org_sql_catalog'
-          AND DeploymentEnv IN ('production')
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')
           AND ServiceNamespace IN ('commerce')
           AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
           AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
@@ -8632,7 +8953,7 @@ SELECT
           toStartOfHour(Timestamp) AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           count() AS bSpanCount,
           sum(SampleRate) AS bEstimatedSpanCount,
@@ -8647,7 +8968,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2025-12-30 10:30:00'
           AND Timestamp <= '2026-01-01 14:15:00'
-          AND DeploymentEnv IN ('production')
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')
           AND ServiceNamespace IN ('commerce')
           AND (Timestamp < if(toDateTime('2025-12-30 10:30:00') = toStartOfHour(toDateTime('2025-12-30 10:30:00')), toStartOfHour(toDateTime('2025-12-30 10:30:00')), toStartOfHour(toDateTime('2025-12-30 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-01 14:15:00')))
         GROUP BY bBucket, bServiceName, bServiceNamespace, bEnvironment, bCommitSha
@@ -8656,7 +8977,7 @@ SELECT
           Hour AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           sum(SpanCount) AS bSpanCount,
           sum(EstimatedSpanCount) AS bEstimatedSpanCount,
@@ -8669,7 +8990,7 @@ SELECT
           sum(ApdexToleratingCount) AS bApdexToleratingCount
         FROM service_overview_hourly
         WHERE OrgId = 'org_sql_catalog'
-          AND DeploymentEnv IN ('production')
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')
           AND ServiceNamespace IN ('commerce')
           AND Hour >= if(toDateTime('2025-12-30 10:30:00') = toStartOfHour(toDateTime('2025-12-30 10:30:00')), toStartOfHour(toDateTime('2025-12-30 10:30:00')), toStartOfHour(toDateTime('2025-12-30 10:30:00')) + INTERVAL 1 HOUR)
           AND Hour < toStartOfHour(toDateTime('2026-01-01 14:15:00'))
@@ -8682,7 +9003,7 @@ SELECT
 )
 FORMAT JSON
 
--- pipe:service_overview:default:baseline  [90dbc028]
+-- pipe:service_overview:default:baseline  [c05d7768]
 SELECT
           cServiceName AS serviceName,
           cEnvironment AS environment,
@@ -8713,7 +9034,7 @@ SELECT
           toStartOfHour(Timestamp) AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           count() AS bSpanCount,
           sum(SampleRate) AS bEstimatedSpanCount,
@@ -8735,7 +9056,7 @@ SELECT
           Hour AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           sum(SpanCount) AS bSpanCount,
           sum(EstimatedSpanCount) AS bEstimatedSpanCount,
@@ -8758,7 +9079,7 @@ SELECT
         LIMIT 500
         FORMAT JSON
 
--- pipe:service_overview:filtered:baseline  [b3ddd260]
+-- pipe:service_overview:filtered:baseline  [f69bf5c4]
 SELECT
           cServiceName AS serviceName,
           cEnvironment AS environment,
@@ -8789,7 +9110,7 @@ SELECT
           toStartOfHour(Timestamp) AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           count() AS bSpanCount,
           sum(SampleRate) AS bEstimatedSpanCount,
@@ -8804,7 +9125,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-          AND DeploymentEnv IN ('production', 'staging')
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production', 'staging')
           AND CommitSha IN ('abc123', 'def456')
           AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
         GROUP BY bBucket, bServiceName, bServiceNamespace, bEnvironment, bCommitSha
@@ -8813,7 +9134,7 @@ SELECT
           Hour AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           sum(SpanCount) AS bSpanCount,
           sum(EstimatedSpanCount) AS bEstimatedSpanCount,
@@ -8826,7 +9147,7 @@ SELECT
           sum(ApdexToleratingCount) AS bApdexToleratingCount
         FROM service_overview_hourly
         WHERE OrgId = 'org_sql_catalog'
-          AND DeploymentEnv IN ('production', 'staging')
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production', 'staging')
           AND CommitSha IN ('abc123', 'def456')
           AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
           AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
@@ -8838,7 +9159,7 @@ SELECT
         LIMIT 500
         FORMAT JSON
 
--- pipe:service_overview:namespace-scoped:baseline  [549602bc]
+-- pipe:service_overview:namespace-scoped:baseline  [cc3bcef0]
 SELECT
           cServiceName AS serviceName,
           cEnvironment AS environment,
@@ -8869,7 +9190,7 @@ SELECT
           toStartOfHour(Timestamp) AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           count() AS bSpanCount,
           sum(SampleRate) AS bEstimatedSpanCount,
@@ -8884,7 +9205,7 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-          AND DeploymentEnv IN ('production')
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')
           AND ServiceNamespace IN ('commerce', 'edge')
           AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
         GROUP BY bBucket, bServiceName, bServiceNamespace, bEnvironment, bCommitSha
@@ -8893,7 +9214,7 @@ SELECT
           Hour AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           sum(SpanCount) AS bSpanCount,
           sum(EstimatedSpanCount) AS bEstimatedSpanCount,
@@ -8906,7 +9227,7 @@ SELECT
           sum(ApdexToleratingCount) AS bApdexToleratingCount
         FROM service_overview_hourly
         WHERE OrgId = 'org_sql_catalog'
-          AND DeploymentEnv IN ('production')
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')
           AND ServiceNamespace IN ('commerce', 'edge')
           AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
           AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
@@ -8918,7 +9239,7 @@ SELECT
         LIMIT 500
         FORMAT JSON
 
--- pipe:service_releases_timeline:default:baseline  [d8c35e6b]
+-- pipe:service_releases_timeline:default:baseline  [33201d23]
 SELECT
           toStartOfInterval(bBucket, INTERVAL 300 SECOND) AS bucket,
           bCommitSha AS commitSha,
@@ -8929,7 +9250,7 @@ SELECT
           toStartOfMinute(Timestamp) AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           count() AS bSpanCount,
           sum(SampleRate) AS bEstimatedSpanCount,
@@ -8952,7 +9273,7 @@ SELECT
           Minute AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           sum(SpanCount) AS bSpanCount,
           sum(EstimatedSpanCount) AS bEstimatedSpanCount,
@@ -8976,7 +9297,7 @@ SELECT
         LIMIT 1000
         FORMAT JSON
 
--- pipe:services_facets:default:baseline  [d6b6158c]
+-- pipe:services_facets:default:baseline  [b4a2da9c]
 SELECT
           bEnvironment AS name,
           sum(bSpanCount) AS count,
@@ -8986,7 +9307,7 @@ SELECT
           toStartOfHour(Timestamp) AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           count() AS bSpanCount,
           sum(SampleRate) AS bEstimatedSpanCount,
@@ -9008,7 +9329,7 @@ SELECT
           Hour AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           sum(SpanCount) AS bSpanCount,
           sum(EstimatedSpanCount) AS bEstimatedSpanCount,
@@ -9039,7 +9360,7 @@ SELECT
           toStartOfHour(Timestamp) AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           count() AS bSpanCount,
           sum(SampleRate) AS bEstimatedSpanCount,
@@ -9061,7 +9382,7 @@ SELECT
           Hour AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           sum(SpanCount) AS bSpanCount,
           sum(EstimatedSpanCount) AS bEstimatedSpanCount,
@@ -9092,7 +9413,7 @@ SELECT
           toStartOfHour(Timestamp) AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           count() AS bSpanCount,
           sum(SampleRate) AS bEstimatedSpanCount,
@@ -9114,7 +9435,7 @@ SELECT
           Hour AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           sum(SpanCount) AS bSpanCount,
           sum(EstimatedSpanCount) AS bEstimatedSpanCount,
@@ -9145,7 +9466,7 @@ SELECT
           toStartOfHour(Timestamp) AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           count() AS bSpanCount,
           sum(SampleRate) AS bEstimatedSpanCount,
@@ -9167,7 +9488,7 @@ SELECT
           Hour AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           sum(SpanCount) AS bSpanCount,
           sum(EstimatedSpanCount) AS bEstimatedSpanCount,
@@ -9190,7 +9511,7 @@ SELECT
         LIMIT 50
 FORMAT JSON
 
--- pipe:slow_traces:default:baseline  [6d14854f]
+-- pipe:slow_traces:default:baseline  [575bbe7a]
 SELECT
           TraceId AS traceId,
           SpanName AS spanName,
@@ -9203,7 +9524,7 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND DeploymentEnv = 'production'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
         ORDER BY durationMs DESC
         LIMIT 10
         FORMAT JSON
@@ -9457,7 +9778,7 @@ SELECT
           AND Timestamp <= '2026-01-03 14:15:00'
         FORMAT JSON
 
--- pipe:traces_facets:attribute-filtered:baseline  [952a9803]
+-- pipe:traces_facets:attribute-filtered:baseline  [40d7b9a8]
 SELECT
           ServiceName AS name,
           count() AS count,
@@ -9574,7 +9895,7 @@ SELECT
         LIMIT 20
 UNION ALL
 SELECT
-          DeploymentEnv AS name,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
           count() AS count,
           'deploymentEnv' AS facetType
         FROM trace_list_mv
@@ -9597,7 +9918,6 @@ SELECT
           AND t_res.Timestamp >= '2026-01-01 10:30:00'
           AND t_res.Timestamp <= '2026-01-03 14:15:00'
           AND t_res.ResourceAttributes['host.name'] = 'web')
-          AND DeploymentEnv != ''
         GROUP BY name
         ORDER BY count DESC
         LIMIT 20
@@ -9658,7 +9978,7 @@ SELECT
           AND HasError = 1
 FORMAT JSON
 
--- pipe:traces_facets:attribute-filtered:bloom  [952a9803]
+-- pipe:traces_facets:attribute-filtered:bloom  [40d7b9a8]
 SELECT
           ServiceName AS name,
           count() AS count,
@@ -9775,7 +10095,7 @@ SELECT
         LIMIT 20
 UNION ALL
 SELECT
-          DeploymentEnv AS name,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
           count() AS count,
           'deploymentEnv' AS facetType
         FROM trace_list_mv
@@ -9798,7 +10118,6 @@ SELECT
           AND t_res.Timestamp >= '2026-01-01 10:30:00'
           AND t_res.Timestamp <= '2026-01-03 14:15:00'
           AND t_res.ResourceAttributes['host.name'] = 'web')
-          AND DeploymentEnv != ''
         GROUP BY name
         ORDER BY count DESC
         LIMIT 20
@@ -9859,7 +10178,7 @@ SELECT
           AND HasError = 1
 FORMAT JSON
 
--- pipe:traces_facets:attribute-filtered:text  [952a9803]
+-- pipe:traces_facets:attribute-filtered:text  [40d7b9a8]
 SELECT
           ServiceName AS name,
           count() AS count,
@@ -9976,7 +10295,7 @@ SELECT
         LIMIT 20
 UNION ALL
 SELECT
-          DeploymentEnv AS name,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
           count() AS count,
           'deploymentEnv' AS facetType
         FROM trace_list_mv
@@ -9999,7 +10318,6 @@ SELECT
           AND t_res.Timestamp >= '2026-01-01 10:30:00'
           AND t_res.Timestamp <= '2026-01-03 14:15:00'
           AND t_res.ResourceAttributes['host.name'] = 'web')
-          AND DeploymentEnv != ''
         GROUP BY name
         ORDER BY count DESC
         LIMIT 20
@@ -10060,7 +10378,7 @@ SELECT
           AND HasError = 1
 FORMAT JSON
 
--- pipe:traces_facets:default:baseline  [3a9bffe8]
+-- pipe:traces_facets:default:baseline  [156680f5]
 SELECT
           ServiceName AS name,
           count() AS count,
@@ -10113,14 +10431,13 @@ SELECT
         LIMIT 20
 UNION ALL
 SELECT
-          DeploymentEnv AS name,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
           count() AS count,
           'deploymentEnv' AS facetType
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-          AND DeploymentEnv != ''
         GROUP BY name
         ORDER BY count DESC
         LIMIT 20
@@ -10149,7 +10466,7 @@ SELECT
           AND HasError = 1
 FORMAT JSON
 
--- pipe:traces_facets:default:bloom  [3a9bffe8]
+-- pipe:traces_facets:default:bloom  [156680f5]
 SELECT
           ServiceName AS name,
           count() AS count,
@@ -10202,14 +10519,13 @@ SELECT
         LIMIT 20
 UNION ALL
 SELECT
-          DeploymentEnv AS name,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
           count() AS count,
           'deploymentEnv' AS facetType
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-          AND DeploymentEnv != ''
         GROUP BY name
         ORDER BY count DESC
         LIMIT 20
@@ -10238,7 +10554,7 @@ SELECT
           AND HasError = 1
 FORMAT JSON
 
--- pipe:traces_facets:default:text  [3a9bffe8]
+-- pipe:traces_facets:default:text  [156680f5]
 SELECT
           ServiceName AS name,
           count() AS count,
@@ -10291,14 +10607,13 @@ SELECT
         LIMIT 20
 UNION ALL
 SELECT
-          DeploymentEnv AS name,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
           count() AS count,
           'deploymentEnv' AS facetType
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-          AND DeploymentEnv != ''
         GROUP BY name
         ORDER BY count DESC
         LIMIT 20
@@ -10515,7 +10830,7 @@ SELECT
         LIMIT 50
         FORMAT JSON
 
--- spec:errors-facets:baseline  [fe66f114]
+-- spec:errors-facets:baseline  [89fabd83]
 SELECT
           ServiceName AS name,
           uniq(FingerprintHash) AS count,
@@ -10529,14 +10844,13 @@ SELECT
         LIMIT 100
 UNION ALL
 SELECT
-          DeploymentEnv AS name,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
           uniq(FingerprintHash) AS count,
           'environment' AS facetType
         FROM error_events_by_time
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-          AND DeploymentEnv != ''
         GROUP BY name
         ORDER BY count DESC
         LIMIT 100
@@ -10694,7 +11008,7 @@ ORDER BY count DESC
 LIMIT 500
 FORMAT JSON
 
--- spec:logs-facets:baseline  [1b88491f]
+-- spec:logs-facets:baseline  [768f2dd0]
 SELECT * FROM (
 SELECT
           SeverityText AS severityText,
@@ -10727,7 +11041,7 @@ UNION ALL
 SELECT
           '' AS severityText,
           '' AS serviceName,
-          DeploymentEnv AS deploymentEnv,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS deploymentEnv,
           '' AS namespace,
           sum(Count) AS count,
           'deploymentEnv' AS facetType
@@ -10736,7 +11050,6 @@ SELECT
           AND Hour >= '2026-01-01 10:30:00'
           AND Hour <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND DeploymentEnv != ''
         GROUP BY deploymentEnv
 UNION ALL
 SELECT
@@ -10958,7 +11271,7 @@ SELECT
         ORDER BY bucket ASC
         FORMAT JSON
 
--- spec:services-facets:baseline  [d6b6158c]
+-- spec:services-facets:baseline  [b4a2da9c]
 SELECT
           bEnvironment AS name,
           sum(bSpanCount) AS count,
@@ -10968,7 +11281,7 @@ SELECT
           toStartOfHour(Timestamp) AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           count() AS bSpanCount,
           sum(SampleRate) AS bEstimatedSpanCount,
@@ -10990,7 +11303,7 @@ SELECT
           Hour AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           sum(SpanCount) AS bSpanCount,
           sum(EstimatedSpanCount) AS bEstimatedSpanCount,
@@ -11021,7 +11334,7 @@ SELECT
           toStartOfHour(Timestamp) AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           count() AS bSpanCount,
           sum(SampleRate) AS bEstimatedSpanCount,
@@ -11043,7 +11356,7 @@ SELECT
           Hour AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           sum(SpanCount) AS bSpanCount,
           sum(EstimatedSpanCount) AS bEstimatedSpanCount,
@@ -11074,7 +11387,7 @@ SELECT
           toStartOfHour(Timestamp) AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           count() AS bSpanCount,
           sum(SampleRate) AS bEstimatedSpanCount,
@@ -11096,7 +11409,7 @@ SELECT
           Hour AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           sum(SpanCount) AS bSpanCount,
           sum(EstimatedSpanCount) AS bEstimatedSpanCount,
@@ -11127,7 +11440,7 @@ SELECT
           toStartOfHour(Timestamp) AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           count() AS bSpanCount,
           sum(SampleRate) AS bEstimatedSpanCount,
@@ -11149,7 +11462,7 @@ SELECT
           Hour AS bBucket,
           ServiceName AS bServiceName,
           ServiceNamespace AS bServiceNamespace,
-          DeploymentEnv AS bEnvironment,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
           CommitSha AS bCommitSha,
           sum(SpanCount) AS bSpanCount,
           sum(EstimatedSpanCount) AS bEstimatedSpanCount,
@@ -11172,7 +11485,7 @@ SELECT
         LIMIT 50
 FORMAT JSON
 
--- spec:traces-breakdown-by-attribute:baseline  [192e93fe]
+-- spec:traces-breakdown-by-attribute:baseline  [8314ec4f]
 SELECT
           SpanAttributes['http.route'] AS name,
           sum(SampleRate) AS count,
@@ -11190,13 +11503,13 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production')
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')
         GROUP BY name
         ORDER BY count DESC
         LIMIT 10
         FORMAT JSON
 
--- spec:traces-breakdown-by-attribute:bloom  [192e93fe]
+-- spec:traces-breakdown-by-attribute:bloom  [8314ec4f]
 SELECT
           SpanAttributes['http.route'] AS name,
           sum(SampleRate) AS count,
@@ -11214,13 +11527,13 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production')
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')
         GROUP BY name
         ORDER BY count DESC
         LIMIT 10
         FORMAT JSON
 
--- spec:traces-breakdown-by-attribute:text  [192e93fe]
+-- spec:traces-breakdown-by-attribute:text  [8314ec4f]
 SELECT
           SpanAttributes['http.route'] AS name,
           sum(SampleRate) AS count,
@@ -11238,13 +11551,13 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production')
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')
         GROUP BY name
         ORDER BY count DESC
         LIMIT 10
         FORMAT JSON
 
--- spec:traces-breakdown:baseline  [948c682e]
+-- spec:traces-breakdown:baseline  [e6e167ff]
 SELECT
           ServiceName AS name,
           sum(SampleRate) AS count,
@@ -11262,13 +11575,13 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production')
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')
         GROUP BY name
         ORDER BY count DESC
         LIMIT 10
         FORMAT JSON
 
--- spec:traces-facets-single-dimension:baseline  [a277cb3c]
+-- spec:traces-facets-single-dimension:baseline  [7660bccf]
 SELECT
           SpanName AS name,
           count() AS count,
@@ -11278,14 +11591,14 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND DeploymentEnv = 'production'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
           AND SpanName != ''
         GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 FORMAT JSON
 
--- spec:traces-facets:baseline  [eabfe99e]
+-- spec:traces-facets:baseline  [8f831500]
 SELECT
           ServiceName AS name,
           count() AS count,
@@ -11295,7 +11608,7 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND DeploymentEnv = 'production'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
         GROUP BY name
         ORDER BY count DESC
         LIMIT 50
@@ -11309,7 +11622,7 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND DeploymentEnv = 'production'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
           AND SpanName != ''
         GROUP BY name
         ORDER BY count DESC
@@ -11324,7 +11637,7 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND DeploymentEnv = 'production'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
           AND HttpMethod != ''
         GROUP BY name
         ORDER BY count DESC
@@ -11339,14 +11652,14 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND DeploymentEnv = 'production'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
           AND HttpStatusCode != ''
         GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
-          DeploymentEnv AS name,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
           count() AS count,
           'deploymentEnv' AS facetType
         FROM trace_list_mv
@@ -11354,8 +11667,7 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND DeploymentEnv = 'production'
-          AND DeploymentEnv != ''
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
         GROUP BY name
         ORDER BY count DESC
         LIMIT 20
@@ -11369,7 +11681,7 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND DeploymentEnv = 'production'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
           AND ServiceNamespace != ''
         GROUP BY name
         ORDER BY count DESC
@@ -11384,11 +11696,11 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND DeploymentEnv = 'production'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
           AND HasError = 1
 FORMAT JSON
 
--- spec:traces-facets:bloom  [eabfe99e]
+-- spec:traces-facets:bloom  [8f831500]
 SELECT
           ServiceName AS name,
           count() AS count,
@@ -11398,7 +11710,7 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND DeploymentEnv = 'production'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
         GROUP BY name
         ORDER BY count DESC
         LIMIT 50
@@ -11412,7 +11724,7 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND DeploymentEnv = 'production'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
           AND SpanName != ''
         GROUP BY name
         ORDER BY count DESC
@@ -11427,7 +11739,7 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND DeploymentEnv = 'production'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
           AND HttpMethod != ''
         GROUP BY name
         ORDER BY count DESC
@@ -11442,14 +11754,14 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND DeploymentEnv = 'production'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
           AND HttpStatusCode != ''
         GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
-          DeploymentEnv AS name,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
           count() AS count,
           'deploymentEnv' AS facetType
         FROM trace_list_mv
@@ -11457,8 +11769,7 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND DeploymentEnv = 'production'
-          AND DeploymentEnv != ''
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
         GROUP BY name
         ORDER BY count DESC
         LIMIT 20
@@ -11472,7 +11783,7 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND DeploymentEnv = 'production'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
           AND ServiceNamespace != ''
         GROUP BY name
         ORDER BY count DESC
@@ -11487,11 +11798,11 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND DeploymentEnv = 'production'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
           AND HasError = 1
 FORMAT JSON
 
--- spec:traces-facets:text  [eabfe99e]
+-- spec:traces-facets:text  [8f831500]
 SELECT
           ServiceName AS name,
           count() AS count,
@@ -11501,7 +11812,7 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND DeploymentEnv = 'production'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
         GROUP BY name
         ORDER BY count DESC
         LIMIT 50
@@ -11515,7 +11826,7 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND DeploymentEnv = 'production'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
           AND SpanName != ''
         GROUP BY name
         ORDER BY count DESC
@@ -11530,7 +11841,7 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND DeploymentEnv = 'production'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
           AND HttpMethod != ''
         GROUP BY name
         ORDER BY count DESC
@@ -11545,14 +11856,14 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND DeploymentEnv = 'production'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
           AND HttpStatusCode != ''
         GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
-          DeploymentEnv AS name,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
           count() AS count,
           'deploymentEnv' AS facetType
         FROM trace_list_mv
@@ -11560,8 +11871,7 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND DeploymentEnv = 'production'
-          AND DeploymentEnv != ''
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
         GROUP BY name
         ORDER BY count DESC
         LIMIT 20
@@ -11575,7 +11885,7 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND DeploymentEnv = 'production'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
           AND ServiceNamespace != ''
         GROUP BY name
         ORDER BY count DESC
@@ -11590,11 +11900,11 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND DeploymentEnv = 'production'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
           AND HasError = 1
 FORMAT JSON
 
--- spec:traces-list-grouped-attr-fallback:baseline  [6142bef1]
+-- spec:traces-list-grouped-attr-fallback:baseline  [45bcd782]
 SELECT
           TraceId AS traceId,
           argMin(Timestamp, (if(ParentSpanId = '', 0, 1), Timestamp)) AS startTime,
@@ -11624,7 +11934,7 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production')
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')
           AND SpanAttributes['user.id'] = 'u1'
           AND ParentSpanId = ''
         ORDER BY ts DESC, traceId DESC
@@ -11634,7 +11944,7 @@ SELECT
         LIMIT 50
         FORMAT JSON
 
--- spec:traces-list-grouped-attr-fallback:bloom  [a9a27f2b]
+-- spec:traces-list-grouped-attr-fallback:bloom  [c043eae4]
 SELECT
           TraceId AS traceId,
           argMin(Timestamp, (if(ParentSpanId = '', 0, 1), Timestamp)) AS startTime,
@@ -11664,7 +11974,7 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production')
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')
           AND ((has(mapKeys(SpanAttributes), 'user.id') AND has(mapValues(SpanAttributes), 'u1')) AND SpanAttributes['user.id'] = 'u1')
           AND ParentSpanId = ''
         ORDER BY ts DESC, traceId DESC
@@ -11674,7 +11984,7 @@ SELECT
         LIMIT 50
         FORMAT JSON
 
--- spec:traces-list-grouped-attr-fallback:text  [22bd2047]
+-- spec:traces-list-grouped-attr-fallback:text  [a5d87146]
 SELECT
           TraceId AS traceId,
           argMin(Timestamp, (if(ParentSpanId = '', 0, 1), Timestamp)) AS startTime,
@@ -11704,7 +12014,7 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production')
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')
           AND (has(SpanAttributeItems, concat('user.id', char(31), 'u1')) AND SpanAttributes['user.id'] = 'u1')
           AND ParentSpanId = ''
         ORDER BY ts DESC, traceId DESC
@@ -11714,7 +12024,7 @@ SELECT
         LIMIT 50
         FORMAT JSON
 
--- spec:traces-list-grouped-duration-sort:baseline  [3b6bcadc]
+-- spec:traces-list-grouped-duration-sort:baseline  [48e106e7]
 SELECT
           TraceId AS traceId,
           argMin(Timestamp, (if(ParentSpanId = '', 0, 1), Timestamp)) AS startTime,
@@ -11744,7 +12054,7 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND DeploymentEnv = 'production'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
         ORDER BY d DESC, ts DESC, traceId DESC
         LIMIT 50
         OFFSET 100))
@@ -11753,7 +12063,7 @@ SELECT
         LIMIT 50
         FORMAT JSON
 
--- spec:traces-list-grouped:baseline  [da486ffd]
+-- spec:traces-list-grouped:baseline  [7b187ee6]
 SELECT
           TraceId AS traceId,
           argMin(Timestamp, (if(ParentSpanId = '', 0, 1), Timestamp)) AS startTime,
@@ -11783,7 +12093,7 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND DeploymentEnv = 'production'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
         ORDER BY ts DESC, traceId DESC
         LIMIT 50))
         GROUP BY traceId
@@ -11791,7 +12101,7 @@ SELECT
         LIMIT 50
         FORMAT JSON
 
--- spec:traces-list-grouped:bloom  [da486ffd]
+-- spec:traces-list-grouped:bloom  [7b187ee6]
 SELECT
           TraceId AS traceId,
           argMin(Timestamp, (if(ParentSpanId = '', 0, 1), Timestamp)) AS startTime,
@@ -11821,7 +12131,7 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND DeploymentEnv = 'production'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
         ORDER BY ts DESC, traceId DESC
         LIMIT 50))
         GROUP BY traceId
@@ -11829,7 +12139,7 @@ SELECT
         LIMIT 50
         FORMAT JSON
 
--- spec:traces-list-grouped:text  [da486ffd]
+-- spec:traces-list-grouped:text  [7b187ee6]
 SELECT
           TraceId AS traceId,
           argMin(Timestamp, (if(ParentSpanId = '', 0, 1), Timestamp)) AS startTime,
@@ -11859,7 +12169,7 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND DeploymentEnv = 'production'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
         ORDER BY ts DESC, traceId DESC
         LIMIT 50))
         GROUP BY traceId
@@ -11867,7 +12177,7 @@ SELECT
         LIMIT 50
         FORMAT JSON
 
--- spec:traces-list:baseline  [3ec2a2e9]
+-- spec:traces-list:baseline  [8269133f]
 SELECT
           TraceId AS traceId,
           Timestamp AS timestamp,
@@ -11886,7 +12196,7 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production')
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')
           AND Timestamp >= (SELECT min(ts) FROM (SELECT
           Timestamp AS ts
         FROM traces
@@ -11894,14 +12204,14 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production')
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')
         ORDER BY ts DESC
         LIMIT 50))
         ORDER BY timestamp DESC
         LIMIT 50
         FORMAT JSON
 
--- spec:traces-list:bloom  [3ec2a2e9]
+-- spec:traces-list:bloom  [8269133f]
 SELECT
           TraceId AS traceId,
           Timestamp AS timestamp,
@@ -11920,7 +12230,7 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production')
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')
           AND Timestamp >= (SELECT min(ts) FROM (SELECT
           Timestamp AS ts
         FROM traces
@@ -11928,14 +12238,14 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production')
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')
         ORDER BY ts DESC
         LIMIT 50))
         ORDER BY timestamp DESC
         LIMIT 50
         FORMAT JSON
 
--- spec:traces-list:text  [3ec2a2e9]
+-- spec:traces-list:text  [8269133f]
 SELECT
           TraceId AS traceId,
           Timestamp AS timestamp,
@@ -11954,7 +12264,7 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production')
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')
           AND Timestamp >= (SELECT min(ts) FROM (SELECT
           Timestamp AS ts
         FROM traces
@@ -11962,14 +12272,14 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production')
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')
         ORDER BY ts DESC
         LIMIT 50))
         ORDER BY timestamp DESC
         LIMIT 50
         FORMAT JSON
 
--- spec:traces-stats:baseline  [e90761b3]
+-- spec:traces-stats:baseline  [59c633f8]
 SELECT
           min(Duration) / 1000000 AS minDurationMs,
           max(Duration) / 1000000 AS maxDurationMs,
@@ -11980,10 +12290,10 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND DeploymentEnv = 'production'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
         FORMAT JSON
 
--- spec:traces-timeseries-aggregates-mv:baseline  [cad07ec0]
+-- spec:traces-timeseries-aggregates-mv:baseline  [31cc4494]
 SELECT
           bucket AS bucket,
           groupName AS groupName,
@@ -12012,7 +12322,7 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production')
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')
           AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
         GROUP BY bucket, groupName
 UNION ALL
@@ -12029,14 +12339,14 @@ SELECT
           AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
           AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
           AND ServiceName = 'api'
-          AND DeploymentEnv IN ('production')
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')
         GROUP BY bucket, groupName
 ) AS traces_metric_windows
         GROUP BY bucket, groupName
         ORDER BY bucket ASC, groupName ASC
         FORMAT JSON
 
--- spec:traces-timeseries-all-metrics-grouped:baseline  [bb89a9b1]
+-- spec:traces-timeseries-all-metrics-grouped:baseline  [9bce7e44]
 SELECT
           toStartOfInterval(Timestamp, INTERVAL 3600 SECOND) AS bucket,
           coalesce(nullIf(toString(ServiceName), ''), 'all') AS groupName,
@@ -12056,7 +12366,7 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production')
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')
         GROUP BY bucket, groupName
         ORDER BY bucket ASC, groupName ASC
         FORMAT JSON
@@ -12281,7 +12591,7 @@ SELECT
         ORDER BY bucket ASC, groupName ASC
         FORMAT JSON
 
--- spec:traces-timeseries-annual-minutely-grouped:baseline  [0ec9c1af]
+-- spec:traces-timeseries-annual-minutely-grouped:baseline  [61f00f39]
 SELECT
           bucket AS bucket,
           groupName AS groupName,
@@ -12312,7 +12622,7 @@ SELECT
           AND Timestamp >= '2026-01-03 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND DeploymentEnv IN ('production')
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')
           AND (Timestamp < if(toDateTime('2026-01-03 10:30:00') = toStartOfMinute(toDateTime('2026-01-03 10:30:00')), toStartOfMinute(toDateTime('2026-01-03 10:30:00')), toStartOfMinute(toDateTime('2026-01-03 10:30:00')) + INTERVAL 1 MINUTE) OR Timestamp >= toStartOfMinute(toDateTime('2026-01-03 14:15:00')))
         GROUP BY bucket, groupName
 UNION ALL
@@ -12329,7 +12639,7 @@ SELECT
         FROM service_overview_minutely
         WHERE OrgId = 'org_sql_catalog'
           AND ServiceName = 'api'
-          AND DeploymentEnv IN ('production')
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')
           AND Minute >= if(toDateTime('2026-01-03 10:30:00') = toStartOfMinute(toDateTime('2026-01-03 10:30:00')), toStartOfMinute(toDateTime('2026-01-03 10:30:00')), toStartOfMinute(toDateTime('2026-01-03 10:30:00')) + INTERVAL 1 MINUTE)
           AND Minute < toStartOfMinute(toDateTime('2026-01-03 14:15:00'))
         GROUP BY bucket, groupName
@@ -12361,7 +12671,7 @@ SELECT
         ORDER BY bucket ASC, groupName ASC
         FORMAT JSON
 
--- spec:traces-timeseries-annual:baseline  [503dc5ba]
+-- spec:traces-timeseries-annual:baseline  [07360e79]
 SELECT
           bucket AS bucket,
           groupName AS groupName,
@@ -12392,7 +12702,7 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND DeploymentEnv IN ('production')
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')
           AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfMinute(toDateTime('2026-01-01 10:30:00')), toStartOfMinute(toDateTime('2026-01-01 10:30:00')), toStartOfMinute(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 MINUTE) OR Timestamp >= toStartOfMinute(toDateTime('2026-01-03 14:15:00')))
         GROUP BY bucket, groupName
 UNION ALL
@@ -12409,7 +12719,7 @@ SELECT
         FROM service_overview_minutely
         WHERE OrgId = 'org_sql_catalog'
           AND ServiceName = 'api'
-          AND DeploymentEnv IN ('production')
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')
           AND Minute >= if(toDateTime('2026-01-01 10:30:00') = toStartOfMinute(toDateTime('2026-01-01 10:30:00')), toStartOfMinute(toDateTime('2026-01-01 10:30:00')), toStartOfMinute(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 MINUTE)
           AND Minute < toStartOfMinute(toDateTime('2026-01-03 14:15:00'))
           AND (Minute < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Minute >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
@@ -12428,7 +12738,7 @@ SELECT
         FROM service_overview_hourly
         WHERE OrgId = 'org_sql_catalog'
           AND ServiceName = 'api'
-          AND DeploymentEnv IN ('production')
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')
           AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
           AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
         GROUP BY bucket, groupName
@@ -12437,7 +12747,7 @@ SELECT
         ORDER BY bucket ASC, groupName ASC
         FORMAT JSON
 
--- spec:traces-timeseries-apdex:baseline  [40ead943]
+-- spec:traces-timeseries-apdex:baseline  [e2f35b96]
 SELECT
           toStartOfInterval(Timestamp, INTERVAL 300 SECOND) AS bucket,
           'all' AS groupName,
@@ -12457,12 +12767,12 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production')
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')
         GROUP BY bucket, groupName
         ORDER BY bucket ASC, groupName ASC
         FORMAT JSON
 
--- spec:traces-timeseries-attribute-filtered:baseline  [60608c7f]
+-- spec:traces-timeseries-attribute-filtered:baseline  [439e4fdc]
 SELECT
           toStartOfInterval(Timestamp, INTERVAL 300 SECOND) AS bucket,
           'all' AS groupName,
@@ -12482,13 +12792,13 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production')
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')
           AND if(SpanAttributes['http.method'] != '', SpanAttributes['http.method'], SpanAttributes['http.request.method']) = 'GET'
         GROUP BY bucket, groupName
         ORDER BY bucket ASC, groupName ASC
         FORMAT JSON
 
--- spec:traces-timeseries-attribute-filtered:bloom  [fa85ef4d]
+-- spec:traces-timeseries-attribute-filtered:bloom  [f0c18df8]
 SELECT
           toStartOfInterval(Timestamp, INTERVAL 300 SECOND) AS bucket,
           'all' AS groupName,
@@ -12508,13 +12818,13 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production')
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')
           AND (((has(mapKeys(SpanAttributes), 'http.method') OR has(mapKeys(SpanAttributes), 'http.request.method')) AND has(mapValues(SpanAttributes), 'GET')) AND if(SpanAttributes['http.method'] != '', SpanAttributes['http.method'], SpanAttributes['http.request.method']) = 'GET')
         GROUP BY bucket, groupName
         ORDER BY bucket ASC, groupName ASC
         FORMAT JSON
 
--- spec:traces-timeseries-attribute-filtered:text  [08a8ac59]
+-- spec:traces-timeseries-attribute-filtered:text  [bbc05ae8]
 SELECT
           toStartOfInterval(Timestamp, INTERVAL 300 SECOND) AS bucket,
           'all' AS groupName,
@@ -12534,13 +12844,13 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production')
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')
           AND ((has(SpanAttributeItems, concat('http.method', char(31), 'GET')) OR has(SpanAttributeItems, concat('http.request.method', char(31), 'GET'))) AND if(SpanAttributes['http.method'] != '', SpanAttributes['http.method'], SpanAttributes['http.request.method']) = 'GET')
         GROUP BY bucket, groupName
         ORDER BY bucket ASC, groupName ASC
         FORMAT JSON
 
--- spec:traces-timeseries-raw:baseline  [702c5f01]
+-- spec:traces-timeseries-raw:baseline  [68f27754]
 SELECT
           toStartOfInterval(Timestamp, INTERVAL 60 SECOND) AS bucket,
           'all' AS groupName,
@@ -12560,12 +12870,12 @@ SELECT
           AND Timestamp >= '2026-01-03 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production')
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')
         GROUP BY bucket, groupName
         ORDER BY bucket ASC, groupName ASC
         FORMAT JSON
 
--- spec:traces-timeseries-raw:bloom  [702c5f01]
+-- spec:traces-timeseries-raw:bloom  [68f27754]
 SELECT
           toStartOfInterval(Timestamp, INTERVAL 60 SECOND) AS bucket,
           'all' AS groupName,
@@ -12585,12 +12895,12 @@ SELECT
           AND Timestamp >= '2026-01-03 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production')
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')
         GROUP BY bucket, groupName
         ORDER BY bucket ASC, groupName ASC
         FORMAT JSON
 
--- spec:traces-timeseries-raw:text  [702c5f01]
+-- spec:traces-timeseries-raw:text  [68f27754]
 SELECT
           toStartOfInterval(Timestamp, INTERVAL 60 SECOND) AS bucket,
           'all' AS groupName,
@@ -12610,12 +12920,12 @@ SELECT
           AND Timestamp >= '2026-01-03 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production')
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')
         GROUP BY bucket, groupName
         ORDER BY bucket ASC, groupName ASC
         FORMAT JSON
 
--- spec:traces-timeseries-series-cap:baseline  [3d39b07d]
+-- spec:traces-timeseries-series-cap:baseline  [7afa52f2]
 WITH __series_base AS (
 SELECT
           toStartOfInterval(Timestamp, INTERVAL 300 SECOND) AS bucket,
@@ -12636,7 +12946,7 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) IN ('production')
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')
         GROUP BY bucket, groupName
         ORDER BY bucket ASC, groupName ASC
 )

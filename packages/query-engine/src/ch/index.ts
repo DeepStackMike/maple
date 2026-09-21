@@ -21,6 +21,11 @@ export { compilePipeQuery, type PipeCompiledQuery } from "./pipe-dispatch"
 
 export * as tables from "./tables"
 
+// The read-side name for telemetry that arrived with no deployment environment.
+// Exported because the dashboard's header selector puts it in a URL param and
+// in a label, and both have to spell it exactly as the SQL does.
+export { UNKNOWN_ENVIRONMENT, envLabel, resourceEnvLabel } from "./queries/environment"
+
 // Shared row-schema codecs (ClickHouse `FORMAT JSON` 64-bit-int-as-string coercion).
 export { CHNumber } from "./schema"
 
@@ -131,6 +136,7 @@ export {
 	sessionReplaysListQuery,
 	sessionReplaysFacetsQuery,
 	sessionResourceAttributeBreakdownQuery,
+	sessionEnvironmentsQuery,
 	getSessionReplayQuery,
 	sessionReplayChunkIndexQuery,
 	sessionReplayEventsQuery,
@@ -143,6 +149,7 @@ export {
 	type SessionReplaysFacetsOutput,
 	type SessionResourceAttributeBreakdownOpts,
 	type SessionResourceAttributeBreakdownOutput,
+	type SessionEnvironmentsOutput,
 	type SessionReplayDetailOutput,
 	type SessionReplayChunkIndexOpts,
 	type SessionReplayChunkIndexOutput,

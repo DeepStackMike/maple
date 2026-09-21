@@ -5,6 +5,7 @@
 import { Schema } from "effect"
 import * as T from "@maple-dev/clickhouse-builder/types"
 import * as CH from "@maple-dev/clickhouse-builder/expr"
+import { envLabel } from "./environment"
 import { param } from "@maple-dev/clickhouse-builder"
 import {
 	from,
@@ -137,13 +138,13 @@ function serviceOverviewWindows(filters: ServiceWindowFilters, tiers: ServiceWin
 	) => [
 		$.OrgId.eq(param.string("orgId")),
 		CH.when(filters.serviceName, (value: string) => $.ServiceName.eq(value)),
-		filters.environments?.length ? CH.inList($.DeploymentEnv, filters.environments) : undefined,
+		filters.environments?.length ? CH.inList(envLabel($.DeploymentEnv), filters.environments) : undefined,
 		filters.namespaces?.length ? CH.inList($.ServiceNamespace, filters.namespaces) : undefined,
 		filters.commitShas?.length ? CH.inList($.CommitSha, filters.commitShas) : undefined,
 		// All three are top-level columns on both the raw table and the rollup, so an exclusion
 		// keeps whichever tier the splice picked.
 		filters.excludedEnvironments?.length
-			? CH.notInList($.DeploymentEnv, filters.excludedEnvironments)
+			? CH.notInList(envLabel($.DeploymentEnv), filters.excludedEnvironments)
 			: undefined,
 		filters.excludedNamespaces?.length
 			? CH.notInList($.ServiceNamespace, filters.excludedNamespaces)
@@ -158,7 +159,7 @@ function serviceOverviewWindows(filters: ServiceWindowFilters, tiers: ServiceWin
 			bBucket: grain === "minute" ? CH.toStartOfMinute($.Timestamp) : CH.toStartOfHour($.Timestamp),
 			bServiceName: $.ServiceName,
 			bServiceNamespace: $.ServiceNamespace,
-			bEnvironment: $.DeploymentEnv,
+			bEnvironment: envLabel($.DeploymentEnv),
 			bCommitSha: $.CommitSha,
 			bSpanCount: CH.count(),
 			bEstimatedSpanCount: CH.sum($.SampleRate),
@@ -183,7 +184,7 @@ function serviceOverviewWindows(filters: ServiceWindowFilters, tiers: ServiceWin
 			bBucket: $.Hour,
 			bServiceName: $.ServiceName,
 			bServiceNamespace: $.ServiceNamespace,
-			bEnvironment: $.DeploymentEnv,
+			bEnvironment: envLabel($.DeploymentEnv),
 			bCommitSha: $.CommitSha,
 			bSpanCount: CH.sum($.SpanCount),
 			bEstimatedSpanCount: CH.sum($.EstimatedSpanCount),
@@ -216,7 +217,7 @@ function serviceOverviewWindows(filters: ServiceWindowFilters, tiers: ServiceWin
 			bBucket: $.Minute,
 			bServiceName: $.ServiceName,
 			bServiceNamespace: $.ServiceNamespace,
-			bEnvironment: $.DeploymentEnv,
+			bEnvironment: envLabel($.DeploymentEnv),
 			bCommitSha: $.CommitSha,
 			bSpanCount: CH.sum($.SpanCount),
 			bEstimatedSpanCount: CH.sum($.EstimatedSpanCount),
@@ -492,7 +493,7 @@ export function serviceHealthSnapshotQuery(opts: ServiceHealthSnapshotOpts) {
 	return from(TracesAggregatesHourly)
 		.select(($) => ({
 			serviceName: $.ServiceName,
-			environment: $.DeploymentEnv,
+			environment: envLabel($.DeploymentEnv),
 			requestCount: CH.rawExpr("sum(WeightedCount)", T.float64),
 			errorCount: CH.rawExpr("sum(WeightedErrorCount)", T.float64),
 			p95LatencyMs: CH.rawExpr(
@@ -505,7 +506,7 @@ export function serviceHealthSnapshotQuery(opts: ServiceHealthSnapshotOpts) {
 			$.IsEntryPoint.eq(1),
 			$.Hour.gte(hourFloor("startTime")),
 			$.Hour.lte(hourFloor("endTime")),
-			opts.environments?.length ? CH.inList($.DeploymentEnv, opts.environments) : undefined,
+			opts.environments?.length ? CH.inList(envLabel($.DeploymentEnv), opts.environments) : undefined,
 		])
 		.groupBy("serviceName", "environment")
 		.orderBy(["requestCount", "desc"], ["serviceName", "asc"])
@@ -638,9 +639,12 @@ export function serviceReleasesTimelineQuery(
 // its own `limit`, so an environment that only appears on the hundredth service
 // would never be discovered.
 //
-// The empty environment is dropped on purpose. The DSL reads `''` as "no
-// filter", so offering it as a choice would hand the caller back every
-// environment under a label claiming otherwise.
+// The empty environment is offered as `unknown` rather than dropped. It used to
+// be dropped, because the DSL reads `''` as "no filter" and a nameless choice
+// would have handed the caller back every environment; `envLabel` gives it a
+// name instead, and every environment predicate reads its column through the
+// same expression, so selecting `unknown` returns exactly the untagged rows.
+// See `./environment.ts`.
 
 export interface ServiceEnvironmentsOpts {
 	/** Omitted for the organization-wide list. */
@@ -656,7 +660,6 @@ export function serviceEnvironmentsQuery(opts: ServiceEnvironmentsOpts = {}) {
 		.select(($) => ({
 			environment: $.bEnvironment,
 		}))
-		.where(($) => [$.bEnvironment.neq("")])
 		.groupBy("environment")
 		.orderBy(["environment", "asc"])
 		.limit(100)

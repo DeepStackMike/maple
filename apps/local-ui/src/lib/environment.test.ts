@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import {
 	ENVIRONMENT_KEY,
+	UNKNOWN_ENVIRONMENT,
+	environmentLabel,
 	environmentParam,
 	persistEnvironment,
 	resolveEnvironment,
@@ -98,5 +100,26 @@ describe("param", () => {
 		expect(environmentParam("production")).toBe("production")
 		expect(environmentParam(undefined)).toBeNull()
 		expect(environmentParam("")).toBeNull()
+	})
+})
+
+describe("the unknown environment", () => {
+	// `unknown` is a value like any other on the wire: it is what the query
+	// engine's `envLabel` puts in the facet lists and what its predicates match,
+	// so the param, the stored preference and the SQL literal are one string.
+	it("is a selectable environment, not an absence of one", () => {
+		expect(environmentParam(UNKNOWN_ENVIRONMENT)).toBe("unknown")
+		stubStorage()
+		persistEnvironment(UNKNOWN_ENVIRONMENT)
+		expect(storedEnvironment()).toBe("unknown")
+		expect(resolveEnvironment(null)).toBe("unknown")
+	})
+
+	// Capitalised only where it is read as a caption. Everything else — the
+	// param, the storage, the facet rows — keeps the value it was given.
+	it("is captioned Unknown and leaves chosen names alone", () => {
+		expect(environmentLabel(UNKNOWN_ENVIRONMENT)).toBe("Unknown")
+		expect(environmentLabel("production")).toBe("production")
+		expect(environmentLabel("pr-4417")).toBe("pr-4417")
 	})
 })

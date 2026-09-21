@@ -12,6 +12,7 @@ import {
 import { Button } from "@maple/ui/components/ui/button"
 import type { SessionReplaysListOutput } from "@maple/query-engine/ch"
 import { useLocalSessions, useLocalSessionFacets } from "../hooks/use-local-sessions"
+import { useEnvironment } from "../hooks/use-environment"
 import { countryLabel, countryName, flagEmoji } from "../lib/geo"
 import { useQueryParams } from "../lib/router"
 import { DEFAULT_RANGE, formatRelativeTime } from "../lib/time"
@@ -58,8 +59,14 @@ export function SessionsListView({ onSelectSession }: SessionsListViewProps) {
 	const country = query.get("country") || undefined
 	const errorsOnly = query.get("errors") === "1"
 	const search = query.get("q") || undefined
+	// From the header, not a sidebar section: the environment says which
+	// deployment the whole session is about. `useLocalSessions` has carried the
+	// option since the header shipped; this view was the one that never passed
+	// it, so a header reading `production` sat above a list showing every
+	// deployment — `unknown` included.
+	const [env] = useEnvironment()
 
-	const filters = { service, browser, device, country, errorsOnly, search, range }
+	const filters = { service, browser, device, country, errorsOnly, search, range, env }
 	const facets = useLocalSessionFacets(filters)
 	const { data, isPending, isError, error, refetch, fetchNextPage, hasNextPage, isFetchingNextPage } =
 		useLocalSessions(filters)

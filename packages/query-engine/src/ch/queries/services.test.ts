@@ -39,7 +39,7 @@ describe("serviceCatalogQuery", () => {
 		expect(sql).toContain("OrgId = 'org_1'")
 		expect(sql).toContain("Timestamp >= '2024-01-01 00:00:00'")
 		expect(sql).toContain("Hour >= if(toDateTime('2024-01-01 00:00:00')")
-		expect(sql).toContain("DeploymentEnv IN ('production')")
+		expect(sql).toContain("coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')")
 		expect(sql).toContain("ServiceNamespace IN ('checkout')")
 		expect(sql).toContain("GROUP BY serviceName")
 		expect(sql).toContain("LIMIT 21")
@@ -59,7 +59,7 @@ describe("serviceHealthSnapshotQuery", () => {
 		expect(sql).toContain("FROM traces_aggregates_hourly")
 		expect(sql).toContain("OrgId = 'org_1'")
 		expect(sql).toContain("IsEntryPoint = 1")
-		expect(sql).toContain("DeploymentEnv IN ('production')")
+		expect(sql).toContain("coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')")
 		expect(sql).toContain("sum(WeightedCount) AS requestCount")
 		expect(sql).toContain("sum(WeightedErrorCount) AS errorCount")
 		expect(sql).toContain("quantilesTDigestWeightedMerge(0.95)(DurationQuantiles)")
@@ -103,7 +103,7 @@ describe("serviceOverviewQuery exclusions", () => {
 			}),
 			baseParams,
 		)
-		expect(sql).toContain("DeploymentEnv NOT IN ('staging')")
+		expect(sql).toContain("coalesce(nullIf(DeploymentEnv, ''), 'unknown') NOT IN ('staging')")
 		expect(sql).toContain("ServiceNamespace NOT IN ('internal')")
 		expect(sql).toContain("CommitSha NOT IN ('deadbeef')")
 	})
@@ -113,7 +113,9 @@ describe("serviceOverviewQuery exclusions", () => {
 		// only one tier would drop the excluded rows for part of the range and keep them for the
 		// rest, which reads as the filter half-working.
 		const { sql } = compileUnsafe(serviceOverviewQuery({ excludedEnvironments: ["staging"] }), baseParams)
-		const occurrences = (sql.match(/DeploymentEnv NOT IN \('staging'\)/g) ?? []).length
+		const occurrences = (
+			sql.match(/coalesce\(nullIf\(DeploymentEnv, ''\), 'unknown'\) NOT IN \('staging'\)/g) ?? []
+		).length
 		expect(occurrences).toBeGreaterThanOrEqual(2)
 	})
 })
@@ -173,7 +175,7 @@ describe("serviceOverviewQuery", () => {
 	it("applies environment filter", () => {
 		const q = serviceOverviewQuery({ environments: ["production"] })
 		const { sql } = compileUnsafe(q, baseParams)
-		expect(sql).toContain("DeploymentEnv IN ('production')")
+		expect(sql).toContain("coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')")
 	})
 
 	it("applies commitSha filter", () => {
@@ -241,7 +243,7 @@ describe("serviceHealthBaselineQuery", () => {
 	it("applies environment and namespace filters", () => {
 		const q = serviceHealthBaselineQuery({ environments: ["production"], namespaces: ["shop"] })
 		const { sql } = compileUnsafe(q, baseParams)
-		expect(sql).toContain("DeploymentEnv IN ('production')")
+		expect(sql).toContain("coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')")
 		expect(sql).toContain("ServiceNamespace IN ('shop')")
 	})
 })
@@ -302,8 +304,10 @@ describe("serviceEnvironmentsQuery", () => {
 		// …and to the active window so date partitions are pruned.
 		expect(sql).toContain("Timestamp >= '2024-01-01 00:00:00'")
 		expect(sql).toContain("Timestamp <= '2024-01-02 00:00:00'")
-		// Empty env rows are excluded (matches the old switcher's truthy filter).
-		expect(sql).toContain("bEnvironment != ''")
+		// Empty env rows are NOT excluded: they are projected as `unknown`, which is
+		// the value the header selector offers and every env predicate matches on.
+		expect(sql).not.toContain("bEnvironment != ''")
+		expect(sql).toContain("coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment")
 		expect(sql).toContain("GROUP BY environment")
 		expect(sql).toContain("FORMAT JSON")
 	})

@@ -33,11 +33,26 @@
 //     semi-join the builders already use for every other visitor-level
 //     dimension (see `needsSessionSemiJoin`).
 //
-// The one thing it cannot reach is a browser session recorded with no
-// environment attribute at all: while a value is selected those sessions are
-// out, the same way a country filter excludes a session with no country. On a
-// local Maple that is the SDK or ingest sidecar not setting
-// `deployment.environment.name` on the session's resource attributes.
+// TELEMETRY WITH NO ENVIRONMENT IS ITS OWN ENVIRONMENT: `unknown`. A span, log,
+// error or session whose resource attributes carry no
+// `deployment.environment.name` (nor the deprecated `deployment.environment`)
+// used to sit outside every environment — the selector did not offer it and
+// every filter excluded it, so the only way to see those rows was to clear the
+// filter. The query engine now reads every environment column through
+// `envLabel` (`packages/query-engine/src/ch/queries/environment.ts`), which maps
+// the empty value to the literal `unknown` in the SELECT and in the WHERE
+// alike; the selector offers it like any other environment and selecting it
+// returns exactly those rows.
+//
+// It is a read-side name, not a fix. A service that should be tagged is still
+// untagged — `unknown` only makes that visible, and the right answer is still to
+// set the attribute (the ingest sidecar now stamps it on session meta rows).
+
+import { UNKNOWN_ENVIRONMENT } from "@maple/query-engine/ch"
+
+// Re-exported so the header, the views and the query engine all spell it the
+// same way: it is the `env` URL param's value as much as it is a SQL literal.
+export { UNKNOWN_ENVIRONMENT }
 
 /** The `localStorage` key. `""` is stored for an explicit "All environments". */
 export const ENVIRONMENT_KEY = "maple.local.environment"
@@ -84,6 +99,20 @@ export function environmentParam(environment: string | undefined): string | null
 
 /** Shown in the selector for the absence of a choice. */
 export const ALL_ENVIRONMENTS_LABEL = "All environments"
+
+/**
+ * The environment as the selector spells it.
+ *
+ * Only `unknown` is touched, and only here. Every other environment is a name
+ * somebody chose — `production`, `staging`, `pr-4417` — and title-casing those
+ * would be the header disagreeing with the sidebar facets, the URL and the
+ * attribute itself. `unknown` is the one value Maple made up rather than read,
+ * so it reads as a caption beside "All environments" while the param, the SQL
+ * and the facet lists all keep the lower-case value.
+ */
+export function environmentLabel(environment: string): string {
+	return environment === UNKNOWN_ENVIRONMENT ? "Unknown" : environment
+}
 
 /**
  * How far back the selector looks for environments to offer.

@@ -15,6 +15,7 @@
 
 import { Schema } from "effect"
 import * as CH from "@maple-dev/clickhouse-builder/expr"
+import { envLabel } from "./environment"
 import { param } from "@maple-dev/clickhouse-builder"
 import { defineCondFn, from, fromUnion, unionAll, type ColumnAccessor } from "@maple-dev/clickhouse-builder"
 import { httpDisplaySpanName } from "../../traces-shared"
@@ -137,14 +138,14 @@ function rollupEnvironmentCondition(
 	$: ColumnAccessor<typeof ServiceOperationsMinutely.columns>,
 	environments: readonly string[] | undefined,
 ) {
-	return environments?.length ? CH.inList($.DeploymentEnv, environments) : undefined
+	return environments?.length ? CH.inList(envLabel($.DeploymentEnv), environments) : undefined
 }
 
 function hourlyEnvironmentCondition(
 	$: ColumnAccessor<typeof ServiceOperationsHourly.columns>,
 	environments: readonly string[] | undefined,
 ) {
-	return environments?.length ? CH.inList($.DeploymentEnv, environments) : undefined
+	return environments?.length ? CH.inList(envLabel($.DeploymentEnv), environments) : undefined
 }
 
 const mergedDurationQuantile = (index: 1 | 2 | 3) =>

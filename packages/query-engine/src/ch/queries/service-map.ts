@@ -14,11 +14,12 @@ import {
 	OPAQUE_DB_NAMESPACE_RE,
 	presentableStatementSql,
 } from "@maple/domain/tinybird/db-query-shape-sql"
-import { deploymentEnvExpr, messagingDestinationExpr } from "@maple/domain/tinybird/semconv-renames"
+import { messagingDestinationExpr } from "@maple/domain/tinybird/semconv-renames"
 import { Schema, Effect } from "effect"
 import { compile, type CompiledQuery, type CompiledQueryRowSchema } from "@maple-dev/clickhouse-builder"
 import { defineCondFn, defineFn } from "@maple-dev/clickhouse-builder"
 import * as CH from "@maple-dev/clickhouse-builder/expr"
+import { envLabel, resourceEnvLabel } from "./environment"
 // From the root, not `/expr`: this overload takes a `CHQuery`, so the subquery
 // keeps its params, table names and column types checked.
 import { inSubquery } from "@maple-dev/clickhouse-builder"
@@ -162,7 +163,7 @@ function serviceMapEdgeJoinSource(opts: {
 			$.Timestamp.gte(opts.rangeStart),
 			$.Timestamp.lt(opts.rangeEnd),
 			$.OrgId.eq(param.string("orgId")),
-			envFilter($.DeploymentEnv),
+			envFilter(envLabel($.DeploymentEnv)),
 			edgeOnly,
 			opts.parentServiceName ? $.ServiceName.eq(opts.parentServiceName) : undefined,
 		])
@@ -180,7 +181,7 @@ function serviceMapEdgeJoinSource(opts: {
 			$.Timestamp.gte(opts.rangeStart),
 			$.Timestamp.lt(opts.rangeEnd),
 			$.OrgId.eq(param.string("orgId")),
-			envFilter($.DeploymentEnv),
+			envFilter(envLabel($.DeploymentEnv)),
 			edgeOnly,
 		])
 
@@ -336,7 +337,7 @@ export function serviceDependenciesQueryBase(opts: { serviceName?: string; deplo
 			$.OrgId.eq(param.string("orgId")),
 			opts.serviceName ? $.SourceService.eq(opts.serviceName) : undefined,
 			...interiorConditions($.Hour),
-			envFilterMv($.DeploymentEnv),
+			envFilterMv(envLabel($.DeploymentEnv)),
 		])
 		.groupBy("sourceService", "targetService")
 
@@ -501,7 +502,7 @@ export function serviceMapNodeStatsQuery(opts: ServiceMapNodeStatsOpts = {}) {
 			$.OrgId.eq(param.string("orgId")),
 			$.Timestamp.gte(CH.toDateTime(param.dateTimeString("startTime"))),
 			$.Timestamp.lt(CH.toDateTime(param.dateTimeString("endTime"))),
-			opts.deploymentEnv ? $.DeploymentEnv.eq(opts.deploymentEnv) : undefined,
+			opts.deploymentEnv ? envLabel($.DeploymentEnv).eq(opts.deploymentEnv) : undefined,
 		])
 		.groupBy("serviceName")
 		.orderBy(["spanCount", "desc"])
@@ -661,7 +662,7 @@ function serviceDbEdgesQueryBase(opts: { serviceName?: string; deploymentEnv?: s
 			opts.serviceName ? $.ServiceName.eq(opts.serviceName) : undefined,
 			...interiorConditions($.Hour),
 			$.DbSystem.neq(""),
-			opts.deploymentEnv ? $.DeploymentEnv.eq(opts.deploymentEnv) : undefined,
+			opts.deploymentEnv ? envLabel($.DeploymentEnv).eq(opts.deploymentEnv) : undefined,
 		])
 		.groupBy("sourceService", "dbSystem", "dbNamespace")
 
@@ -700,7 +701,7 @@ function serviceDbEdgesQueryBase(opts: { serviceName?: string; deploymentEnv?: s
 			edgeCondition("Timestamp"),
 			$.SpanKind.in_("Client", "Producer"),
 			dbSystemExpr($).neq(""),
-			opts.deploymentEnv ? deploymentEnvExpr($.ResourceAttributes).eq(opts.deploymentEnv) : undefined,
+			opts.deploymentEnv ? resourceEnvLabel($.ResourceAttributes).eq(opts.deploymentEnv) : undefined,
 		])
 		.groupBy("sourceService", "dbSystem", "dbNamespace")
 
@@ -893,7 +894,7 @@ const signaturesHourlyFilters = (
 	// matches pre-migration rows that still carry the raw Hyperdrive config ID.
 	params.dbNamespace !== undefined ? collapseHyperdriveNs($.DbNamespace).eq(params.dbNamespace) : undefined,
 	params.sourceService ? $.ServiceName.eq(params.sourceService) : undefined,
-	params.deploymentEnv ? $.DeploymentEnv.eq(params.deploymentEnv) : undefined,
+	params.deploymentEnv ? envLabel($.DeploymentEnv).eq(params.deploymentEnv) : undefined,
 ]
 
 // Filters for the raw `traces` branch. `scope` selects the time window:
@@ -926,7 +927,7 @@ const serviceDbRawFilters = (
 	// Same undefined-vs-'' semantics as `shapesHourlyFilters`.
 	params.dbNamespace !== undefined ? dbNamespaceExpr($).eq(params.dbNamespace) : undefined,
 	params.sourceService ? $.ServiceName.eq(params.sourceService) : undefined,
-	params.deploymentEnv ? deploymentEnvExpr($.ResourceAttributes).eq(params.deploymentEnv) : undefined,
+	params.deploymentEnv ? resourceEnvLabel($.ResourceAttributes).eq(params.deploymentEnv) : undefined,
 ]
 
 // Aggregate-state expressions shared by the summary/timeseries/top-queries
@@ -1254,7 +1255,7 @@ export function serviceExternalEdgesSQL(
 			$.ServiceName.eq(opts.serviceName),
 			...interiorConditions($.Hour),
 			$.TargetName.neq(""),
-			opts.deploymentEnv ? $.DeploymentEnv.eq(opts.deploymentEnv) : undefined,
+			opts.deploymentEnv ? envLabel($.DeploymentEnv).eq(opts.deploymentEnv) : undefined,
 		])
 		.groupBy("sourceService", "targetType", "targetSystem", "targetName")
 
@@ -1322,7 +1323,7 @@ export function serviceExternalEdgesSQL(
 					.or(attr("rpc.service").neq(""))
 					.or(attr("rpc.system").neq("")),
 				opts.deploymentEnv
-					? deploymentEnvExpr($.ResourceAttributes).eq(opts.deploymentEnv)
+					? resourceEnvLabel($.ResourceAttributes).eq(opts.deploymentEnv)
 					: undefined,
 			]
 		})
@@ -1342,7 +1343,7 @@ export function serviceExternalEdgesSQL(
 			$.Hour.gte(startHour),
 			$.Hour.lt(endHour),
 			$.ParentServerAddress.neq(""),
-			opts.deploymentEnv ? $.DeploymentEnv.eq(opts.deploymentEnv) : undefined,
+			opts.deploymentEnv ? envLabel($.DeploymentEnv).eq(opts.deploymentEnv) : undefined,
 		])
 		.groupBy("ParentServerAddress")
 
@@ -1432,7 +1433,7 @@ export function servicePlatformsSQL(
 			$.Hour.gte(CH.toStartOfHour(CH.toDateTime(param.dateTimeString("startTime")))),
 			$.Hour.lte(param.dateTimeSeconds("endTime")),
 			$.ServiceName.neq(""),
-			opts.deploymentEnv ? $.DeploymentEnv.eq(opts.deploymentEnv) : undefined,
+			opts.deploymentEnv ? envLabel($.DeploymentEnv).eq(opts.deploymentEnv) : undefined,
 		])
 		.groupBy("serviceName")
 		.limit(500)

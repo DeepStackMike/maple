@@ -172,6 +172,25 @@ const webAnalyticsFixtures: ReadonlyArray<BuilderFixture> = [
 				window,
 			),
 	),
+	// The same scope set to `unknown`: the value the header offers for sessions
+	// whose resource map carries no `deployment.environment.name`. A different SQL
+	// shape from the one above only in the literal, but it is the shape the
+	// analyzer sees when the semi-join's predicate has to match a *missing*
+	// attribute, and it is the one Home emits on a local Maple with an untagged
+	// SDK — which is most of them.
+	...webAnalyticsVariants(
+		"webAnalyticsPageviewsTimeseriesQuery",
+		"unknown-environment-scoped",
+		(useProductEvents) =>
+			CH.compileUnsafe(
+				CH.webAnalyticsPageviewsTimeseriesQuery({
+					bucketSeconds: 3600,
+					environment: "unknown",
+					useProductEvents,
+				}),
+				window,
+			),
+	),
 	...webAnalyticsVariants("webAnalyticsPagesQuery", "default", (useProductEvents) =>
 		CH.compileUnsafe(CH.webAnalyticsPagesQuery({ limit: 100, useProductEvents }), window),
 	),
@@ -443,6 +462,28 @@ export const builderFixtures: ReadonlyArray<BuilderFixture> = [
 			CH.compileUnsafe(CH.sessionReplaysListQuery({ environment: "production", limit: 50 }), window),
 	},
 	{
+		// The same block with the environment the untagged sessions land in. Two of
+		// the seven sessions a fresh local Maple seeds have no environment
+		// attribute at all; before `envLabel` they were reachable only by clearing
+		// the filter, and this fixture is the one that proves the predicate the
+		// header now emits for them still compiles against the analyzer.
+		module: "session-replays",
+		name: "sessionReplaysListQuery",
+		label: "unknown-environment-scoped",
+		compile: () =>
+			CH.compileUnsafe(CH.sessionReplaysListQuery({ environment: "unknown", limit: 50 }), window),
+	},
+	{
+		// The other half of the header selector's option list: the environments
+		// browser sessions were recorded under, which the span-built service
+		// windows cannot see. Un-finalized on purpose — the resource map is
+		// identical on both row versions.
+		module: "session-replays",
+		name: "sessionEnvironmentsQuery",
+		label: "default",
+		compile: () => CH.compileUnsafe(CH.sessionEnvironmentsQuery(), window),
+	},
+	{
 		module: "session-replays",
 		name: "sessionReplaysFacetsQuery",
 		label: "default",
@@ -467,6 +508,15 @@ export const builderFixtures: ReadonlyArray<BuilderFixture> = [
 		label: "environment-scoped",
 		compile: () =>
 			CH.compileUnionUnsafe(CH.sessionReplaysFacetsQuery({ environment: "production" }), window),
+	},
+	{
+		// …including when the scope is `unknown`, where every branch's counts have
+		// to come from the sessions that named no environment rather than from none.
+		module: "session-replays",
+		name: "sessionReplaysFacetsQuery",
+		label: "unknown-environment-scoped",
+		compile: () =>
+			CH.compileUnionUnsafe(CH.sessionReplaysFacetsQuery({ environment: "unknown" }), window),
 	},
 	{
 		// apps/local-ui web analytics — the Cities card. One map key, no qualifier.
@@ -865,6 +915,26 @@ export const builderFixtures: ReadonlyArray<BuilderFixture> = [
 				}),
 				window,
 			),
+	},
+	{
+		// The services list under the header's `unknown`: the environment predicate
+		// is pushed onto every tier of the splice, and on each one it reads
+		// `DeploymentEnv` through `envLabel` so a service that never tagged itself
+		// is listed rather than filtered away.
+		module: "services",
+		name: "serviceCatalogQuery",
+		label: "unknown-environment",
+		compile: () =>
+			CH.compileUnsafe(CH.serviceCatalogQuery({ deploymentEnvironment: "unknown", limit: 50 }), window),
+	},
+	{
+		// The header selector's own option list — the other half of the round trip
+		// the fixtures above take. It projects the same `envLabel`, which is what
+		// makes `unknown` an offer this Maple can honour instead of a dead option.
+		module: "services",
+		name: "serviceEnvironmentsQuery",
+		label: "default",
+		compile: () => CH.compileUnsafe(CH.serviceEnvironmentsQuery(), window),
 	},
 
 	{

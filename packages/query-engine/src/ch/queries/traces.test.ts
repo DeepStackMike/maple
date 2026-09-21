@@ -568,7 +568,7 @@ describe("slowTracesQuery", () => {
 
 		expect(sql).toContain("FROM trace_list_mv")
 		expect(sql).toContain("ServiceName = 'api'")
-		expect(sql).toContain("DeploymentEnv = 'prod'")
+		expect(sql).toContain("coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'prod'")
 		expect(sql).toContain("ORDER BY durationMs DESC")
 		expect(sql).toContain("LIMIT 5")
 		expect(sql).not.toContain("ParentSpanId")
