@@ -26,6 +26,8 @@ import { ErrorState } from "./view-states"
 interface ProductEventsPanelProps {
 	names: UseQueryResult<ReadonlyArray<ProductEventName>, Error>
 	range: string
+	/** The header's deployment-environment scope, or `undefined` for all of them. */
+	environment: string | undefined
 	/** The event whose detail is expanded, or `null` for none. */
 	selected: string | null
 	onSelect: (next: string | null) => void
@@ -37,6 +39,7 @@ interface ProductEventsPanelProps {
 export function ProductEventsPanel({
 	names,
 	range,
+	environment,
 	selected,
 	onSelect,
 	propertyKey,
@@ -125,6 +128,7 @@ export function ProductEventsPanel({
 				<EventDetail
 					eventName={selected}
 					range={range}
+					environment={environment}
 					propertyKey={propertyKey}
 					onPropertyKeyChange={onPropertyKeyChange}
 				/>
@@ -136,20 +140,22 @@ export function ProductEventsPanel({
 function EventDetail({
 	eventName,
 	range,
+	environment,
 	propertyKey,
 	onPropertyKeyChange,
 }: {
 	eventName: string
 	range: string
+	environment: string | undefined
 	propertyKey: string | null
 	onPropertyKeyChange: (next: string | null) => void
 }) {
-	const timeseries = useLocalProductEventTimeseries(eventName, range)
-	const keys = useLocalProductEventPropertyKeys(eventName, range)
+	const timeseries = useLocalProductEventTimeseries(eventName, range, environment)
+	const keys = useLocalProductEventPropertyKeys(eventName, range, environment)
 	// The URL key wins; otherwise the most common one, so the breakdown is
 	// populated the moment an event is opened.
 	const activeKey = propertyKey || keys.data?.[0]?.propertyKey || null
-	const values = useLocalProductEventPropertyValues(eventName, activeKey, range)
+	const values = useLocalProductEventPropertyValues(eventName, activeKey, range, environment)
 
 	// The series is keyed `events` rather than by the event name: the chart
 	// reserves `bucket` for the x axis, and a `track('bucket')` call would

@@ -27,6 +27,8 @@ import { ErrorState } from "./view-states"
 interface FunnelPanelProps {
 	names: UseQueryResult<ReadonlyArray<ProductEventName>, Error>
 	range: string
+	/** The header's deployment-environment scope, or `undefined` for all of them. */
+	environment: string | undefined
 	/** The picker's slots, in order. Always between MIN and MAX; unset slots are `""`. */
 	steps: ReadonlyArray<string>
 	onStepsChange: (next: ReadonlyArray<string>) => void
@@ -37,6 +39,7 @@ interface FunnelPanelProps {
 export function FunnelPanel({
 	names,
 	range,
+	environment,
 	steps,
 	onStepsChange,
 	conversionWindow,
@@ -44,7 +47,7 @@ export function FunnelPanel({
 }: FunnelPanelProps) {
 	const options = names.data ?? []
 	const runnable = isRunnableFunnel(steps)
-	const funnel = useLocalProductEventFunnel(steps, conversionWindow.seconds, range)
+	const funnel = useLocalProductEventFunnel(steps, conversionWindow.seconds, range, environment)
 
 	const stages = useMemo(
 		() => (runnable ? toFunnelStages(steps, funnel.data ?? []) : []),

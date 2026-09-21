@@ -41,6 +41,7 @@ import { useLocalErrorsByType, useLocalErrorsSummary } from "../hooks/use-local-
 import { useLocalOverviewTimeseries, useLocalSessionsSummary } from "../hooks/use-local-home"
 import { useLocalServiceCatalog } from "../hooks/use-local-service-catalog"
 import { useLocalSessions } from "../hooks/use-local-sessions"
+import { useEnvironment } from "../hooks/use-environment"
 import { useNamespace } from "../hooks/use-namespace"
 import { lastSeenByService, overviewSeries, summarizeServices } from "../lib/home-overview"
 import { DOCS_LOCAL_MODE_SEND_TELEMETRY } from "../lib/links"
@@ -64,6 +65,11 @@ export function HomeView() {
 	// blocks and not others — see the block labels below, and `lib/namespace.ts`
 	// for the list of which and why.
 	const [namespace] = useNamespace()
+	// The header's environment. Unlike the project, every block on this page can
+	// honour it: `error_events` has a `DeploymentEnv` column and `session_replays`
+	// carries the environment in its resource map, so there is no block here that
+	// has to say it could not.
+	const [environment] = useEnvironment()
 
 	// Each of these is the exact filter object its tab builds with nothing
 	// selected, down to `rootOnly: false` and `errorsOnly: false` being present
@@ -71,12 +77,12 @@ export function HomeView() {
 	// `false` is a different key from a present one even though it compiles to
 	// the same SQL. Matching them makes Home's fetch the tab's fetch, so
 	// following a tile lands on a warm cache.
-	const catalog = useLocalServiceCatalog({ range, ns: namespace })
-	const errorsSummary = useLocalErrorsSummary({ rootOnly: false, range })
-	const errorsByType = useLocalErrorsByType({ rootOnly: false, range })
-	const sessions = useLocalSessions({ errorsOnly: false, range })
-	const sessionsSummary = useLocalSessionsSummary(range)
-	const timeseries = useLocalOverviewTimeseries(range, namespace)
+	const catalog = useLocalServiceCatalog({ range, ns: namespace, env: environment })
+	const errorsSummary = useLocalErrorsSummary({ rootOnly: false, range, env: environment })
+	const errorsByType = useLocalErrorsByType({ rootOnly: false, range, env: environment })
+	const sessions = useLocalSessions({ errorsOnly: false, range, env: environment })
+	const sessionsSummary = useLocalSessionsSummary(range, environment)
+	const timeseries = useLocalOverviewTimeseries(range, namespace, environment)
 
 	const entries = catalog.data?.entries ?? []
 	const totals = useMemo(() => summarizeServices(entries), [entries])
@@ -91,7 +97,11 @@ export function HomeView() {
 	// list views do (`HOME_DEFAULT_RANGE`), so without this an unset `range` would
 	// silently widen to 30 days the moment a tile is clicked, and the tab would
 	// disagree with the number that sent the user there.
-	const open = (path: string) => navigate(path, new URLSearchParams({ range }))
+	// The environment rides along too: the five list views read `env` from the
+	// hash as their own facet, so a tile clicked under `production` opens a page
+	// already filtered to it rather than to everything.
+	const open = (path: string) =>
+		navigate(path, new URLSearchParams(environment ? { range, env: environment } : { range }))
 
 	const toolbar = (
 		<Toolbar>

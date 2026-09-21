@@ -12,10 +12,17 @@
 // underneath it. The section lives in the hash (`section`), so each half is a
 // link, and each owns its own params — `event` / `prop` / `steps` / `window`
 // for Product, `utm` for Web — so switching back restores what you had.
+//
+// The deployment environment is the one filter both halves share and neither
+// owns: it comes from the header (`env` in the hash), and it narrows every
+// query on the page. `session_replays` carries it in its resource map; page
+// views and `track()` rows carry none and reach it through the semi-join the
+// builders already run for every other session-level dimension.
 
 import { SquareActivityChartIcon } from "@maple/ui/components/icons"
 import { Tabs, TabsList, TabsTrigger } from "@maple/ui/components/ui/tabs"
 import type { ReactNode } from "react"
+import { useEnvironment } from "../hooks/use-environment"
 import { useLocalProductEventNames } from "../hooks/use-local-product-events"
 import {
 	decodeFunnelSteps,
@@ -41,6 +48,7 @@ export function AnalyticsView() {
 		query.get("section"),
 		query.get("event") !== null || query.get("steps") !== null,
 	)
+	const [environment] = useEnvironment()
 
 	// Shared by both sections, and rendered by each so the stats between the
 	// label and these controls can be the section's own.
@@ -70,6 +78,7 @@ export function AnalyticsView() {
 	return section === "web" ? (
 		<WebSection
 			range={range}
+			environment={environment}
 			switcher={switcher}
 			controls={controls}
 			utm={parseUtmDimension(query.get("utm"))}
@@ -78,6 +87,7 @@ export function AnalyticsView() {
 	) : (
 		<ProductSection
 			range={range}
+			environment={environment}
 			switcher={switcher}
 			controls={controls}
 			selected={query.get("event")}
@@ -94,12 +104,14 @@ export function AnalyticsView() {
 
 function WebSection({
 	range,
+	environment,
 	switcher,
 	controls,
 	utm,
 	onUtmChange,
 }: {
 	range: string
+	environment: string | undefined
 	switcher: ReactNode
 	controls: ReactNode
 	utm: ReturnType<typeof parseUtmDimension>
@@ -108,7 +120,12 @@ function WebSection({
 	return (
 		<Section switcher={switcher} controls={controls}>
 			<div className="p-4">
-				<WebAnalyticsPanel range={range} utm={utm} onUtmChange={onUtmChange} />
+				<WebAnalyticsPanel
+					range={range}
+					environment={environment}
+					utm={utm}
+					onUtmChange={onUtmChange}
+				/>
 			</div>
 		</Section>
 	)
@@ -120,6 +137,7 @@ function WebSection({
  */
 function ProductSection({
 	range,
+	environment,
 	switcher,
 	controls,
 	selected,
@@ -132,6 +150,7 @@ function ProductSection({
 	onConversionWindowChange,
 }: {
 	range: string
+	environment: string | undefined
 	switcher: ReactNode
 	controls: ReactNode
 	selected: string | null
@@ -143,7 +162,7 @@ function ProductSection({
 	conversionWindow: ReturnType<typeof parseConversionWindow>
 	onConversionWindowChange: (next: string) => void
 }) {
-	const names = useLocalProductEventNames(range)
+	const names = useLocalProductEventNames(range, environment)
 	const rows = names.data ?? []
 	const totalEvents = rows.reduce((sum, row) => sum + row.count, 0)
 
@@ -184,6 +203,7 @@ function ProductSection({
 					<ProductEventsPanel
 						names={names}
 						range={range}
+						environment={environment}
 						selected={selected}
 						onSelect={onSelect}
 						propertyKey={propertyKey}
@@ -192,6 +212,7 @@ function ProductSection({
 					<FunnelPanel
 						names={names}
 						range={range}
+						environment={environment}
 						steps={steps}
 						onStepsChange={onStepsChange}
 						conversionWindow={conversionWindow}

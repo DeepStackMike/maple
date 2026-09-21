@@ -9,6 +9,16 @@ const PAGE_SIZE = 50
 
 export interface SessionFilters {
 	service?: string
+	/**
+	 * Exact `deployment.environment.name` (or the deprecated
+	 * `deployment.environment`) out of the session's resource attributes.
+	 *
+	 * Supplied by the header selector rather than by a sidebar facet: the
+	 * sessions list has no environment section, because the environment is a
+	 * statement about which deployment the whole session is about rather than
+	 * one of the dimensions this list slices by.
+	 */
+	env?: string
 	browser?: string
 	device?: string
 	/** ISO 3166-1 alpha-2, as the `Country` column stores it. */
@@ -36,6 +46,7 @@ export function useLocalSessions(filters: SessionFilters) {
 					browser: filters.browser,
 					deviceType: filters.device,
 					country: filters.country,
+					environment: filters.env,
 					hasErrors: filters.errorsOnly,
 					search: filters.search,
 				}),
@@ -83,6 +94,7 @@ export function useLocalSessionFacets(filters: SessionFilters) {
 					browser: filters.browser,
 					deviceType: filters.device,
 					country: filters.country,
+					environment: filters.env,
 					hasErrors: filters.errorsOnly,
 					search: filters.search,
 				}),

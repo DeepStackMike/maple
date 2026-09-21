@@ -97,23 +97,25 @@ export function parseUtmDimension(raw: string | null | undefined): UtmDimension 
 
 interface WebAnalyticsPanelProps {
 	range: string
+	/** The header's deployment-environment scope, or `undefined` for all of them. */
+	environment: string | undefined
 	/** Which `utm_*` dimension the acquisition card lists. */
 	utm: UtmDimension
 	onUtmChange: (next: UtmDimension) => void
 }
 
-export function WebAnalyticsPanel({ range, utm, onUtmChange }: WebAnalyticsPanelProps) {
+export function WebAnalyticsPanel({ range, environment, utm, onUtmChange }: WebAnalyticsPanelProps) {
 	// Home's hook and the sessions tab's hook, called with this page's range —
 	// same objects they build, so these two are cache hits whenever the user
 	// arrived from either.
-	const summary = useLocalSessionsSummary(range)
-	const facets = useLocalSessionFacets({ errorsOnly: false, range })
-	const sessionsTimeseries = useLocalWebSessionsTimeseries(range)
-	const pageviewsTimeseries = useLocalWebPageviewsTimeseries(range)
-	const pages = useLocalWebPages(range)
-	const breakdowns = useLocalWebBreakdowns(range)
-	const regions = useLocalSessionAttributeBreakdown(range, GEO_REGION)
-	const cities = useLocalSessionAttributeBreakdown(range, GEO_CITY)
+	const summary = useLocalSessionsSummary(range, environment)
+	const facets = useLocalSessionFacets({ errorsOnly: false, range, env: environment })
+	const sessionsTimeseries = useLocalWebSessionsTimeseries(range, environment)
+	const pageviewsTimeseries = useLocalWebPageviewsTimeseries(range, environment)
+	const pages = useLocalWebPages(range, environment)
+	const breakdowns = useLocalWebBreakdowns(range, environment)
+	const regions = useLocalSessionAttributeBreakdown(range, GEO_REGION, environment)
+	const cities = useLocalSessionAttributeBreakdown(range, GEO_CITY, environment)
 
 	const sessionPoints = sessionsTimeseries.data ?? []
 	const pageviewPoints = pageviewsTimeseries.data ?? []
@@ -142,8 +144,14 @@ export function WebAnalyticsPanel({ range, utm, onUtmChange }: WebAnalyticsPanel
 	// sessions list defaults to 30 days and this tab may be showing one hour, so
 	// an unqualified link would silently widen and disagree with the row that
 	// sent the user there.
+	// The environment goes with it, for the same reason: the sessions list reads
+	// `env` from the hash, so a card clicked under one deployment must not open
+	// a list showing every deployment.
 	const openSessions = (params: Record<string, string>) =>
-		navigate("/sessions", new URLSearchParams({ range, ...params }))
+		navigate(
+			"/sessions",
+			new URLSearchParams(environment ? { range, env: environment, ...params } : { range, ...params }),
+		)
 
 	if (summary.isPending) return <ListSkeleton rows={6} />
 	if (summary.isError) {

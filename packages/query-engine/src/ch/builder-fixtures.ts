@@ -99,6 +99,12 @@ const WEB_ANALYTICS_ALL_FILTERS = {
 	utmCampaign: "launch",
 	visitorType: "new",
 	eventName: "signup_started",
+	// The session's deployment environment, out of `ResourceAttributes`. Here in
+	// the all-filters fixture rather than only in its own so the catalog sweeps
+	// it composed with the rest — it is the one dimension with no column, and a
+	// map lookup that lands beside a dozen column equalities is where an
+	// analyzer disagreement would show up.
+	environment: "production",
 } as const
 
 const webAnalyticsVariants = (
@@ -151,6 +157,21 @@ const webAnalyticsFixtures: ReadonlyArray<BuilderFixture> = [
 			window,
 		),
 	),
+	// The environment alone forces the semi-join, and it is the case Home and the
+	// Analytics tab actually emit: no acquisition sidebar, one standing scope.
+	...webAnalyticsVariants(
+		"webAnalyticsPageviewsTimeseriesQuery",
+		"environment-scoped",
+		(useProductEvents) =>
+			CH.compileUnsafe(
+				CH.webAnalyticsPageviewsTimeseriesQuery({
+					bucketSeconds: 3600,
+					environment: "production",
+					useProductEvents,
+				}),
+				window,
+			),
+	),
 	...webAnalyticsVariants("webAnalyticsPagesQuery", "default", (useProductEvents) =>
 		CH.compileUnsafe(CH.webAnalyticsPagesQuery({ limit: 100, useProductEvents }), window),
 	),
@@ -194,6 +215,14 @@ const webAnalyticsFixtures: ReadonlyArray<BuilderFixture> = [
 	// so this is the fixture that would catch a branch that forgot to. On the
 	// rollup variant it is also the one that shows the navigation semi-join being
 	// inlined into all twelve branches — the shape the rollup exists to make cheap.
+	// Every branch has to carry the environment predicate — it has no `exclude`
+	// arm, unlike the dimensions the sidebar lists.
+	...webAnalyticsVariants("webAnalyticsBreakdownsQuery", "environment-scoped", (useProductEvents) =>
+		CH.compileUnionUnsafe(
+			CH.webAnalyticsBreakdownsQuery({ environment: "production", useProductEvents }),
+			window,
+		),
+	),
 	...webAnalyticsVariants("webAnalyticsBreakdownsQuery", "all-dimensions-filtered", (useProductEvents) =>
 		CH.compileUnionUnsafe(
 			CH.webAnalyticsBreakdownsQuery({ ...WEB_ANALYTICS_ALL_FILTERS, useProductEvents }),
@@ -320,6 +349,19 @@ const productEventsFixtures: ReadonlyArray<BuilderFixture> = [
 			),
 	},
 	{
+		// apps/local-ui Analytics — the only filter that tab sets. `product_events`
+		// has no environment column, so this is the `session_replays` semi-join on
+		// its own.
+		module: "product-events",
+		name: "productEventNamesQuery",
+		label: "environment-scoped",
+		compile: () =>
+			CH.compileUnsafe(
+				CH.productEventNamesQuery({ filters: { environment: "production" }, limit: 100 }),
+				window,
+			),
+	},
+	{
 		module: "product-events",
 		name: "productEventTimeseriesQuery",
 		label: "default",
@@ -392,6 +434,15 @@ export const builderFixtures: ReadonlyArray<BuilderFixture> = [
 			),
 	},
 	{
+		// apps/local-ui Home — the recent-sessions block under the header's
+		// environment. A map lookup in a WHERE that is otherwise all columns.
+		module: "session-replays",
+		name: "sessionReplaysListQuery",
+		label: "environment-scoped",
+		compile: () =>
+			CH.compileUnsafe(CH.sessionReplaysListQuery({ environment: "production", limit: 50 }), window),
+	},
+	{
 		module: "session-replays",
 		name: "sessionReplaysFacetsQuery",
 		label: "default",
@@ -410,6 +461,14 @@ export const builderFixtures: ReadonlyArray<BuilderFixture> = [
 			),
 	},
 	{
+		// No facet branch of its own, so it must appear in every branch of the union.
+		module: "session-replays",
+		name: "sessionReplaysFacetsQuery",
+		label: "environment-scoped",
+		compile: () =>
+			CH.compileUnionUnsafe(CH.sessionReplaysFacetsQuery({ environment: "production" }), window),
+	},
+	{
 		// apps/local-ui web analytics — the Cities card. One map key, no qualifier.
 		module: "session-replays",
 		name: "sessionResourceAttributeBreakdownQuery",
@@ -417,6 +476,22 @@ export const builderFixtures: ReadonlyArray<BuilderFixture> = [
 		compile: () =>
 			CH.compileUnsafe(
 				CH.sessionResourceAttributeBreakdownQuery({ key: "geo.locality.name", limit: 50 }),
+				window,
+			),
+	},
+	{
+		// The Cities card under an environment: two lookups into the same map, one
+		// grouped and one filtered, in the inner per-session pass.
+		module: "session-replays",
+		name: "sessionResourceAttributeBreakdownQuery",
+		label: "environment-scoped",
+		compile: () =>
+			CH.compileUnsafe(
+				CH.sessionResourceAttributeBreakdownQuery({
+					key: "geo.locality.name",
+					environment: "production",
+					limit: 50,
+				}),
 				window,
 			),
 	},
@@ -641,8 +716,7 @@ export const builderFixtures: ReadonlyArray<BuilderFixture> = [
 		module: "errors",
 		name: "errorVersionsQuery",
 		label: "default",
-		compile: () =>
-			CH.compileUnsafe(CH.errorVersionsQuery({ fingerprintHashes: [FINGERPRINT] }), window),
+		compile: () => CH.compileUnsafe(CH.errorVersionsQuery({ fingerprintHashes: [FINGERPRINT] }), window),
 	},
 	{
 		// local-ui use-local-errors.ts useLocalErrorSessions — "Sessions with this
@@ -664,8 +738,7 @@ export const builderFixtures: ReadonlyArray<BuilderFixture> = [
 		module: "errors",
 		name: "errorSessionsQuery",
 		label: "traceOnly",
-		compile: () =>
-			CH.compileUnsafe(CH.errorSessionsQuery({ fingerprintHash: FINGERPRINT }), window),
+		compile: () => CH.compileUnsafe(CH.errorSessionsQuery({ fingerprintHash: FINGERPRINT }), window),
 	},
 	{
 		module: "errors",

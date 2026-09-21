@@ -1254,7 +1254,32 @@ SELECT
         LIMIT 100
         FORMAT JSON
 
--- builder:product-events:productEventNamesQuery:filtered  [d94aa83a]
+-- builder:product-events:productEventNamesQuery:environment-scoped  [a25be0d0]
+SELECT
+          EventName AS eventName,
+          Kind AS kind,
+          count() AS count,
+          uniqIf(SessionId, SessionId != '') AS sessions,
+          uniqIf(if(UserId != '', UserId, VisitorId), (UserId != '' OR VisitorId != '')) AS persons,
+          max(Timestamp) AS lastSeen
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND SessionId IN (SELECT
+          SessionId AS sessionId
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+        GROUP BY sessionId)
+        GROUP BY eventName, kind
+        ORDER BY count DESC, eventName ASC
+        LIMIT 100
+        FORMAT JSON
+
+-- builder:product-events:productEventNamesQuery:filtered  [66fb0435]
 SELECT
           EventName AS eventName,
           Kind AS kind,
@@ -1292,6 +1317,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM product_events
@@ -1501,7 +1527,7 @@ SELECT
         ORDER BY step ASC
         FORMAT JSON
 
--- builder:product-events:productEventsFunnelQuery:session-step-filtered  [98d45a39]
+-- builder:product-events:productEventsFunnelQuery:session-step-filtered  [8c09a4bf]
 SELECT
           arrayJoin([1, 2, 3, 4]) AS step,
           arrayElement(counts, step) AS count
@@ -1572,6 +1598,7 @@ SELECT
           AND s.UtmMedium = 'social'
           AND s.UtmCampaign = 'launch'
           AND s.VisitorIsNew = 1
+          AND coalesce(nullIf(s.ResourceAttributes['deployment.environment.name'], ''), s.ResourceAttributes['deployment.environment']) = 'production'
           AND s.SessionId IN (SELECT
           SessionId AS sessionId
         FROM product_events
@@ -1644,6 +1671,7 @@ SELECT
           AND s.UtmMedium = 'social'
           AND s.UtmCampaign = 'launch'
           AND s.VisitorIsNew = 1
+          AND coalesce(nullIf(s.ResourceAttributes['deployment.environment.name'], ''), s.ResourceAttributes['deployment.environment']) = 'production'
           AND s.SessionId IN (SELECT
           SessionId AS sessionId
         FROM product_events
@@ -1715,7 +1743,7 @@ SELECT
         ORDER BY bucket ASC
         FORMAT JSON
 
--- builder:product-events:productEventTimeseriesQuery:filtered  [8a6304ac]
+-- builder:product-events:productEventTimeseriesQuery:filtered  [86094347]
 SELECT
           toStartOfInterval(Timestamp, INTERVAL 900 SECOND) AS bucket,
           count() AS count,
@@ -1750,6 +1778,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM product_events
@@ -3456,6 +3485,124 @@ SELECT
           AND ErrorCount > 0
 FORMAT JSON
 
+-- builder:session-replays:sessionReplaysFacetsQuery:environment-scoped  [ba02e085]
+SELECT
+          ServiceName AS name,
+          uniq(SessionId) AS count,
+          'service' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND ServiceName != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          BrowserName AS name,
+          uniq(SessionId) AS count,
+          'browser' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND BrowserName != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          Country AS name,
+          uniq(SessionId) AS count,
+          'country' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND Country != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          DeviceType AS name,
+          uniq(SessionId) AS count,
+          'device' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND DeviceType != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          GroupName AS name,
+          uniq(SessionId) AS count,
+          'group' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND GroupName != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          toString(toUInt64(round(pow(2, floor(log2(greatest(DurationMs, 1000) / 1000) * 2) / 2) * 1000))) AS name,
+          uniq(SessionId) AS count,
+          'durationBucket' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND DurationMs > 0
+        GROUP BY name
+        LIMIT 40
+UNION ALL
+SELECT
+          'p50' AS name,
+          toUInt64(ifNotFinite(round(quantile(0.5)(assumeNotNull(DurationMs))), 0)) AS count,
+          'durationStat' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND DurationMs > 0
+UNION ALL
+SELECT
+          'p95' AS name,
+          toUInt64(ifNotFinite(round(quantile(0.95)(assumeNotNull(DurationMs))), 0)) AS count,
+          'durationStat' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND DurationMs > 0
+UNION ALL
+SELECT
+          'error' AS name,
+          uniq(SessionId) AS count,
+          'error' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND ErrorCount > 0
+FORMAT JSON
+
 -- builder:session-replays:sessionReplaysFacetsQuery:identity-filtered  [92d30094]
 SELECT
           ServiceName AS name,
@@ -3618,6 +3765,43 @@ SELECT
         OFFSET 0
         FORMAT JSON
 
+-- builder:session-replays:sessionReplaysListQuery:environment-scoped  [9fd7eb05]
+SELECT
+          SessionId AS sessionId,
+          argMax(StartTime, Version) AS startTime,
+          argMax(EndTime, Version) AS endTime,
+          argMax(DurationMs, Version) AS durationMs,
+          argMax(Status, Version) AS status,
+          argMax(UserId, Version) AS userId,
+          argMax(UserName, Version) AS userName,
+          argMax(UserEmail, Version) AS userEmail,
+          argMax(GroupId, Version) AS groupId,
+          argMax(GroupName, Version) AS groupName,
+          argMax(VisitorId, Version) AS visitorId,
+          argMax(UtmSource, Version) AS utmSource,
+          argMax(EntryPath, Version) AS entryPath,
+          argMax(UrlInitial, Version) AS urlInitial,
+          argMax(BrowserName, Version) AS browserName,
+          argMax(OsName, Version) AS osName,
+          argMax(DeviceType, Version) AS deviceType,
+          argMax(Country, Version) AS country,
+          argMax(ServiceName, Version) AS serviceName,
+          argMax(PageViews, Version) AS pageViews,
+          argMax(ClickCount, Version) AS clickCount,
+          argMax(ErrorCount, Version) AS errorCount,
+          length(argMax(TraceIds, Version)) AS traceCount,
+          argMax(ResourceAttributes['maple.session.recorded'], Version) AS recorded
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+        GROUP BY sessionId
+        ORDER BY startTime DESC, sessionId DESC
+        LIMIT 50
+        OFFSET 0
+        FORMAT JSON
+
 -- builder:session-replays:sessionReplaysListQuery:filtered  [42983806]
 SELECT
           s.sessionId AS sessionId,
@@ -3710,6 +3894,25 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
+        GROUP BY sessionId) AS sessions
+        WHERE value != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+        FORMAT JSON
+
+-- builder:session-replays:sessionResourceAttributeBreakdownQuery:environment-scoped  [1ce9fb5b]
+SELECT
+          value AS name,
+          count() AS count
+        FROM (SELECT
+          SessionId AS sessionId,
+          argMax(ResourceAttributes['geo.locality.name'], Version) AS value
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
         GROUP BY sessionId) AS sessions
         WHERE value != ''
         GROUP BY name
@@ -3919,7 +4122,7 @@ SELECT
         LIMIT 2
         FORMAT JSON
 
--- builder:web-analytics:webAnalyticsBreakdownsQuery:all-dimensions-filtered  [dd21e64d]
+-- builder:web-analytics:webAnalyticsBreakdownsQuery:all-dimensions-filtered  [43703ecb]
 SELECT
           if(ReferrerHost = '', '(none)', ReferrerHost) AS name,
           uniq(SessionId) AS count,
@@ -3947,6 +4150,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM session_events
@@ -3987,6 +4191,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM session_events
@@ -4028,6 +4233,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM session_events
@@ -4069,6 +4275,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM session_events
@@ -4110,6 +4317,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM session_events
@@ -4151,6 +4359,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM session_events
@@ -4192,6 +4401,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM session_events
@@ -4232,6 +4442,7 @@ SELECT
           AND UtmSource = 'twitter'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM session_events
@@ -4272,6 +4483,7 @@ SELECT
           AND UtmSource = 'twitter'
           AND UtmMedium = 'social'
           AND VisitorIsNew = 1
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM session_events
@@ -4312,6 +4524,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM session_events
@@ -4353,6 +4566,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM session_events
@@ -4394,6 +4608,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM session_events
@@ -4409,7 +4624,7 @@ SELECT
         LIMIT 50
 FORMAT JSON
 
--- builder:web-analytics:webAnalyticsBreakdownsQuery:all-dimensions-filtered-rollup  [858177f5]
+-- builder:web-analytics:webAnalyticsBreakdownsQuery:all-dimensions-filtered-rollup  [bfd5606f]
 SELECT
           if(ReferrerHost = '', '(none)', ReferrerHost) AS name,
           uniq(SessionId) AS count,
@@ -4437,6 +4652,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM product_events
@@ -4477,6 +4693,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM product_events
@@ -4518,6 +4735,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM product_events
@@ -4559,6 +4777,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM product_events
@@ -4600,6 +4819,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM product_events
@@ -4641,6 +4861,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM product_events
@@ -4682,6 +4903,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM product_events
@@ -4722,6 +4944,7 @@ SELECT
           AND UtmSource = 'twitter'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM product_events
@@ -4762,6 +4985,7 @@ SELECT
           AND UtmSource = 'twitter'
           AND UtmMedium = 'social'
           AND VisitorIsNew = 1
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM product_events
@@ -4802,6 +5026,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM product_events
@@ -4843,6 +5068,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM product_events
@@ -4884,6 +5110,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM product_events
@@ -5207,6 +5434,338 @@ SELECT
         LIMIT 50
 FORMAT JSON
 
+-- builder:web-analytics:webAnalyticsBreakdownsQuery:environment-scoped  [ca66bd46]
+SELECT
+          if(ReferrerHost = '', '(none)', ReferrerHost) AS name,
+          uniq(SessionId) AS count,
+          'referrerHost' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          Country AS name,
+          uniq(SessionId) AS count,
+          'country' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND Country != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          DeviceType AS name,
+          uniq(SessionId) AS count,
+          'deviceType' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND DeviceType != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          BrowserName AS name,
+          uniq(SessionId) AS count,
+          'browserName' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND BrowserName != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          OsName AS name,
+          uniq(SessionId) AS count,
+          'osName' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND OsName != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          Language AS name,
+          uniq(SessionId) AS count,
+          'language' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND Language != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          if(UtmSource = '', '(none)', UtmSource) AS name,
+          uniq(SessionId) AS count,
+          'utmSource' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          if(UtmMedium = '', '(none)', UtmMedium) AS name,
+          uniq(SessionId) AS count,
+          'utmMedium' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          if(UtmCampaign = '', '(none)', UtmCampaign) AS name,
+          uniq(SessionId) AS count,
+          'utmCampaign' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          EntryPath AS name,
+          uniq(SessionId) AS count,
+          'entryPath' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND EntryPath != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          ExitPath AS name,
+          uniq(SessionId) AS count,
+          'exitPath' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND ExitPath != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          Host AS name,
+          uniq(SessionId) AS count,
+          'host' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND Host != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+FORMAT JSON
+
+-- builder:web-analytics:webAnalyticsBreakdownsQuery:environment-scoped-rollup  [ca66bd46]
+SELECT
+          if(ReferrerHost = '', '(none)', ReferrerHost) AS name,
+          uniq(SessionId) AS count,
+          'referrerHost' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          Country AS name,
+          uniq(SessionId) AS count,
+          'country' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND Country != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          DeviceType AS name,
+          uniq(SessionId) AS count,
+          'deviceType' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND DeviceType != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          BrowserName AS name,
+          uniq(SessionId) AS count,
+          'browserName' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND BrowserName != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          OsName AS name,
+          uniq(SessionId) AS count,
+          'osName' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND OsName != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          Language AS name,
+          uniq(SessionId) AS count,
+          'language' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND Language != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          if(UtmSource = '', '(none)', UtmSource) AS name,
+          uniq(SessionId) AS count,
+          'utmSource' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          if(UtmMedium = '', '(none)', UtmMedium) AS name,
+          uniq(SessionId) AS count,
+          'utmMedium' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          if(UtmCampaign = '', '(none)', UtmCampaign) AS name,
+          uniq(SessionId) AS count,
+          'utmCampaign' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          EntryPath AS name,
+          uniq(SessionId) AS count,
+          'entryPath' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND EntryPath != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          ExitPath AS name,
+          uniq(SessionId) AS count,
+          'exitPath' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND ExitPath != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          Host AS name,
+          uniq(SessionId) AS count,
+          'host' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+          AND Host != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+FORMAT JSON
+
 -- builder:web-analytics:webAnalyticsEventsQuery:default  [7a2203c7]
 SELECT
           Message AS name,
@@ -5343,7 +5902,7 @@ SELECT
           AND coalesce(LastActivityAt, StartTime) >= toDateTime('2026-01-03 14:15:00') - INTERVAL 300 SECOND
         FORMAT JSON
 
--- builder:web-analytics:webAnalyticsLiveQuery:filtered  [09c5aef6]
+-- builder:web-analytics:webAnalyticsLiveQuery:filtered  [8e9559d7]
 SELECT
           uniqIf(VisitorId, VisitorId != '') AS visitors,
           uniq(SessionId) AS sessions
@@ -5371,6 +5930,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM session_events
@@ -5383,7 +5943,7 @@ SELECT
           AND coalesce(LastActivityAt, StartTime) >= toDateTime('2026-01-03 14:15:00') - INTERVAL 300 SECOND
         FORMAT JSON
 
--- builder:web-analytics:webAnalyticsLiveQuery:filtered-rollup  [b0b00a05]
+-- builder:web-analytics:webAnalyticsLiveQuery:filtered-rollup  [83d6e214]
 SELECT
           uniqIf(VisitorId, VisitorId != '') AS visitors,
           uniq(SessionId) AS sessions
@@ -5411,6 +5971,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM product_events
@@ -5571,6 +6132,50 @@ SELECT
         ORDER BY bucket ASC
         FORMAT JSON
 
+-- builder:web-analytics:webAnalyticsPageviewsTimeseriesQuery:environment-scoped  [53bdf20f]
+SELECT
+          toStartOfInterval(Timestamp, INTERVAL 3600 SECOND) AS bucket,
+          count() AS pageViews,
+          uniq(SessionId) AS sessions
+        FROM session_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Type = 'navigation'
+          AND SessionId IN (SELECT
+          SessionId AS sessionId
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+        GROUP BY sessionId)
+        GROUP BY bucket
+        ORDER BY bucket ASC
+        FORMAT JSON
+
+-- builder:web-analytics:webAnalyticsPageviewsTimeseriesQuery:environment-scoped-rollup  [a81b42b0]
+SELECT
+          toStartOfInterval(Timestamp, INTERVAL 3600 SECOND) AS bucket,
+          count() AS pageViews,
+          uniq(SessionId) AS sessions
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Kind = 'navigation'
+          AND SessionId IN (SELECT
+          SessionId AS sessionId
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
+        GROUP BY sessionId)
+        GROUP BY bucket
+        ORDER BY bucket ASC
+        FORMAT JSON
+
 -- builder:web-analytics:webAnalyticsPageviewsTimeseriesQuery:semi-joined  [b52b714d]
 SELECT
           toStartOfInterval(Timestamp, INTERVAL 3600 SECOND) AS bucket,
@@ -5647,7 +6252,7 @@ SELECT
           AND StartTime <= '2026-01-03 14:15:00'
         FORMAT JSON
 
--- builder:web-analytics:webAnalyticsSummaryQuery:filtered  [7be4ede6]
+-- builder:web-analytics:webAnalyticsSummaryQuery:filtered  [06e79a99]
 SELECT
           uniqIf(VisitorId, VisitorId != '') AS visitors,
           uniq(SessionId) AS sessions,
@@ -5680,6 +6285,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM session_events
@@ -5691,7 +6297,7 @@ SELECT
         GROUP BY sessionId)
         FORMAT JSON
 
--- builder:web-analytics:webAnalyticsSummaryQuery:filtered-rollup  [81474d1b]
+-- builder:web-analytics:webAnalyticsSummaryQuery:filtered-rollup  [5cff5d40]
 SELECT
           uniqIf(VisitorId, VisitorId != '') AS visitors,
           uniq(SessionId) AS sessions,
@@ -5724,6 +6330,7 @@ SELECT
           AND UtmMedium = 'social'
           AND UtmCampaign = 'launch'
           AND VisitorIsNew = 1
+          AND coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'
           AND SessionId IN (SELECT
           SessionId AS sessionId
         FROM product_events

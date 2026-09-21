@@ -643,3 +643,50 @@ describe("sessionSpansQuery", () => {
 		expect(compileUnsafe(sessionSpansQuery({ limit: 50 }), sessionParams).sql).toContain("LIMIT 50")
 	})
 })
+
+// Environment scope
+//
+// The session's deployment lives in `ResourceAttributes`, which has no column
+// and no facet branch. It is written on both row versions (see this file's
+// header), so it is filtered before the `GROUP BY SessionId` like `ServiceName`
+// rather than after it like a finalized value.
+
+describe("environment scope", () => {
+	const ENV_PREDICATE =
+		"coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'"
+
+	it("filters the list pre-aggregation, beside the other version-invariant columns", () => {
+		const { sql } = compileUnsafe(sessionReplaysListQuery({ environment: "production" }), {
+			...baseParams,
+			...WINDOW,
+		})
+		expect(sql).toContain(ENV_PREDICATE)
+		expect(sql.indexOf(ENV_PREDICATE)).toBeLessThan(sql.indexOf("GROUP BY sessionId"))
+	})
+
+	// No branch of its own, so it must never be excluded from one: an environment
+	// that reappeared inside the Browsers card would be counting other deployments.
+	it("narrows every facet branch", () => {
+		const { sql } = compileUnionUnsafe(sessionReplaysFacetsQuery({ environment: "production" }), {
+			...baseParams,
+			...WINDOW,
+		})
+		const branches = sql.split("FROM session_replays").length - 1
+		expect(branches).toBeGreaterThan(1)
+		expect(sql.split(ENV_PREDICATE).length - 1).toBe(branches)
+	})
+
+	it("filters the attribute breakdown in its inner per-session pass", () => {
+		const { sql } = compileUnsafe(
+			sessionResourceAttributeBreakdownQuery({ key: "geo.locality.name", environment: "production" }),
+			{ ...baseParams, ...WINDOW },
+		)
+		expect(sql).toContain(ENV_PREDICATE)
+		expect(sql.indexOf(ENV_PREDICATE)).toBeLessThan(sql.indexOf("GROUP BY sessionId"))
+	})
+
+	it("emits no environment predicate at all when none is chosen", () => {
+		const { sql } = compileUnsafe(sessionReplaysListQuery({}), { ...baseParams, ...WINDOW })
+		expect(sql).not.toContain("deployment.environment")
+	})
+})

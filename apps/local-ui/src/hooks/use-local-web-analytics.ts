@@ -11,9 +11,18 @@
 // "with errors" figure, and the strip must not disagree with the list it links
 // to.
 //
-// Every builder is compiled with the page-level filter surface left empty: the
-// Local tab has no acquisition sidebar, so a breakdown row is a link to the
-// sessions list rather than a filter over this page.
+// Every builder is compiled with the page-level filter surface left empty
+// except for `environment`: the Local tab has no acquisition sidebar, so a
+// breakdown row is a link to the sessions list rather than a filter over this
+// page. The environment is not one of those dimensions — it is the header's
+// standing choice about which deployment the whole session is about, so it is
+// threaded into every query here and into the React Query key beside `range`.
+//
+// `session_replays` carries it in its resource map. `session_events` and
+// `product_events` carry no environment at all, and reach it through the
+// `session_replays` semi-join the builders already use for every other
+// visitor-level dimension — which is why the page-view numbers move with the
+// session numbers instead of staying put.
 
 import { keepPreviousData, useQuery } from "@tanstack/react-query"
 import { CH } from "@maple/query-engine"
@@ -43,15 +52,15 @@ const PAGES_LIMIT = 100
 const PAGEVIEW_SOURCE = { useProductEvents: false } as const
 
 /** Sessions per bucket, from `session_replays`, bucketed on the session's start. */
-export function useLocalWebSessionsTimeseries(range: string | undefined) {
+export function useLocalWebSessionsTimeseries(range: string | undefined, environment?: string) {
 	return useQuery({
-		queryKey: ["local", "web-analytics", "sessions-timeseries", range],
+		queryKey: ["local", "web-analytics", "sessions-timeseries", range, environment],
 		placeholderData: keepPreviousData,
 		queryFn: async (): Promise<ReadonlyArray<SessionsPoint>> => {
 			const { startTime, endTime } = boundsForRange(range)
 			const bucketSeconds = bucketSecondsForRange(range)
 			return executeLocalCompiledQuery(
-				CH.compile(CH.webAnalyticsTimeseriesQuery({ bucketSeconds }), {
+				CH.compile(CH.webAnalyticsTimeseriesQuery({ bucketSeconds, environment }), {
 					orgId: LOCAL_ORG_ID,
 					startTime,
 					endTime,
@@ -62,19 +71,26 @@ export function useLocalWebSessionsTimeseries(range: string | undefined) {
 }
 
 /** Page views per bucket, from the navigation rows of `session_events`. */
-export function useLocalWebPageviewsTimeseries(range: string | undefined) {
+export function useLocalWebPageviewsTimeseries(range: string | undefined, environment?: string) {
 	return useQuery({
-		queryKey: ["local", "web-analytics", "pageviews-timeseries", range],
+		queryKey: ["local", "web-analytics", "pageviews-timeseries", range, environment],
 		placeholderData: keepPreviousData,
 		queryFn: async (): Promise<ReadonlyArray<PageviewsPoint>> => {
 			const { startTime, endTime } = boundsForRange(range)
 			const bucketSeconds = bucketSecondsForRange(range)
 			return executeLocalCompiledQuery(
-				CH.compile(CH.webAnalyticsPageviewsTimeseriesQuery({ bucketSeconds, ...PAGEVIEW_SOURCE }), {
-					orgId: LOCAL_ORG_ID,
-					startTime,
-					endTime,
-				}),
+				CH.compile(
+					CH.webAnalyticsPageviewsTimeseriesQuery({
+						bucketSeconds,
+						environment,
+						...PAGEVIEW_SOURCE,
+					}),
+					{
+						orgId: LOCAL_ORG_ID,
+						startTime,
+						endTime,
+					},
+				),
 			)
 		},
 	})
@@ -87,18 +103,21 @@ export function useLocalWebPageviewsTimeseries(range: string | undefined) {
  * with full coverage: it reads `session_events`, which every session writes,
  * where Entries and Exits beside it come from the analytics block and do not.
  */
-export function useLocalWebPages(range: string | undefined) {
+export function useLocalWebPages(range: string | undefined, environment?: string) {
 	return useQuery({
-		queryKey: ["local", "web-analytics", "pages", range],
+		queryKey: ["local", "web-analytics", "pages", range, environment],
 		placeholderData: keepPreviousData,
 		queryFn: async (): Promise<ReadonlyArray<CH.WebAnalyticsPagesOutput>> => {
 			const { startTime, endTime } = boundsForRange(range)
 			return executeLocalCompiledQuery(
-				CH.compile(CH.webAnalyticsPagesQuery({ limit: PAGES_LIMIT, ...PAGEVIEW_SOURCE }), {
-					orgId: LOCAL_ORG_ID,
-					startTime,
-					endTime,
-				}),
+				CH.compile(
+					CH.webAnalyticsPagesQuery({ limit: PAGES_LIMIT, environment, ...PAGEVIEW_SOURCE }),
+					{
+						orgId: LOCAL_ORG_ID,
+						startTime,
+						endTime,
+					},
+				),
 			)
 		},
 	})
@@ -113,18 +132,17 @@ export function useLocalWebPages(range: string | undefined) {
  * in the query function rather than in the component so the split happens once
  * per fetch instead of once per render.
  */
-export function useLocalWebBreakdowns(range: string | undefined) {
+export function useLocalWebBreakdowns(range: string | undefined, environment?: string) {
 	return useQuery({
-		queryKey: ["local", "web-analytics", "breakdowns", range],
+		queryKey: ["local", "web-analytics", "breakdowns", range, environment],
 		placeholderData: keepPreviousData,
 		queryFn: async (): Promise<ReadonlyMap<string, ReadonlyArray<FacetRow>>> => {
 			const { startTime, endTime } = boundsForRange(range)
 			const rows = await executeLocalCompiledQuery(
-				CH.compileUnion(CH.webAnalyticsBreakdownsQuery({ limitPerDimension: BREAKDOWN_LIMIT }), {
-					orgId: LOCAL_ORG_ID,
-					startTime,
-					endTime,
-				}),
+				CH.compileUnion(
+					CH.webAnalyticsBreakdownsQuery({ limitPerDimension: BREAKDOWN_LIMIT, environment }),
+					{ orgId: LOCAL_ORG_ID, startTime, endTime },
+				),
 			)
 			return groupFacets(rows)
 		},
@@ -148,6 +166,7 @@ export function useLocalWebBreakdowns(range: string | undefined) {
 export function useLocalSessionAttributeBreakdown(
 	range: string | undefined,
 	attribute: { readonly key: string; readonly qualifierKey?: string },
+	environment?: string,
 ) {
 	return useQuery({
 		queryKey: [
@@ -157,13 +176,18 @@ export function useLocalSessionAttributeBreakdown(
 			attribute.key,
 			attribute.qualifierKey ?? null,
 			range,
+			environment,
 		],
 		placeholderData: keepPreviousData,
 		queryFn: async (): Promise<ReadonlyArray<CH.SessionResourceAttributeBreakdownOutput>> => {
 			const { startTime, endTime } = boundsForRange(range)
 			return executeLocalCompiledQuery(
 				CH.compile(
-					CH.sessionResourceAttributeBreakdownQuery({ ...attribute, limit: BREAKDOWN_LIMIT }),
+					CH.sessionResourceAttributeBreakdownQuery({
+						...attribute,
+						limit: BREAKDOWN_LIMIT,
+						environment,
+					}),
 					{ orgId: LOCAL_ORG_ID, startTime, endTime },
 				),
 			)

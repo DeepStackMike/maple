@@ -3,8 +3,17 @@
 //
 // Every hook here compiles a builder from `@maple/query-engine/ch` unchanged;
 // local mode differs only in the tenant (`LOCAL_ORG_ID`) and in leaving the
-// page-level filter surface (`ProductEventsFilters`) empty, since the Analytics
-// tab has no acquisition sidebar to narrow by.
+// page-level filter surface (`ProductEventsFilters`) empty but for
+// `environment`, since the Analytics tab has no acquisition sidebar to narrow
+// by.
+//
+// `environment` is the exception because it is not one of that sidebar's
+// dimensions: it is the header's standing choice, the same one Home and the
+// Web section honour. `product_events` has no environment column, so the
+// builders narrow it by semi-joining `session_replays` on `SessionId` — which
+// means a `track()` call made outside any browser session (a server-side event)
+// drops out while an environment is selected, exactly as it drops out of every
+// other filter on this page.
 
 import { keepPreviousData, useQuery } from "@tanstack/react-query"
 import { CH } from "@maple/query-engine"
@@ -45,13 +54,13 @@ export interface ProductEventName {
  * Also the source for the funnel step picker, which is why it is keyed on the
  * range alone: both panels read the same list, from one query.
  */
-export function useLocalProductEventNames(range: string | undefined) {
+export function useLocalProductEventNames(range: string | undefined, environment?: string) {
 	return useQuery({
-		queryKey: ["local", "product-events", "names", range],
+		queryKey: ["local", "product-events", "names", range, environment],
 		placeholderData: keepPreviousData,
 		queryFn: async (): Promise<ReadonlyArray<ProductEventName>> => {
 			const { startTime, endTime } = boundsForRange(range)
-			const compiled = CH.compile(CH.productEventNamesQuery({ limit: 200 }), {
+			const compiled = CH.compile(CH.productEventNamesQuery({ limit: 200, filters: { environment } }), {
 				orgId: LOCAL_ORG_ID,
 				startTime,
 				endTime,
@@ -68,9 +77,13 @@ export interface ProductEventPoint {
 }
 
 /** One event's firings per bucket, at the same ~60-bucket resolution as the metric charts. */
-export function useLocalProductEventTimeseries(eventName: string | null, range: string | undefined) {
+export function useLocalProductEventTimeseries(
+	eventName: string | null,
+	range: string | undefined,
+	environment?: string,
+) {
 	return useQuery({
-		queryKey: ["local", "product-events", "timeseries", eventName, range],
+		queryKey: ["local", "product-events", "timeseries", eventName, range, environment],
 		enabled: eventName !== null,
 		placeholderData: keepPreviousData,
 		queryFn: async (): Promise<ReadonlyArray<ProductEventPoint>> => {
@@ -79,6 +92,7 @@ export function useLocalProductEventTimeseries(eventName: string | null, range: 
 				CH.productEventTimeseriesQuery({
 					eventName: eventName!,
 					bucketSeconds: bucketSecondsForRange(range),
+					filters: { environment },
 				}),
 				{ orgId: LOCAL_ORG_ID, startTime, endTime },
 			)
@@ -94,18 +108,21 @@ export interface ProductEventPropertyKey {
 }
 
 /** The property keys one event carries, most common first: the breakdown picker. */
-export function useLocalProductEventPropertyKeys(eventName: string | null, range: string | undefined) {
+export function useLocalProductEventPropertyKeys(
+	eventName: string | null,
+	range: string | undefined,
+	environment?: string,
+) {
 	return useQuery({
-		queryKey: ["local", "product-events", "property-keys", eventName, range],
+		queryKey: ["local", "product-events", "property-keys", eventName, range, environment],
 		enabled: eventName !== null,
 		placeholderData: keepPreviousData,
 		queryFn: async (): Promise<ReadonlyArray<ProductEventPropertyKey>> => {
 			const { startTime, endTime } = boundsForRange(range)
-			const compiled = CH.compile(CH.productEventPropertyKeysQuery({ eventName: eventName! }), {
-				orgId: LOCAL_ORG_ID,
-				startTime,
-				endTime,
-			})
+			const compiled = CH.compile(
+				CH.productEventPropertyKeysQuery({ eventName: eventName!, filters: { environment } }),
+				{ orgId: LOCAL_ORG_ID, startTime, endTime },
+			)
 			return executeLocalCompiledQuery(compiled)
 		},
 	})
@@ -122,15 +139,20 @@ export function useLocalProductEventPropertyValues(
 	eventName: string | null,
 	propertyKey: string | null,
 	range: string | undefined,
+	environment?: string,
 ) {
 	return useQuery({
-		queryKey: ["local", "product-events", "property-values", eventName, propertyKey, range],
+		queryKey: ["local", "product-events", "property-values", eventName, propertyKey, range, environment],
 		enabled: eventName !== null && propertyKey !== null && propertyKey !== "",
 		placeholderData: keepPreviousData,
 		queryFn: async (): Promise<ReadonlyArray<ProductEventPropertyValue>> => {
 			const { startTime, endTime } = boundsForRange(range)
 			const compiled = CH.compile(
-				CH.productEventPropertyValuesQuery({ eventName: eventName!, propertyKey: propertyKey! }),
+				CH.productEventPropertyValuesQuery({
+					eventName: eventName!,
+					propertyKey: propertyKey!,
+					filters: { environment },
+				}),
 				{ orgId: LOCAL_ORG_ID, startTime, endTime },
 			)
 			return executeLocalCompiledQuery(compiled)
@@ -153,9 +175,10 @@ export function useLocalProductEventFunnel(
 	steps: ReadonlyArray<string>,
 	windowSeconds: number,
 	range: string | undefined,
+	environment?: string,
 ) {
 	return useQuery({
-		queryKey: ["local", "product-events", "funnel", steps, windowSeconds, range],
+		queryKey: ["local", "product-events", "funnel", steps, windowSeconds, range, environment],
 		enabled: isRunnableFunnel(steps),
 		placeholderData: keepPreviousData,
 		queryFn: async (): Promise<ReadonlyArray<FunnelStepCount>> => {
@@ -165,6 +188,7 @@ export function useLocalProductEventFunnel(
 					steps: steps.map((eventName) => ({ kind: "event" as const, eventName })),
 					keyBy: FUNNEL_KEY_BY,
 					windowSeconds,
+					filters: { environment },
 				}),
 				{ orgId: LOCAL_ORG_ID, startTime, endTime },
 			)

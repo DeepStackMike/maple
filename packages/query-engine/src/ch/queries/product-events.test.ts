@@ -379,3 +379,76 @@ describe("productEventPropertyValuesQuery", () => {
 		expect(flat).toContain("GROUP BY propertyValue ORDER BY count DESC, propertyValue ASC LIMIT 20")
 	})
 })
+
+// Environment scope
+//
+// `product_events` carries no deployment environment at all — only the session
+// it belongs to does. The header's environment filter therefore has to arrive
+// as the same `session_replays` semi-join every other visitor-level dimension
+// takes, or the Analytics tab would report one deployment's sessions beside
+// every deployment's events.
+
+describe("environment scope", () => {
+	const ENV_PREDICATE =
+		"coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']) = 'production'"
+
+	it("narrows the event list through session_replays, not through a column", () => {
+		const { sql } = compileUnsafe(
+			productEventNamesQuery({ filters: { environment: "production" } }),
+			params,
+		)
+		expect(oneLine(sql)).toContain("SessionId IN (SELECT SessionId AS sessionId FROM session_replays")
+		expect(oneLine(sql)).toContain(ENV_PREDICATE)
+	})
+
+	it("narrows the drill-downs identically, so a chart sums to the row that opened it", () => {
+		for (const sql of [
+			compileUnsafe(
+				productEventTimeseriesQuery({
+					eventName: "signup_completed",
+					filters: { environment: "production" },
+				}),
+				params,
+			).sql,
+			compileUnsafe(
+				productEventPropertyKeysQuery({
+					eventName: "signup_completed",
+					filters: { environment: "production" },
+				}),
+				params,
+			).sql,
+			compileUnsafe(
+				productEventPropertyValuesQuery({
+					eventName: "signup_completed",
+					propertyKey: "plan",
+					filters: { environment: "production" },
+				}),
+				params,
+			).sql,
+		]) {
+			expect(oneLine(sql)).toContain(ENV_PREDICATE)
+		}
+	})
+
+	// `hasPopulationFilter` gates the whole person subquery: an environment on its
+	// own has to open that gate, or a funnel would silently span deployments.
+	it("narrows a funnel's population on its own", () => {
+		const { sql } = compileUnsafe(
+			productEventsFunnelQuery({
+				steps: [...STEPS],
+				keyBy: "session",
+				windowSeconds: 1_800,
+				filters: { environment: "production" },
+			}),
+			params,
+		)
+		expect(sql).toContain("FROM session_replays")
+		expect(oneLine(sql)).toContain(ENV_PREDICATE)
+	})
+
+	it("emits no environment predicate at all when none is chosen", () => {
+		const { sql } = compileUnsafe(productEventNamesQuery({}), params)
+		expect(sql).not.toContain("deployment.environment")
+		expect(sql).not.toContain("session_replays")
+	})
+})

@@ -13,6 +13,7 @@ import { param, from, inSubquery, unionAll, compileFnCall } from "@maple-dev/cli
 import type { ColumnAccessor, CHQuery, CHUnionQuery } from "@maple-dev/clickhouse-builder"
 import { SessionReplays, SessionEvents, ProductEvents } from "../tables"
 import { isBotCond } from "../user-agent"
+import { deploymentEnvExpr } from "@maple/domain/tinybird/semconv-renames"
 import type { FacetOutput } from "./query-helpers"
 import { WEB_ANALYTICS_LIVE_WINDOW_SECONDS, WEB_ANALYTICS_UNSET } from "@maple/domain/query-engine"
 
@@ -74,6 +75,26 @@ export interface WebAnalyticsFilters {
 	readonly utmCampaign?: string
 	/** `new` keeps first-ever sessions for a visitor, `returning` the rest. */
 	readonly visitorType?: "new" | "returning"
+	/**
+	 * The session's deployment environment, read off `session_replays`'
+	 * `ResourceAttributes` through {@link deploymentEnvExpr} — the same coalesce
+	 * of `deployment.environment.name` and the deprecated `deployment.environment`
+	 * that every span-shaped query on the dashboard uses, so "production" means
+	 * the same population here as it does on Traces.
+	 *
+	 * A standing scope rather than a facet, like `traffic`: it says which
+	 * deployment the page is about, and it therefore has no `exclude` arm in
+	 * {@link replaysWhere} — a breakdown that silently re-included staging the
+	 * moment it was opened would answer a different question than the one asked.
+	 *
+	 * There is no environment column on `session_events` or `product_events`, so
+	 * page views and `track()` events reach it through the `session_replays`
+	 * semi-join every other visitor-level dimension already takes: see
+	 * {@link needsSessionSemiJoin}. Sessions that carry no environment attribute
+	 * at all are excluded while a value is selected, exactly as an unset
+	 * `Country` is excluded by a country filter.
+	 */
+	readonly environment?: string
 	/**
 	 * Which agents count. `humans` and `bots` partition the window on
 	 * {@link isBotCond}; `all` (and an absent value) applies no predicate.
@@ -362,6 +383,10 @@ export function replaysWhere(
 		CH.when(filters.visitorType, (v: "new" | "returning") =>
 			v === "new" ? $.VisitorIsNew.eq(1) : $.VisitorIsNew.eq(0),
 		),
+		// No `exclude` arm, for the same reason `traffic` has none: the environment
+		// is the population this page is about, not one of the dimensions it
+		// offers to slice.
+		CH.when(filters.environment, (v: string) => deploymentEnvExpr($.ResourceAttributes).eq(v)),
 		trafficCondition($, filters),
 		eventSemiJoin($.SessionId, filters, exclude),
 	]
@@ -380,6 +405,11 @@ export function needsSessionSemiJoin(filters: WebAnalyticsFilters): boolean {
 		filters.utmMedium ||
 		filters.utmCampaign ||
 		filters.visitorType ||
+		// `environment` lives in the session's resource map, which only
+		// `session_replays` carries — without it here, narrowing to production
+		// would move the session count while page views kept counting every
+		// deployment.
+		filters.environment ||
 		// `traffic` is a `session_replays` predicate like the rest: without it here,
 		// filtering to humans would narrow sessions and visitors while page views —
 		// read from the event source — kept counting crawler navigations.

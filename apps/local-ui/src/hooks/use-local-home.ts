@@ -31,6 +31,10 @@ import { bucketSecondsForRange } from "./use-local-metrics"
  * blocks — and local mode's service count is small enough that the extra rows
  * are free.
  *
+ * `environment` scopes it to one deployment, and is free: `DeploymentEnv` is a
+ * column on every tier of the service-overview rollup, so unlike the namespace
+ * it narrows the query the chart was already going to run.
+ *
  * `namespace` scopes it to one project. It costs the rollup: `namespaces` makes
  * `canUseTracesAggregatesMv` bail, because `traces_aggregates_hourly` carries no
  * `ServiceNamespace` column and answering from it would silently ignore the
@@ -38,9 +42,13 @@ import { bucketSecondsForRange } from "./use-local-metrics"
  * it — a more expensive scan than the hourly rollup and a far cheaper one than
  * raw `traces`, and the only one of the three that can answer correctly.
  */
-export function useLocalOverviewTimeseries(range: string | undefined, namespace?: string) {
+export function useLocalOverviewTimeseries(
+	range: string | undefined,
+	namespace?: string,
+	environment?: string,
+) {
 	return useQuery({
-		queryKey: ["local", "home", "overview-timeseries", range, namespace],
+		queryKey: ["local", "home", "overview-timeseries", range, namespace, environment],
 		placeholderData: keepPreviousData,
 		queryFn: async (): Promise<ReadonlyArray<OverviewPoint>> => {
 			const { startTime, endTime } = boundsForRange(range)
@@ -60,6 +68,7 @@ export function useLocalOverviewTimeseries(range: string | undefined, namespace?
 						bucketSeconds,
 						groupBy: ["service"],
 						namespaces: namespaceFilter(namespace),
+						environments: environment ? [environment] : undefined,
 					}),
 					{ orgId: LOCAL_ORG_ID, startTime, endTime, bucketSeconds },
 				),
@@ -81,15 +90,21 @@ export function useLocalOverviewTimeseries(range: string | undefined, namespace?
  * `session_replays`; the sessions list has no count of its own (it pages by
  * keyset), and summing the facet query's service branch would silently drop any
  * session recorded without a `service.name`.
+ *
+ * `environment` reaches it as a predicate on the session's resource map. A
+ * session recorded without `deployment.environment.name` is therefore outside
+ * every environment, not inside all of them — which is the same rule the
+ * country and browser filters follow, and the honest one: the recorder did not
+ * say which deployment it was watching.
  */
-export function useLocalSessionsSummary(range: string | undefined) {
+export function useLocalSessionsSummary(range: string | undefined, environment?: string) {
 	return useQuery({
-		queryKey: ["local", "home", "sessions-summary", range],
+		queryKey: ["local", "home", "sessions-summary", range, environment],
 		placeholderData: keepPreviousData,
 		queryFn: async (): Promise<CH.WebAnalyticsSummaryOutput | null> => {
 			const { startTime, endTime } = boundsForRange(range)
 			const row = await executeLocalCompiledFirstRow(
-				CH.compile(CH.webAnalyticsSummaryQuery({}), {
+				CH.compile(CH.webAnalyticsSummaryQuery({ environment }), {
 					orgId: LOCAL_ORG_ID,
 					startTime,
 					endTime,

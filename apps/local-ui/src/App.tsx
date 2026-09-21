@@ -28,6 +28,7 @@ import { SessionDetailView } from "./views/session-detail-view"
 import { AnalyticsView } from "./views/analytics-view"
 import { navigate, useLocation } from "./lib/router"
 import { ConnectButton } from "./components/connect-button"
+import { EnvironmentSelect } from "./components/environment-select"
 import { NamespaceSelect } from "./components/namespace-select"
 import { LocalLockup } from "./components/local-lockup"
 import { IngestStatus } from "./components/ingest-status"
@@ -136,8 +137,9 @@ export function App() {
 		navigate("/traces", next)
 	}
 
-	// Switching top-level tabs keeps the cross-cutting filters (service, range
-	// and project). `ns` belongs here for a stronger reason than the other two:
+	// Switching top-level tabs keeps the cross-cutting filters (service, range,
+	// project and environment). `ns` and `env` belong here for a stronger reason
+	// than the other two:
 	// it is a standing choice made in the header, not in the view being left, so
 	// dropping it would make switching tabs silently undo a selection that is
 	// still on screen.
@@ -146,9 +148,16 @@ export function App() {
 		const service = query.get("service")
 		const range = query.get("range")
 		const namespace = query.get("ns")
+		// `env` rides along for the same reason `ns` does — it is a header choice,
+		// not a choice made in the view being left. The five views that also expose
+		// it as a sidebar facet read the very same param, so carrying it keeps one
+		// environment selected across the whole app instead of resetting it each
+		// time a tab is clicked.
+		const environment = query.get("env")
 		if (service) shared.set("service", service)
 		if (range) shared.set("range", range)
 		if (namespace) shared.set("ns", namespace)
+		if (environment) shared.set("env", environment)
 		navigate(target, shared)
 	}
 
@@ -215,6 +224,7 @@ export function App() {
 							/>
 							<div className="ml-auto flex items-center gap-3">
 								<NamespaceSelect />
+								<EnvironmentSelect />
 								<IngestStatus />
 								<ConnectButton />
 							</div>

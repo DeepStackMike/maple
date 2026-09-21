@@ -23,6 +23,7 @@ import { param } from "@maple-dev/clickhouse-builder"
 import { from, fromQuery, type ColumnAccessor, type CHQuery } from "@maple-dev/clickhouse-builder"
 import { unionAll, type CHUnionQuery } from "@maple-dev/clickhouse-builder"
 import { SessionReplays, SessionReplayEvents, TraceDetailSpans } from "../tables"
+import { deploymentEnvExpr } from "@maple/domain/tinybird/semconv-renames"
 import { sessionActivityAggregateQuery, sessionEventMatchQuery } from "./session-events"
 import type { FacetOutput } from "./query-helpers"
 
@@ -109,6 +110,15 @@ export interface SessionReplaysListOpts {
 	/** Substring match on the initial page URL. */
 	search?: string
 	/** Keyset cursor: only sessions with StartTime strictly before this. */
+	/**
+	 * The session's deployment environment — `deployment.environment.name` (or
+	 * the deprecated `deployment.environment`) out of `ResourceAttributes`.
+	 *
+	 * Version-invariant like `ServiceName` beside it: the browser SDK and the
+	 * ingest sidecar write the resource map on both the v1 start row and the v2
+	 * end row, so this is safe to apply before the `GROUP BY SessionId`.
+	 */
+	environment?: string
 	cursor?: string
 	/** Min/max wall-clock duration (ms). Filters on the stored DurationMs; only
 	 *  completed (Version=2) sessions carry it, so in-progress sessions are
@@ -238,6 +248,7 @@ export function sessionReplaysListQuery(
 			$.StartTime.gte(param.dateTimeString("startTime")),
 			$.StartTime.lte(param.dateTimeString("endTime")),
 			CH.when(opts.serviceName, (v: string) => $.ServiceName.eq(v)),
+			CH.when(opts.environment, (v: string) => deploymentEnvExpr($.ResourceAttributes).eq(v)),
 			CH.when(opts.browser, (v: string) => $.BrowserName.eq(v)),
 			CH.when(opts.country, (v: string) => $.Country.eq(v)),
 			CH.when(opts.deviceType, (v: string) => $.DeviceType.eq(v)),
@@ -463,6 +474,15 @@ export interface SessionReplaysFacetsOpts {
 	userSearch?: string
 	/** Exact match on the identified group name — excluded from its own branch. */
 	groupName?: string
+	/**
+	 * The session's deployment environment — `deployment.environment.name` (or
+	 * the deprecated `deployment.environment`) out of `ResourceAttributes`.
+	 *
+	 * Version-invariant like `ServiceName` beside it: the browser SDK and the
+	 * ingest sidecar write the resource map on both the v1 start row and the v2
+	 * end row, so this is safe to apply before the `GROUP BY SessionId`.
+	 */
+	environment?: string
 	hasErrors?: boolean
 	search?: string
 }
@@ -482,6 +502,9 @@ export function sessionReplaysFacetsQuery(
 		$.StartTime.gte(param.dateTimeString("startTime")),
 		$.StartTime.lte(param.dateTimeString("endTime")),
 		exclude === "service" ? undefined : CH.when(opts.serviceName, (v: string) => $.ServiceName.eq(v)),
+		// No facet branch of its own — the environment is a page-wide scope, so it
+		// narrows every dimension's counts rather than listing itself.
+		CH.when(opts.environment, (v: string) => deploymentEnvExpr($.ResourceAttributes).eq(v)),
 		exclude === "browser" ? undefined : CH.when(opts.browser, (v: string) => $.BrowserName.eq(v)),
 		exclude === "country" ? undefined : CH.when(opts.country, (v: string) => $.Country.eq(v)),
 		exclude === "device" ? undefined : CH.when(opts.deviceType, (v: string) => $.DeviceType.eq(v)),
@@ -579,6 +602,11 @@ export function sessionReplaysFacetsQuery(
 				$.StartTime.gte(param.dateTimeString("startTime")),
 				$.StartTime.lte(param.dateTimeString("endTime")),
 				CH.when(opts.serviceName, (v: string) => $.ServiceName.eq(v)),
+				// This branch spells its own WHERE out rather than reusing `baseWhere`
+				// (it is the one that must drop `hasErrors`), so the environment has to
+				// be repeated here — without it the "Has errors" count would span every
+				// deployment while the facets beside it named one.
+				CH.when(opts.environment, (v: string) => deploymentEnvExpr($.ResourceAttributes).eq(v)),
 				CH.when(opts.browser, (v: string) => $.BrowserName.eq(v)),
 				CH.when(opts.country, (v: string) => $.Country.eq(v)),
 				CH.when(opts.deviceType, (v: string) => $.DeviceType.eq(v)),
@@ -634,6 +662,15 @@ export interface SessionResourceAttributeBreakdownOpts {
 	readonly qualifierKey?: string
 	/** Rows returned. Defaults to 50, the facet branches' own limit. */
 	readonly limit?: number
+	/**
+	 * Narrow to one deployment environment, read off the same `ResourceAttributes`
+	 * map the grouped key comes from.
+	 *
+	 * Applied in the inner per-session pass, not the outer aggregate: the map is
+	 * written on both row versions, so filtering before the `argMax` finalization
+	 * keeps the scan pruned and cannot split a session across the predicate.
+	 */
+	readonly environment?: string
 }
 
 export interface SessionResourceAttributeBreakdownOutput {
@@ -651,13 +688,15 @@ export function sessionResourceAttributeBreakdownQuery(
 	const limit = opts.limit ?? 50
 	const { qualifierKey } = opts
 
-	// The window is the only filter: this is an overview card, not a sidebar
-	// facet, so there is no selection for a branch to exclude. StartTime is the
-	// version-invariant column the table partitions on.
+	// The window and the environment scope are the only filters: this is an
+	// overview card, not a sidebar facet, so there is no selection for a branch
+	// to exclude. StartTime is the version-invariant column the table partitions
+	// on, and the environment lives in the same map the value does.
 	const sessionWindow = ($: ColumnAccessor<typeof SessionReplays.columns>) => [
 		$.OrgId.eq(param.string("orgId")),
 		$.StartTime.gte(param.dateTimeString("startTime")),
 		$.StartTime.lte(param.dateTimeString("endTime")),
+		CH.when(opts.environment, (v: string) => deploymentEnvExpr($.ResourceAttributes).eq(v)),
 	]
 
 	if (qualifierKey === undefined) {
