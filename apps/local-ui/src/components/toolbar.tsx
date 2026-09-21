@@ -90,10 +90,27 @@ export function TimeRangeSelect({ value, onChange }: { value: string; onChange: 
 				value={selected}
 				onChange={(next) => {
 					if (next === CUSTOM_RANGE_OPTION) setOpen(true)
-					else onChange(next)
+					else {
+						// Picking a preset while the picker is up answers the same
+						// question the picker asks — take the preset and put it away.
+						setOpen(false)
+						onChange(next)
+					}
 				}}
 			/>
-			<Popover open={open} onOpenChange={setOpen}>
+			<Popover
+				open={open}
+				onOpenChange={(next, details) => {
+					// `cancel()` and not just "don't call setOpen": Base UI keeps its own
+					// copy of the open state and closes it whether or not the controlled
+					// prop follows, unless the change is cancelled here.
+					if (!next && dismissedByOwnControl(anchorRef.current, details)) {
+						details.cancel()
+						return
+					}
+					setOpen(next)
+				}}
+			>
 				{/* Aligned to the control's right edge — it sits at the end of the
 				    toolbar, and opening rightwards would run off the viewport. */}
 				<PopoverPopup anchor={anchorRef} align="end" className="w-[24rem]">
@@ -111,6 +128,33 @@ export function TimeRangeSelect({ value, onChange }: { value: string; onChange: 
 			</Popover>
 		</div>
 	)
+}
+
+/**
+ * Whether a Base UI close request is really just the tail of the interaction
+ * that opened the popover.
+ *
+ * A native `<select>` picked with the mouse fires `change` *before* the `click`
+ * that ends the press — Chrome delivers the click to the `<select>` once its
+ * platform menu has closed. The popover opens on the `change`, so that click
+ * arrives with the popover already up, lands outside the popup, and Base UI
+ * reads it as an outside press and closes the popup in the same frame it
+ * appeared: the option worked, and nothing was ever visible. (A synthetic
+ * `selectOption`/`fireEvent.change` sends no click, which is why this only
+ * showed up under a real pointer.)
+ *
+ * So dismissals whose event belongs to the control itself — the select, its
+ * wrapper, the chevron — are not presses outside the popover, and are ignored.
+ * Everything else still dismisses: Escape, a press anywhere else on the page,
+ * Cancel, Apply.
+ */
+function dismissedByOwnControl(anchor: HTMLElement | null, details: { event?: Event | undefined }): boolean {
+	const event = details.event
+	if (!anchor || !event) return false
+	const within = (node: EventTarget | null) => node instanceof Node && anchor.contains(node)
+	// `relatedTarget` covers focus leaving the popup *for* the select, which is
+	// where focus returns when the platform menu closes.
+	return within(event.target) || (event instanceof FocusEvent && within(event.relatedTarget))
 }
 
 /**

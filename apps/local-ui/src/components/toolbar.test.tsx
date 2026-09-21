@@ -11,10 +11,22 @@ import { customRangeKey } from "../lib/time"
 
 afterEach(cleanup)
 
+/**
+ * Pick "Custom range…" the way a mouse does: a `change`, and then the `click`
+ * the browser delivers to the `<select>` once its platform menu has closed.
+ * The trailing click is the whole point — it lands outside the popup, and
+ * without it this test cannot see the bug it exists for.
+ */
+function pickCustom() {
+	const select = screen.getByRole("combobox")
+	fireEvent.change(select, { target: { value: "custom" } })
+	fireEvent.click(select)
+}
+
 function openPicker(value = "24h") {
 	const onChange = vi.fn()
 	render(<TimeRangeSelect value={value} onChange={onChange} />)
-	fireEvent.change(screen.getByRole("combobox"), { target: { value: "custom" } })
+	pickCustom()
 	return onChange
 }
 
@@ -57,6 +69,49 @@ describe("TimeRangeSelect", () => {
 	it("shows the preset a bad URL actually resolves to, not the first option", () => {
 		render(<TimeRangeSelect value="custom_bogus" onChange={vi.fn()} />)
 		expect((screen.getByRole("combobox") as HTMLSelectElement).value).toBe("30d")
+	})
+
+	it("survives the click the select fires after the change", () => {
+		openPicker()
+		// The popover opens during `change`; Base UI sees the `click` that follows
+		// as a press outside it. It is the tail of the press that opened it.
+		expect(screen.getByLabelText("From")).toBeDefined()
+	})
+
+	it("reopens after the picker was dismissed", () => {
+		openPicker()
+		fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
+		expect(screen.queryByLabelText("From")).toBeNull()
+
+		pickCustom()
+		expect(screen.getByLabelText("From")).toBeDefined()
+	})
+
+	it("reopens on a window that is already custom", () => {
+		const key = customRangeKey({
+			fromMs: new Date(2026, 8, 18, 9, 0).getTime(),
+			toMs: new Date(2026, 8, 19, 17, 30).getTime(),
+		})
+		render(<TimeRangeSelect value={key} onChange={vi.fn()} />)
+		pickCustom()
+		expect((screen.getByLabelText("From") as HTMLInputElement).value).toBe("2026-09-18T09:00")
+	})
+
+	it("takes a preset picked while the picker is open, and puts the picker away", () => {
+		const onChange = openPicker()
+		const select = screen.getByRole("combobox")
+		fireEvent.change(select, { target: { value: "6h" } })
+		fireEvent.click(select)
+
+		expect(onChange).toHaveBeenCalledWith("6h")
+		expect(screen.queryByLabelText("From")).toBeNull()
+	})
+
+	it("still closes on a press somewhere else on the page", () => {
+		openPicker()
+		fireEvent.pointerDown(document.body)
+		fireEvent.click(document.body)
+		expect(screen.queryByLabelText("From")).toBeNull()
 	})
 
 	it("shows an active custom window as the selected option", () => {
