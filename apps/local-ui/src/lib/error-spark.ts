@@ -5,7 +5,7 @@
 // is arithmetic with two traps in it — bucket sizing and the holes — so it
 // lives here where a test can hold it.
 
-import { TIME_RANGES } from "./time"
+import { resolveRange } from "./time"
 
 /** One `(bucket, count)` group, as `CH.ErrorsSparkOutput` gives it. */
 export interface SparkPoint {
@@ -34,18 +34,26 @@ export interface SparkWindow {
 /**
  * The window a row's sparkline covers, and how finely to cut it.
  *
- * Deliberately NOT `boundsForRange`'s window: that one pads its upper bound an
+ * Deliberately NOT `boundsForRange`'s window: for a preset that one pads its upper bound an
  * hour into the future to absorb clock skew between an exporter and this
  * process, which is right for a `WHERE` clause and wrong for an axis — it would
  * draw every error trailing off into an hour of zeroes it has no data for. The
  * query still runs over the padded bounds; only the drawing stops at now.
  */
 export function sparkWindow(range: string | undefined, anchorMs = Date.now()): SparkWindow {
-	const preset = TIME_RANGES.find((r) => r.key === range) ?? TIME_RANGES[TIME_RANGES.length - 1]
-	const windowSeconds = preset.minutes * 60
+	const { startMs, endMs, seconds } = resolveRange(range, anchorMs)
+	return { startMs, endMs, bucketSeconds: bucketLadderStep(seconds) }
+}
+
+/**
+ * The ladder step that cuts `windowSeconds` into roughly {@link TARGET_BUCKETS}
+ * buckets. A function of the duration, not of a preset key, so a custom window
+ * of any length gets the same treatment the presets get — and a custom window
+ * exactly as long as a preset gets exactly the preset's bucket.
+ */
+export function bucketLadderStep(windowSeconds: number): number {
 	const ideal = windowSeconds / TARGET_BUCKETS
-	const bucketSeconds = BUCKET_LADDER.find((step) => step >= ideal) ?? BUCKET_LADDER.at(-1)!
-	return { startMs: anchorMs - windowSeconds * 1000, endMs: anchorMs, bucketSeconds }
+	return BUCKET_LADDER.find((step) => step >= ideal) ?? BUCKET_LADDER.at(-1)!
 }
 
 /**

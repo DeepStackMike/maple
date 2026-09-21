@@ -2,7 +2,7 @@
 // invalidates the `["local", …]` React Query prefix, and the time-range select
 // is bound to local mode's presets.
 
-import { useCallback, useId } from "react"
+import { useCallback, useId, useRef, useState } from "react"
 import { useQueryClient } from "@tanstack/react-query"
 import { Checkbox } from "@maple/ui/components/ui/checkbox"
 import { Label } from "@maple/ui/components/ui/label"
@@ -10,7 +10,9 @@ import {
 	RefreshButton as SharedRefreshButton,
 	TimeRangeSelect as SharedTimeRangeSelect,
 } from "@maple/ui/components/toolbar"
-import { TIME_RANGES } from "../lib/time"
+import { Popover, PopoverPopup } from "@maple/ui/components/ui/popover"
+import { CUSTOM_RANGE_OPTION, formatAbsoluteRange, parseCustomRange, TIME_RANGES } from "../lib/time"
+import { CustomRangePanel } from "./custom-range-popover"
 
 export { Toolbar, ToolbarSearch, ToolbarStat, ToolbarStats } from "@maple/ui/components/toolbar"
 
@@ -42,13 +44,73 @@ const RANGE_LABELS: Record<string, string> = {
 	"30d": "Last 30 days",
 } satisfies Record<string, string>
 
+/** What an unreadable range key resolves to — the same fallback `resolveRange` uses. */
+const FALLBACK_RANGE_KEY = TIME_RANGES[TIME_RANGES.length - 1].key
+
 const RANGE_OPTIONS = TIME_RANGES.map((range) => ({
 	key: range.key,
 	label: RANGE_LABELS[range.key] ?? range.label,
 }))
 
+/**
+ * The range control: the presets, plus a window the user names themselves.
+ *
+ * The custom window is a *value of the same `range` param*, not a second piece
+ * of page state — so it lands in the URL the presets already live in, survives
+ * a reload, travels down every link the views emit, and reaches the query
+ * builders through the one `boundsForRange` call each hook already makes.
+ *
+ * Picking "Custom range…" opens the popover without committing anything: the
+ * select is controlled, so it snaps back to the live window until Apply, and
+ * Cancel leaves the page exactly as it was.
+ */
 export function TimeRangeSelect({ value, onChange }: { value: string; onChange: (next: string) => void }) {
-	return <SharedTimeRangeSelect ranges={RANGE_OPTIONS} value={value} onChange={onChange} />
+	const [open, setOpen] = useState(false)
+	const anchorRef = useRef<HTMLDivElement>(null)
+	const custom = parseCustomRange(value)
+	// A hand-edited or stale URL can carry a key that is neither. `resolveRange`
+	// answers it with the widest preset, so the control has to show that same
+	// preset — a `<select>` whose value matches no option renders its *first*
+	// one, which had the label saying "1 hour" over a 30-day query.
+	const known = custom !== null || TIME_RANGES.some((r) => r.key === value)
+	const selected = known ? value : FALLBACK_RANGE_KEY
+
+	const ranges = [
+		...RANGE_OPTIONS,
+		// The active custom window needs an option of its own or the controlled
+		// select has no matching value and silently shows the first preset.
+		...(custom ? [{ key: value, label: formatAbsoluteRange(custom) }] : []),
+		{ key: CUSTOM_RANGE_OPTION, label: "Custom range…" },
+	]
+
+	return (
+		<div ref={anchorRef} className="flex items-center">
+			<SharedTimeRangeSelect
+				ranges={ranges}
+				value={selected}
+				onChange={(next) => {
+					if (next === CUSTOM_RANGE_OPTION) setOpen(true)
+					else onChange(next)
+				}}
+			/>
+			<Popover open={open} onOpenChange={setOpen}>
+				{/* Aligned to the control's right edge — it sits at the end of the
+				    toolbar, and opening rightwards would run off the viewport. */}
+				<PopoverPopup anchor={anchorRef} align="end" className="w-[24rem]">
+					{open && (
+						<CustomRangePanel
+							currentRange={selected}
+							onApply={(next) => {
+								setOpen(false)
+								onChange(next)
+							}}
+							onCancel={() => setOpen(false)}
+						/>
+					)}
+				</PopoverPopup>
+			</Popover>
+		</div>
+	)
 }
 
 /**

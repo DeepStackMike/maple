@@ -24,7 +24,7 @@ import { useLocalServiceCatalog } from "../hooks/use-local-service-catalog"
 import { useLocalServiceMap, type ServiceMapEdge, type ServiceMapNode } from "../hooks/use-local-service-map"
 import { useQueryParams } from "../lib/router"
 import { formatInsight, selectInsight } from "../lib/service-map-stats"
-import { DEFAULT_RANGE } from "../lib/time"
+import { DEFAULT_RANGE, resolveRange } from "../lib/time"
 
 interface ServiceMapViewProps {
 	onSelectService: (serviceName: string) => void
@@ -118,7 +118,10 @@ export function ServiceMapView({ onSelectService }: ServiceMapViewProps) {
 				) : (
 					<div className="flex flex-col gap-4 p-4 xl:flex-row xl:items-start">
 						<section className="flex min-w-0 flex-1 flex-col rounded-md border bg-card/40">
-							<CanvasHeader label={mapWindow?.label ?? range.toUpperCase()} live={live} />
+							<CanvasHeader
+								label={mapWindow?.label ?? resolveRange(range).shortLabel}
+								live={live}
+							/>
 							<div className="min-h-0 flex-1">
 								<ServiceMapGraph
 									nodes={nodes}
@@ -131,7 +134,7 @@ export function ServiceMapView({ onSelectService }: ServiceMapViewProps) {
 							<CanvasFooter
 								nodes={nodes}
 								edges={edges}
-								windowLabel={mapWindow?.label ?? range.toUpperCase()}
+								windowLabel={mapWindow?.label ?? resolveRange(range).shortLabel}
 							/>
 						</section>
 						<EdgeTable

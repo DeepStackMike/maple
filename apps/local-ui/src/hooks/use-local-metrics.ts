@@ -2,7 +2,7 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query"
 import { CH } from "@maple/query-engine"
 import { executeLocalCompiledQuery } from "@/lib/query"
 import { LOCAL_ORG_ID } from "../lib/constants"
-import { boundsForRange, TIME_RANGES } from "../lib/time"
+import { boundsForRange, rangeWindowSeconds } from "../lib/time"
 
 export interface MetricsFilters {
 	/** Exact service name match. */
@@ -34,10 +34,13 @@ export interface MetricsListData {
 	serviceFacets: Array<{ name: string; count: number }>
 }
 
-/** ~60 buckets across the selected range, floored to 60s for chDB's hourly-ish volumes. */
+/**
+ * ~60 buckets across the selected range, floored to 60s for chDB's hourly-ish
+ * volumes. Derived from the window's length, so a custom window is bucketed by
+ * how long it is rather than by which preset it resembles.
+ */
 export function bucketSecondsForRange(key: string | undefined): number {
-	const range = TIME_RANGES.find((r) => r.key === key) ?? TIME_RANGES[TIME_RANGES.length - 1]
-	return Math.max(60, Math.round((range.minutes * 60) / 60))
+	return Math.max(60, Math.round(rangeWindowSeconds(key) / 60))
 }
 
 /**

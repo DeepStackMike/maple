@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { denseCounts, groupSparkPoints, sparkWindow } from "./error-spark"
+import { bucketLadderStep, denseCounts, groupSparkPoints, sparkWindow } from "./error-spark"
+import { customRangeKey } from "./time"
 
 // 2026-01-02 12:00:00 UTC
 const ANCHOR = Date.UTC(2026, 0, 2, 12, 0, 0)
@@ -19,6 +20,27 @@ describe("sparkWindow", () => {
 			const buckets = (window.endMs - window.startMs) / 1000 / window.bucketSeconds
 			expect(buckets).toBeGreaterThanOrEqual(20)
 			expect(buckets).toBeLessThanOrEqual(60)
+		}
+	})
+
+	it("draws a custom window over its own bounds, not a look-back from now", () => {
+		const fromMs = Date.UTC(2026, 0, 1, 0, 0, 0)
+		const toMs = Date.UTC(2026, 0, 1, 12, 0, 0)
+		const window = sparkWindow(customRangeKey({ fromMs, toMs }), ANCHOR)
+		expect(window.startMs).toBe(fromMs)
+		expect(window.endMs).toBe(toMs)
+		// 12h is between the 6h and 24h presets, and gets a ladder step to match.
+		expect(window.bucketSeconds).toBe(1800)
+	})
+
+	it("buckets a custom window exactly as the preset of the same length would", () => {
+		const toMs = Date.UTC(2026, 0, 2, 12, 0, 0)
+		for (const [key, days] of [
+			["24h", 1],
+			["7d", 7],
+		] as const) {
+			const custom = customRangeKey({ fromMs: toMs - days * 86_400_000, toMs })
+			expect(sparkWindow(custom, ANCHOR).bucketSeconds).toBe(sparkWindow(key, ANCHOR).bucketSeconds)
 		}
 	})
 
@@ -100,5 +122,28 @@ describe("denseCounts", () => {
 
 	it("returns a full row of zeroes for no points at all", () => {
 		expect(denseCounts([], window)).toEqual([0, 0, 0, 0, 0])
+	})
+})
+
+describe("bucketLadderStep", () => {
+	it("keeps every preset's historic bucket size", () => {
+		const cases: Array<[number, number]> = [
+			[3600, 120],
+			[6 * 3600, 600],
+			[24 * 3600, 3600],
+			[7 * 86_400, 21600],
+			[30 * 86_400, 86400],
+		]
+		for (const [windowSeconds, bucketSeconds] of cases) {
+			expect(bucketLadderStep(windowSeconds)).toBe(bucketSeconds)
+		}
+	})
+
+	it("cuts an arbitrary span into a legible number of buckets", () => {
+		for (const windowSeconds of [900, 5_400, 43_200, 3 * 86_400, 90 * 86_400]) {
+			const buckets = windowSeconds / bucketLadderStep(windowSeconds)
+			expect(buckets).toBeGreaterThanOrEqual(15)
+			expect(buckets).toBeLessThanOrEqual(90)
+		}
 	})
 })

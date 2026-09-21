@@ -2,7 +2,7 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query"
 import { CH } from "@maple/query-engine"
 import { executeLocalCompiledQuery } from "@/lib/query"
 import { LOCAL_ORG_ID } from "../lib/constants"
-import { TIME_RANGES, toClickHouseDateTime } from "../lib/time"
+import { resolveRange, toClickHouseDateTime } from "../lib/time"
 
 export type ServiceMapNodeKind = "service" | "database"
 
@@ -103,22 +103,25 @@ function resolveWindows(
 	live: boolean,
 	anchorMs: number,
 ): { current: Window; previous: Window } {
-	const preset = TIME_RANGES.find((r) => r.key === range) ?? TIME_RANGES[TIME_RANGES.length - 1]
-	const seconds = live ? LIVE_WINDOW_SECONDS : preset.minutes * 60
-	const label = live ? "60S" : preset.key.toUpperCase()
+	const resolved = resolveRange(range, anchorMs)
+	const seconds = live ? LIVE_WINDOW_SECONDS : resolved.seconds
+	const label = live ? "60S" : resolved.shortLabel
 	const lengthMs = seconds * 1000
+	// A custom window names its own end; live mode and the presets end at `now`.
+	const endMs = live || !resolved.absolute ? anchorMs : resolved.endMs
 	return {
 		current: {
-			startTime: toClickHouseDateTime(anchorMs - lengthMs),
-			endTime: toClickHouseDateTime(anchorMs + CLOCK_SKEW_PAD_MS),
+			startTime: toClickHouseDateTime(endMs - lengthMs),
+			// An explicit window is not padded — see `boundsForRange`.
+			endTime: toClickHouseDateTime(live || !resolved.absolute ? endMs + CLOCK_SKEW_PAD_MS : endMs),
 			seconds,
 			label,
 		},
 		// The previous window ends where this one starts, and is not padded: its
 		// only job is to be the same length over the time just before.
 		previous: {
-			startTime: toClickHouseDateTime(anchorMs - lengthMs * 2),
-			endTime: toClickHouseDateTime(anchorMs - lengthMs),
+			startTime: toClickHouseDateTime(endMs - lengthMs * 2),
+			endTime: toClickHouseDateTime(endMs - lengthMs),
 			seconds,
 			label,
 		},

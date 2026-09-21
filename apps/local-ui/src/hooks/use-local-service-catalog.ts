@@ -2,7 +2,7 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query"
 import { CH, coerceServiceOverviewRows } from "@maple/query-engine"
 import { executeLocalCompiledQuery } from "@/lib/query"
 import { LOCAL_ORG_ID } from "../lib/constants"
-import { boundsForRange, toClickHouseDateTime } from "../lib/time"
+import { boundsForRange, resolveRange, toClickHouseDateTime } from "../lib/time"
 import {
 	baselineDelta,
 	currentVersion,
@@ -183,16 +183,20 @@ export function useLocalServiceList(range: string | undefined) {
 			// current one by however long the first query took to build.
 			const anchorMs = Date.now()
 			const { startTime, endTime } = boundsForRange(range, anchorMs)
+			const resolved = resolveRange(range, anchorMs)
 			const windowSeconds = rangeDurationSeconds(range)
 			const params = { orgId: LOCAL_ORG_ID, startTime, endTime }
 			// The window of the same length ending where this one begins. Not a
 			// fixed 7d baseline like the hosted page's: on a store holding an
 			// afternoon there is no trailing week to compare against, and a delta
 			// against a window that is mostly empty is worse than no delta.
+			// Anchored to where the current window *starts*, not to now, so a custom
+			// window is compared against the window before it rather than against
+			// the one before this moment.
 			const previousParams = {
 				orgId: LOCAL_ORG_ID,
-				startTime: toClickHouseDateTime(anchorMs - windowSeconds * 2000),
-				endTime: toClickHouseDateTime(anchorMs - windowSeconds * 1000),
+				startTime: toClickHouseDateTime(resolved.startMs - windowSeconds * 1000),
+				endTime: toClickHouseDateTime(resolved.startMs),
 			}
 			const bucketSeconds = bucketSecondsForRange(range)
 

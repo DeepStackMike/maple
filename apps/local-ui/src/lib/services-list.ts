@@ -17,7 +17,7 @@
 // (`deriveServiceHealth`), and that is what is mirrored here — the same error
 // ladder, the same baseline-relative latency ladder, the same floors.
 
-import { TIME_RANGES } from "./time"
+import { rangeWindowSeconds, resolveRange } from "./time"
 
 export type SeverityLevel = "ok" | "warn" | "crit"
 
@@ -250,14 +250,16 @@ export function formatThroughput(rate: number): string {
  * real rate.
  */
 export function rangeDurationSeconds(key: string | undefined): number {
-	const range = TIME_RANGES.find((r) => r.key === key) ?? TIME_RANGES[TIME_RANGES.length - 1]
-	return range.minutes * 60
+	return rangeWindowSeconds(key)
 }
 
-/** The range's own label, so a delta reads `vs 7d` rather than `vs previous`. */
+/**
+ * The range's own label, so a delta reads `vs 7d` rather than `vs previous`.
+ * A custom window names its length (`vs 36h`), not its endpoints — the delta is
+ * against the window before it, and two timestamps here would name the wrong one.
+ */
 export function rangeWindowLabel(key: string | undefined): string {
-	const range = TIME_RANGES.find((r) => r.key === key) ?? TIME_RANGES[TIME_RANGES.length - 1]
-	return range.key
+	return resolveRange(key).shortLabel.toLowerCase()
 }
 
 // Version ("Last deploy")
