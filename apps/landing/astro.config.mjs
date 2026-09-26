@@ -63,6 +63,9 @@ export default defineConfig({
 	site: "https://maple.dev",
 	trailingSlash: "ignore",
 	redirects: {
+		// The monthly release became individual entries.
+		"/changelog/2026-07": "/changelog",
+		"/changelog/2026-07.md": "/changelog.md",
 		"/docs/sdks/overview": "/docs/instrumentation",
 		"/docs/session-replay/product-events-api": "/docs/product-events/api",
 		"/docs/session-replay/product-events-api.md": "/docs/product-events/api.md",

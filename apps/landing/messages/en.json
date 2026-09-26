@@ -1215,7 +1215,7 @@
 	"pricing_region_eu_name": "European Union",
 	"pricing_region_eu_detail": "Frankfurt, Germany. Dashboard at app.eu.maple.dev",
 	"pricing_region_same": "Same plan, same rates",
-	"pricing_region_same_body": "Pick a region when you create your organization. Its telemetry is stored and processed there. AI chat is not available in the EU region yet.",
+	"pricing_region_same_body": "Pick a region when you create your organization. Its telemetry is stored and processed there.",
 	"pricing_region_link": "About EU hosting",
 	"bill_v_hosted": "Hosted server",
 	"cmp_d0_synthetics_them": "Synthetic API checks at $0.20 per thousand runs, retained 13 months."
