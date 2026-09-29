@@ -161,10 +161,11 @@ import {
 	childClaimsExpr,
 	MAX_USAGE_REPORTERS_PER_TRACE,
 	nettedReportersExpr,
-	reportingSpanIdsExpr,
+	reporterSpanIdsExpr,
 	sessionLlmCalls,
 	sessionReportersExpr,
 	sessionUsageSum,
+	usageLinksExpr,
 	usageReportersExpr,
 } from "./ai-span-columns"
 
@@ -555,6 +556,8 @@ const indexTraces = (opts: AiSessionFilterOpts, bounds: IndexBounds) => {
 				// Usage AND model calls travel as reporters: both are counted one level
 				// up, where every trace of the session is in hand — see `ai-span-columns`.
 				usageReporters: usageReportersExpr($),
+				tokenLinks: usageLinksExpr($, $.Tokens),
+				costLinks: usageLinksExpr($, $.Cost),
 			}
 		})
 		.where(($) => [
@@ -649,9 +652,9 @@ const indexSessions = (opts: AiSessionFilterOpts) =>
 			// The usage, still as reporters: netted one level up, summed two —
 			// with the two lookups the netting makes taken off the reporters here,
 			// once per session, rather than once per reporter inside the netting.
-			reporters: sessionReportersExpr("usageReporters"),
+			reporters: sessionReportersExpr("usageReporters", "tokenLinks", "costLinks"),
 			childClaims: childClaimsExpr("reporters"),
-			reportingIds: reportingSpanIdsExpr("reporters"),
+			reporterIds: reporterSpanIdsExpr("reporters"),
 		}))
 		.groupBy("sessionId")
 
@@ -773,7 +776,7 @@ export function aiSessionPageQuery(opts: AiSessionPageOpts = {}) {
 
 	const netted = fromQuery(ranked, "ranked_sessions").select(($) => ({
 		...carry($),
-		netted: nettedReportersExpr("reporters", "childClaims", "reportingIds"),
+		netted: nettedReportersExpr("reporters", "childClaims", "reporterIds"),
 	}))
 
 	const page = fromQuery(netted, "netted_sessions")
@@ -1179,7 +1182,7 @@ export function aiSessionDistributionsQuery() {
 	const netted = fromQuery(indexSessions({}), "window_sessions").select(($) => ({
 		agentDurationMs: $.agentDurationMs,
 		toolCalls: $.toolCalls,
-		netted: nettedReportersExpr("reporters", "childClaims", "reportingIds"),
+		netted: nettedReportersExpr("reporters", "childClaims", "reporterIds"),
 	}))
 	const measured = fromQuery(netted, "netted_sessions").select(($) => ({
 		durationMs: CH.toFloat64($.agentDurationMs),
