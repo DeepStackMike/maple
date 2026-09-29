@@ -209,6 +209,10 @@ const MODEL_LIMITS: Record<string, { readonly context: number; readonly output: 
 	"xiaomi/mimo-v2.6-pro": { context: 1_000_000, output: 128_000 },
 	// The EU default. OpenRouter's EU catalogue: context_length 1_050_000, max_completion_tokens 128_000.
 	"openai/gpt-6-luna": { context: 1_000_000, output: 128_000 },
+	// OpenRouter's catalogue (US and EU): context_length 1_050_000, max_completion_tokens 128_000.
+	"openai/gpt-6.1-sol": { context: 1_000_000, output: 128_000 },
+	// OpenRouter's catalogue (US and EU): context_length 1_000_000, max_completion_tokens 128_000.
+	"anthropic/claude-sonnet-5.5": { context: 950_000, output: 128_000 },
 	// Moonshot's own kimi-k2.6 is 262_144, but Cloudflare does not publish the window its Workers AI
 	// deployment actually serves. Held at the conservative default until someone measures it.
 	"@cf/moonshotai/kimi-k2.6": { context: 128_000, output: 8_000 },

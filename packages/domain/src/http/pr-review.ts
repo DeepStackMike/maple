@@ -193,6 +193,8 @@ export const PR_REVIEW_MODELS = [
 	{ id: "xiaomi/mimo-v2.6-pro", label: "MiMo V2.6 Pro", eu: false },
 	{ id: "openai/gpt-5.6-luna", label: "GPT-5.6 Luna", eu: false },
 	{ id: "openai/gpt-6-luna", label: "GPT-6 Luna", eu: true },
+	{ id: "openai/gpt-6.1-sol", label: "GPT-6.1 Sol", eu: true },
+	{ id: "anthropic/claude-sonnet-5.5", label: "Claude Sonnet 5.5", eu: true },
 ] as const
 
 export const PrReviewModel = Schema.Literals(PR_REVIEW_MODELS.map((model) => model.id)).annotate({
