@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { noteStartedTraceId } from "../../events/trace-id"
 import type { SessionEvent } from "../../events/events-sink"
 import { installNetworkCapture } from "./network"
@@ -47,5 +47,77 @@ describe("installNetworkCapture", () => {
 		const network = events.find((event) => event.type === "network")
 		expect(network?.traceId).toBe("0af7651916cd43dd8448eb211c80319c")
 		expect(network?.net?.method).toBe("GET")
+	})
+
+	it("keeps text bodies of listed URLs only, cut to the limit", async () => {
+		const realFetch = window.fetch
+		// Under the capture, like the network would be.
+		window.fetch = async () =>
+			new Response('{"order":"12345678"}', { headers: { "content-type": "application/json" } })
+		try {
+			const events: SessionEvent[] = []
+			uninstall = installNetworkCapture(
+				(event) => events.push(event),
+				() => false,
+				{
+					// Global on purpose: a stateful regex must still match every request.
+					urls: [/\/orders/g],
+					maxLength: 8,
+				},
+			)
+			await fetch("https://api.test/orders")
+			const response = await fetch("https://api.test/orders", {
+				method: "POST",
+				body: "request payload",
+			})
+			expect(await response.text()).toBe('{"order":"12345678"}')
+			await fetch("https://api.test/other")
+			await vi.waitFor(() => expect(events.filter((event) => event.type === "network")).toHaveLength(3))
+
+			const [, listed, other] = events.filter((event) => event.type === "network")
+			expect(listed?.attrs).toEqual({ "request.body": "request …", "response.body": '{"order"…' })
+			expect(other?.attrs).toBeUndefined()
+		} finally {
+			uninstall?.()
+			uninstall = undefined
+			window.fetch = realFetch
+		}
+	})
+
+	it("reads only as much of a large body as it keeps", async () => {
+		const realFetch = window.fetch
+		let pulled = 0
+		const chunk = new TextEncoder().encode("x".repeat(1_000))
+		window.fetch = async () =>
+			new Response(
+				new ReadableStream({
+					pull(controller) {
+						pulled++
+						if (pulled > 1_000) controller.close()
+						else controller.enqueue(chunk)
+					},
+				}),
+				{ headers: { "content-type": "text/plain" } },
+			)
+		try {
+			const events: SessionEvent[] = []
+			uninstall = installNetworkCapture(
+				(event) => events.push(event),
+				() => false,
+				{
+					urls: ["https://api.test/"],
+					maxLength: 2_500,
+				},
+			)
+			await fetch("https://api.test/big")
+			await vi.waitFor(() => expect(events.some((event) => event.type === "network")).toBe(true))
+			const body = events.find((event) => event.type === "network")?.attrs?.["response.body"] ?? ""
+			expect(body).toHaveLength(2_501)
+			expect(pulled).toBeLessThan(10)
+		} finally {
+			uninstall?.()
+			uninstall = undefined
+			window.fetch = realFetch
+		}
 	})
 })

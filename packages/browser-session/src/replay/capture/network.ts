@@ -1,12 +1,40 @@
 import { type Emit, safeEmit } from "../../capture/shared"
 import { activeTraceId, withStartedTraceId } from "../../events/trace-id"
+import type { NetworkBodyOptions } from "../../platform/transport"
+
+/** Only text is worth keeping; a body that is an image or a stream is not read. */
+const TEXT_CONTENT = /^(text\/|application\/(json|xml|x-www-form-urlencoded|[\w.+-]+\+(json|xml)))/i
+
+const matchesUrl = (url: string, patterns: ReadonlyArray<string | RegExp>): boolean =>
+	patterns.some((pattern) => {
+		if (typeof pattern === "string") return url.includes(pattern)
+		// A `g`/`y` regex is stateful: `test` advances `lastIndex`, so reset it first.
+		pattern.lastIndex = 0
+		return pattern.test(url)
+	})
+
+const cut = (text: string, maxLength: number): string =>
+	text.length > maxLength ? `${text.slice(0, maxLength)}…` : text
 
 /**
  * Capture fetch + XHR requests as session events, tagged with the active trace
  * id so each request links to its backend trace. `ignoreUrl` skips Maple's own
  * ingest endpoints (otherwise capturing the session-events POST would loop).
+ * `bodies`, when set, keeps text request/response bodies of the URLs it lists.
  */
-export function installNetworkCapture(emit: Emit, ignoreUrl: (url: string) => boolean): () => void {
+export function installNetworkCapture(
+	emit: Emit,
+	ignoreUrl: (url: string) => boolean,
+	bodies?: NetworkBodyOptions,
+): () => void {
+	const wantsBody = (url: string): boolean => bodies !== undefined && matchesUrl(url, bodies.urls)
+	const bodyAttrs = (
+		request: string | undefined,
+		response: string | undefined,
+	): Record<string, string> => ({
+		...(request && bodies ? { "request.body": cut(request, bodies.maxLength) } : undefined),
+		...(response && bodies ? { "response.body": cut(response, bodies.maxLength) } : undefined),
+	})
 	const origFetch = typeof window !== "undefined" ? window.fetch : undefined
 
 	if (origFetch) {
@@ -22,7 +50,32 @@ export function installNetworkCapture(emit: Emit, ignoreUrl: (url: string) => bo
 				const call = withStartedTraceId(() => origFetch(input, init))
 				traceId = call.traceId ?? ambientTraceId
 				const res = await call.result
-				record(url, method, res.status, start, traceId)
+				if (!wantsBody(url)) {
+					record(url, method, res.status, start, traceId)
+					return res
+				}
+				// Read a clone in the background: the app gets its response untouched and unwaited.
+				const requestBody = typeof init?.body === "string" ? init.body : undefined
+				const done = performance.now()
+				const contentType = res.headers.get("content-type") ?? ""
+				void (
+					TEXT_CONTENT.test(contentType)
+						? readPrefix(res.clone(), bodies?.maxLength ?? 0)
+						: Promise.resolve(undefined)
+				)
+					.catch(() => undefined)
+					.then((responseBody) =>
+						record(
+							url,
+							method,
+							res.status,
+							start,
+							traceId,
+							undefined,
+							bodyAttrs(requestBody, responseBody),
+							done,
+						),
+					)
 				return res
 			} catch (error) {
 				record(url, method, 0, start, traceId, String(error))
@@ -38,13 +91,16 @@ export function installNetworkCapture(emit: Emit, ignoreUrl: (url: string) => bo
 		start: number,
 		traceId: string | undefined,
 		error?: string,
+		extra?: Record<string, string>,
+		end = performance.now(),
 	): void => {
 		if (ignoreUrl(url)) return
+		const attrs = { ...extra, ...(error ? { error } : undefined) }
 		safeEmit(emit, {
 			type: "network",
-			net: { method, url, status, durationMs: Math.round(performance.now() - start) },
+			net: { method, url, status, durationMs: Math.round(end - start) },
 			traceId,
-			...(error ? { attrs: { error } } : undefined),
+			...(Object.keys(attrs).length > 0 ? { attrs } : undefined),
 		})
 	}
 
@@ -70,8 +126,11 @@ export function installNetworkCapture(emit: Emit, ignoreUrl: (url: string) => bo
 			const meta = this as XhrMeta
 			const start = performance.now()
 			let traceId = meta.__mapleTraceId ?? activeTraceId()
+			const url = meta.__mapleUrl ?? ""
+			const requestBody = typeof args[0] === "string" ? args[0] : undefined
 			this.addEventListener("loadend", () => {
-				record(meta.__mapleUrl ?? "", meta.__mapleMethod ?? "GET", this.status, start, traceId)
+				const extra = wantsBody(url) ? bodyAttrs(requestBody, xhrResponseText(this)) : undefined
+				record(url, meta.__mapleMethod ?? "GET", this.status, start, traceId, undefined, extra)
 			})
 			const call = withStartedTraceId(() => origSend.apply(this, args as never))
 			traceId = call.traceId ?? traceId
@@ -84,6 +143,38 @@ export function installNetworkCapture(emit: Emit, ignoreUrl: (url: string) => bo
 		if (XHR && origOpen) XHR.prototype.open = origOpen
 		if (XHR && origSend) XHR.prototype.send = origSend
 	}
+}
+
+/**
+ * Up to `maxLength` characters of a response body (one more, so `cut` marks it
+ * cut), then the stream is cancelled: a large payload is never read in full.
+ */
+async function readPrefix(response: Response, maxLength: number): Promise<string | undefined> {
+	const reader = response.body?.getReader()
+	if (!reader) return undefined
+	const decoder = new TextDecoder()
+	let text = ""
+	while (text.length <= maxLength) {
+		const { done, value } = await reader.read()
+		if (done) return text + decoder.decode()
+		text += decoder.decode(value, { stream: true })
+	}
+	void reader.cancel().catch(() => {})
+	return text
+}
+
+/** A text or JSON XHR response, as text; the browser already holds it, so this only slices. */
+function xhrResponseText(xhr: XMLHttpRequest): string | undefined {
+	if (!TEXT_CONTENT.test(xhr.getResponseHeader("content-type") ?? "")) return undefined
+	if (xhr.responseType === "" || xhr.responseType === "text") return xhr.responseText
+	if (xhr.responseType === "json") {
+		try {
+			return JSON.stringify(xhr.response)
+		} catch {
+			return undefined
+		}
+	}
+	return undefined
 }
 
 interface XhrMeta extends XMLHttpRequest {
