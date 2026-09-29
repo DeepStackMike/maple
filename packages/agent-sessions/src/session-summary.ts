@@ -241,7 +241,7 @@ export interface SessionSummary {
 const RATE_LIMIT_PATTERN = /\b429\b|rate.?limit|too.many.requests|resource.exhausted|overloaded/i
 const CONTEXT_EXCEEDED_PATTERN =
 	/context.{0,16}(length|window|limit)|maximum.context|prompt is too long|too many tokens/i
-const REFUSAL_FINISH_REASONS = new Set(["refusal", "content_filter"])
+const REFUSAL_FINISH_REASONS = new Set(["refusal", "contentfilter"])
 
 export function buildSessionSummary({
 	spans,
@@ -356,29 +356,55 @@ export function findIdleGaps(spans: readonly AiSessionSpan[]): readonly IdleGap[
  * A TTFT splits its own span: the wait is not inference, and a session whose
  * time is mostly first-token latency is a different session from one that is
  * mostly generation. Agent and non-AI spans contribute nothing — an agent span
- * covers its children, and adding it would count the same work twice.
+ * covers its children, and adding it would count the same work twice. For the
+ * same reason an inference span inside another, with no agent or tool between
+ * them, is charged nothing: its time is already inside the outer span's
+ * (OpenRouter's `LLM Generation` over its `generation`, ADK's `call_llm` over
+ * `generate_content`). The outermost carries the time, and borrows a TTFT from
+ * a nested span when it reported none.
  */
 export function computeAgentTime(spans: readonly AiSessionSpan[]): SessionAgentTime {
 	const totals = new Map<AgentTimeKind, number>()
 	const add = (kind: AgentTimeKind, ms: number) => {
 		if (ms > 0) totals.set(kind, (totals.get(kind) ?? 0) + ms)
 	}
+	const byId = new Map(spans.map((span) => [span.spanId, span]))
+	const outermostCall = (span: AiSessionSpan): AiSessionSpan => {
+		let call = span
+		const seen = new Set<string>([span.spanId])
+		let parent = byId.get(span.parentSpanId)
+		while (parent !== undefined && !seen.has(parent.spanId)) {
+			seen.add(parent.spanId)
+			const category = classifyAiSpan(parent)
+			// An agent or a tool in between ran calls of its own.
+			if (category === "agent" || category === "tool") break
+			if (category === "inference") call = parent
+			parent = byId.get(parent.parentSpanId)
+		}
+		return call
+	}
 
+	const calls: AiSessionSpan[] = []
+	const nestedTtftMs = new Map<string, number>()
 	for (const span of spans) {
-		const spanStart = spanStartMs(span)
-		const spanEnd = spanEndMs(span)
 		const category = classifyAiSpan(span)
-		if (category !== "tool" && category !== "inference") continue
-		if (category === "tool") {
-			add("tool", spanEnd - spanStart)
+		if (category === "tool") add("tool", span.durationMs)
+		if (category !== "inference") continue
+		const call = outermostCall(span)
+		if (call === span) {
+			calls.push(span)
 			continue
 		}
 		const ttftMs = spanTtftMs(span)
+		if (ttftMs !== undefined && !nestedTtftMs.has(call.spanId)) nestedTtftMs.set(call.spanId, ttftMs)
+	}
+	for (const call of calls) {
+		const ttftMs = spanTtftMs(call) ?? nestedTtftMs.get(call.spanId)
 		// A TTFT longer than the span itself is instrumentation disagreeing with
 		// itself; the span's own duration is the one both classes must fit in.
-		const ttft = ttftMs === undefined ? 0 : Math.min(ttftMs, spanEnd - spanStart)
+		const ttft = ttftMs === undefined ? 0 : Math.min(ttftMs, call.durationMs)
 		add("ttft", ttft)
-		add("inference", spanEnd - spanStart - ttft)
+		add("inference", call.durationMs - ttft)
 	}
 
 	const segments = AGENT_TIME_KIND_ORDER.map((kind) => ({ kind, ms: totals.get(kind) ?? 0 })).filter(
@@ -580,6 +606,14 @@ function countedLlmCalls(
 		if (current === undefined || (!claimed(current) && claimed(span))) byResponse.set(responseId, span)
 	}
 	return [...unkeyed, ...byResponse.values()].sort((a, b) => spanStartMs(a) - spanStartMs(b))
+}
+
+/** The spans `work.llmCalls` counts, in start order: for a reading that needs
+ *  one span per model call rather than every observation of it. */
+export function sessionLlmCalls(spans: readonly AiSessionSpan[]): readonly AiSessionSpan[] {
+	const byId = new Map(spans.map((span) => [span.spanId, span]))
+	const usage = countableUsageSpans(spans, byId)
+	return countedLlmCalls(spans, byId, usage.bySpan, usage.costs)
 }
 
 /**
@@ -851,9 +885,19 @@ function failureSignal(span: AiSessionSpan): string | undefined {
 }
 
 function refusalSignal(span: AiSessionSpan): string | undefined {
+	return finishReasonsIn(span, REFUSAL_FINISH_REASONS)
+}
+
+/**
+ * The span's finish reasons that are one of `keys`, lowercased and joined — or
+ * `undefined`. Matched without case or separators, since vendors spell one
+ * reason `max_tokens`, `MAX_TOKENS` and `maxTokens` (Strands TS); `keys` are
+ * written that way too.
+ */
+export function finishReasonsIn(span: AiSessionSpan, keys: ReadonlySet<string>): string | undefined {
 	const reasons = (span.genAi.responseFinishReasons ?? [])
 		.map((reason) => reason.toLowerCase())
-		.filter((reason) => REFUSAL_FINISH_REASONS.has(reason))
+		.filter((reason) => keys.has(reason.replace(/[^a-z0-9]/g, "")))
 	return reasons.length === 0 ? undefined : reasons.join(",")
 }
 
