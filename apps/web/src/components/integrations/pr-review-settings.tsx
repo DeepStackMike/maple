@@ -402,7 +402,8 @@ function ConfigForm({ repo, config }: { repo: GithubRepoSummary; config: PrRevie
 						onChange={(event) => update({ automaticReviewLimit: event.target.value })}
 					/>
 					<p className="text-xs text-muted-foreground">
-						After this many, pushes stop starting reviews. Comment @maple review to run one.
+						After this many, pushes stop starting reviews. Mention the review bot with{" "}
+						<code>review</code> on the pull request to run one.
 					</p>
 				</div>
 
