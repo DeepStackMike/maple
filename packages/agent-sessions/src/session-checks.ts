@@ -28,7 +28,7 @@ import {
 	type SessionTokenReporting,
 } from "./session-summary"
 import {
-	classifyAiSpan,
+	isCountedToolCall,
 	isLlmCall,
 	spanModel,
 	spanStartMs,
@@ -202,7 +202,7 @@ function readCoverage(
 	turns: readonly SessionTurn[],
 ): SessionCoverage {
 	const llmCalls = spans.filter(isLlmCall)
-	const toolCalls = spans.filter((span) => classifyAiSpan(span) === "tool")
+	const toolCalls = spans.filter(isCountedToolCall)
 	// JSON-decoded payloads: an emitter that wrote `null` lands as `null`,
 	// not as a missing key, and recorded nothing.
 	const recorded = (
@@ -627,9 +627,13 @@ function stallCheck(findings: readonly SessionFinding[]): SessionCheck {
 const isClaude = (span: AiSessionSpan): boolean =>
 	span.genAi.providerName === "anthropic" || /claude/i.test(spanModel(span) ?? "")
 
+/** The emitter's own cache keys, or the gateway's buckets, which it stamps
+ *  from dialect spellings the detail decode may not alias. */
 const reportsCache = (span: AiSessionSpan): boolean =>
 	span.genAi.usageCacheReadInputTokens !== undefined ||
-	span.genAi.usageCacheCreationInputTokens !== undefined
+	span.genAi.usageCacheCreationInputTokens !== undefined ||
+	span.genAi.mapleCacheReadTokens !== undefined ||
+	span.genAi.mapleCacheWriteTokens !== undefined
 
 /**
  * One span per model call, so a call its framework also rolled up (ADK

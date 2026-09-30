@@ -221,6 +221,46 @@ describe("buildSessionSummary — tokens and models", () => {
 		})
 	})
 
+	it("reads the ingest gateway's buckets and cost on a span it stamped", () => {
+		// Strands TS: `invoke_agent` repeats its chat's `gen_ai.usage.*` under an
+		// unstamped loop span. The gateway stamped buckets on the chat alone, and
+		// its buckets, not the emitter's figures, are what the list sums.
+		const reported = { usageInputTokens: 218, usageOutputTokens: 28, usageCost: 0.5 }
+		const summary = summarize([
+			agentSpan({
+				spanId: "agent",
+				startMs: 0,
+				durationMs: 5 * SECOND,
+				genAi: { ...reported, mapleLlmCall: 0 },
+			}),
+			llmSpan({
+				spanId: "chat",
+				parentSpanId: "loop",
+				startMs: SECOND,
+				durationMs: SECOND,
+				genAi: {
+					...reported,
+					mapleLlmCall: 1,
+					mapleInputTokens: 18,
+					mapleCacheReadTokens: 200,
+					mapleOutputTokens: 20,
+					mapleReasoningTokens: 8,
+					mapleCost: 0.002,
+				},
+			}),
+		])
+
+		expect(summary.tokens).toEqual({
+			input: 18,
+			cacheRead: 200,
+			cacheWrite: 0,
+			output: 20,
+			reasoning: 8,
+			total: 246,
+		})
+		expect(summary.cost).toBe(0.002)
+	})
+
 	it("counts usage at the deepest span that reports it", () => {
 		const summary = summarize([
 			// The framework reports a turn total on the agent span AND on each model
@@ -1524,6 +1564,41 @@ describe("per-model cost, tools and failure groups", () => {
 			["delete_file", 1, ["resumed"]],
 			["get_weather", 1, ["other"]],
 		])
+	})
+
+	// The tests above read spans ingested before the gateway stamped them. On a
+	// stamped span its `maple_ai.tool_call` verdict decides, as on the list.
+	it("counts a stamped tool span by the gateway's verdict alone", () => {
+		const stamped = (spanId: string, startMs: number, mapleToolCall: number, toolCallResult?: string) =>
+			toolSpan({
+				spanId,
+				traceId: `trace-${spanId}`,
+				toolName: "delete_file",
+				startMs,
+				durationMs: 1,
+				genAi: { mapleLlmCall: 0, mapleToolCall, toolCallId: "call_a", toolCallResult },
+			})
+		const summary = summarize([
+			// Google ADK's confirmation request: no call.
+			stamped(
+				"paused",
+				0,
+				0,
+				'{"error": "This tool call requires confirmation, please approve or reject."}',
+			),
+			// LlamaIndex ends a step waiting for a human in error, which the
+			// gateway stamped neither a call nor a failure.
+			{ ...stamped("waiting", 500, 0), statusCode: "Error" },
+			// No result and no framework mark: a call, not merged into the one
+			// that follows under the same id.
+			stamped("no-result", 1_000, 1),
+			stamped("approved", 2_000, 1, "deleted /tmp/scratch-notes.txt"),
+		])
+
+		expect(summary.work.toolCalls).toBe(2)
+		expect(summary.tools.map((tool) => [tool.name, tool.calls])).toEqual([["delete_file", 2]])
+		expect(summary.tools[0]!.events.map((event) => event.spanId)).toEqual(["no-result", "approved"])
+		expect(summary.failures.errors).toBe(0)
 	})
 
 	it("keeps two calls that share an id when both returned, and every call captured without payloads", () => {
