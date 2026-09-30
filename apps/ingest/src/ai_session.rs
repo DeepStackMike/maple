@@ -33,6 +33,10 @@
 //! `maple_ai.usage.*` buckets, whatever convention its emitter reported under
 //! — see `ai_session/facts.rs` and `ai_session/usage.rs`.
 //!
+//! One vendor's evaluations are left unstamped entirely: a Mastra scorer run
+//! grades a finished agent run and is not a conversation (see
+//! [`run_predicates`]).
+//!
 //! Detection is ordered first-match over the vendor predicates below; the
 //! session ID is the first non-empty session-granularity attribute for the
 //! matched vendor. Every vendor and unknown-tier bucket falls back to the OTel
@@ -443,6 +447,9 @@ struct SpanEvidence<'a> {
     langsmith: bool,
     llamaindex: bool,
     mastra: bool,
+    /// A Mastra scorer's span: its `scorer_run`/`scorer_step`, or any span it
+    /// ran (an LLM judge's agent and model calls) - see [`run_predicates`].
+    mastra_scorer: bool,
     agno: bool,
     agent_framework: bool,
     executor: bool,
@@ -673,6 +680,13 @@ fn absorb_key<'a>(ev: &mut SpanEvidence<'a>, attr: &'a KeyValue, b0: u8) {
         b'm' => {
             if key.starts_with("mastra.") {
                 ev.mastra = true;
+                // A scorer stamps the run it grades as metadata, and Mastra
+                // copies a span's metadata onto every span beneath it.
+                if key == "mastra.metadata.targetTraceId"
+                    || (key == "mastra.span.type" && value_str(attr).starts_with("scorer_"))
+                {
+                    ev.mastra_scorer = true;
+                }
             } else if key.starts_with("message.") {
                 ev.message = true;
             } else if key == "model_request_parameters" {
@@ -1070,6 +1084,15 @@ fn run_predicates(
     ev: &SpanEvidence,
     span_attrs: &[KeyValue],
 ) -> Option<AiClassification> {
+    // A Mastra scorer grades a finished run in a trace of its own, with no
+    // conversation id: stamped, every scorer run became a `trace:` session, its
+    // `scorer_*` spans counted as tool calls and an LLM judge as a second agent.
+    // It is an evaluation, not a conversation, so none of it is agent work -
+    // whichever instrumentation recorded the span (a judge's model call can sit
+    // under LangSmith's scope, which the vendor order would name first).
+    if ev.mastra_scorer {
+        return None;
+    }
     let ctx = Ctx {
         scope,
         resource,
@@ -2358,6 +2381,89 @@ mod tests {
             &[("telemetry.sdk.name", "@mastra/otel-exporter")],
             "mastra",
             Some("ma-1"),
+        );
+    }
+
+    #[test]
+    fn mastra_scorer_runs_are_not_agent_work() {
+        // capture `blind-ts-mastra` (EU, 2026-09-29): a live scorer grades the
+        // agent's run in a root trace of its own. Every span of it carries the
+        // graded run as `mastra.metadata.target*`, including the LLM judge's
+        // agent and model call beneath a `scorer_step`.
+        const SCOPE: &str = "@mastra/otel-exporter";
+        const TARGET: (&str, &str) = (
+            "mastra.metadata.targetTraceId",
+            "7df8c67d7b9310062270dae3ddc6e010",
+        );
+        let spans: &[(&str, &[(&str, &str)])] = &[
+            (
+                "scorer_run code-tool-call-accuracy-scorer",
+                &[
+                    ("gen_ai.operation.name", "scorer_run"),
+                    ("mastra.span.type", "scorer_run"),
+                    TARGET,
+                ],
+            ),
+            (
+                "scorer_step translation-quality-scorer",
+                &[
+                    ("gen_ai.operation.name", "scorer_step"),
+                    ("mastra.span.type", "scorer_step"),
+                    TARGET,
+                ],
+            ),
+            (
+                "invoke_agent judge",
+                &[
+                    ("gen_ai.operation.name", "invoke_agent"),
+                    ("gen_ai.agent.name", "judge"),
+                    ("mastra.span.type", "agent_run"),
+                    TARGET,
+                ],
+            ),
+            (
+                "chat openai/gpt-5-mini",
+                &[
+                    ("gen_ai.operation.name", "chat"),
+                    ("gen_ai.request.model", "openai/gpt-5-mini"),
+                    ("gen_ai.usage.input_tokens", "352"),
+                    ("mastra.span.type", "model_inference"),
+                    TARGET,
+                ],
+            ),
+            // A scorer run with no graded trace still names its own type.
+            (
+                "scorer_run code-tool-call-accuracy-scorer",
+                &[("mastra.span.type", "scorer_run")],
+            ),
+        ];
+        for (name, span) in spans {
+            assert!(
+                classify(SCOPE, name, span, &[]).is_none(),
+                "{name} was stamped"
+            );
+        }
+        // A judge's model call recorded by another instrumentation still
+        // carries the graded run, and is not stamped under that vendor either.
+        assert!(classify(
+            "langsmith",
+            "chat openai/gpt-5-mini",
+            &[("gen_ai.operation.name", "chat"), TARGET],
+            &[],
+        )
+        .is_none());
+        // The run it graded is still the agent's.
+        classified(
+            SCOPE,
+            "invoke_agent translator",
+            &[
+                ("gen_ai.operation.name", "invoke_agent"),
+                ("gen_ai.conversation.id", "maple-demo-conversation-1"),
+                ("mastra.span.type", "agent_run"),
+            ],
+            &[],
+            "mastra",
+            Some("maple-demo-conversation-1"),
         );
     }
 

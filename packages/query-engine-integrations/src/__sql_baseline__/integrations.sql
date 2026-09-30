@@ -45,7 +45,8 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-02 10:30:00'
           AND Timestamp <= '2026-01-02 12:30:00'
-        GROUP BY traceId) AS agent_traces
+        GROUP BY traceId
+        HAVING countIf((((SessionId != '' OR IsLlmCall = 1) OR IsToolCall = 1) OR AgentName != '')) > 0) AS agent_traces
         WHERE if(rawSessionId = '', concat('trace:', traceId), rawSessionId) IN ('wrun_sql_catalog', 'trace:7f3a4b5c6d7e8f901234567890abcdef'))
         GROUP BY traceId) AS session_traces
         INNER JOIN (SELECT
@@ -76,7 +77,8 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-02 10:30:00'
           AND Timestamp <= '2026-01-02 12:30:00'
-        GROUP BY traceId) AS agent_traces
+        GROUP BY traceId
+        HAVING countIf((((SessionId != '' OR IsLlmCall = 1) OR IsToolCall = 1) OR AgentName != '')) > 0) AS agent_traces
         WHERE if(rawSessionId = '', concat('trace:', traceId), rawSessionId) IN ('wrun_sql_catalog', 'trace:7f3a4b5c6d7e8f901234567890abcdef')) AS index_traces ON session_traces.traceId = index_traces.traceId
         GROUP BY sessionId
         ORDER BY startTime DESC
@@ -130,7 +132,8 @@ SELECT
           AND Timestamp >= '2026-01-02 10:30:00'
           AND Timestamp <= '2026-01-02 12:30:00'
         GROUP BY traceId
-        HAVING countIf(DeploymentEnv IN ('production')) > 0
+        HAVING countIf((((SessionId != '' OR IsLlmCall = 1) OR IsToolCall = 1) OR AgentName != '')) > 0
+          AND countIf(DeploymentEnv IN ('production')) > 0
           AND countIf(Model IN ('gpt-5.5')) > 0
           AND countIf(AgentName IN ('billing-agent')) > 0
           AND countIf(ToolName IN ('send_email')) > 0
@@ -166,7 +169,8 @@ SELECT
           AND Timestamp >= '2026-01-02 10:30:00'
           AND Timestamp <= '2026-01-02 12:30:00'
         GROUP BY traceId
-        HAVING countIf(DeploymentEnv IN ('production')) > 0
+        HAVING countIf((((SessionId != '' OR IsLlmCall = 1) OR IsToolCall = 1) OR AgentName != '')) > 0
+          AND countIf(DeploymentEnv IN ('production')) > 0
           AND countIf(Model IN ('gpt-5.5')) > 0
           AND countIf(AgentName IN ('billing-agent')) > 0
           AND countIf(ToolName IN ('send_email')) > 0
@@ -224,7 +228,8 @@ SELECT
           AND Timestamp >= '2026-01-02 10:30:00'
           AND Timestamp <= '2026-01-02 12:30:00'
         GROUP BY traceId
-        HAVING countIf(VendorId IN ('eve')) > 0
+        HAVING countIf((((SessionId != '' OR IsLlmCall = 1) OR IsToolCall = 1) OR AgentName != '')) > 0
+          AND countIf(VendorId IN ('eve')) > 0
           AND countIf(ServiceName IN ('maple-slack-agent')) > 0) AS agent_traces
         WHERE if(rawSessionId = '', concat('trace:', traceId), rawSessionId) IN ('wrun_sql_catalog', 'trace:7f3a4b5c6d7e8f901234567890abcdef'))
         GROUP BY traceId) AS session_traces
@@ -257,7 +262,8 @@ SELECT
           AND Timestamp >= '2026-01-02 10:30:00'
           AND Timestamp <= '2026-01-02 12:30:00'
         GROUP BY traceId
-        HAVING countIf(VendorId IN ('eve')) > 0
+        HAVING countIf((((SessionId != '' OR IsLlmCall = 1) OR IsToolCall = 1) OR AgentName != '')) > 0
+          AND countIf(VendorId IN ('eve')) > 0
           AND countIf(ServiceName IN ('maple-slack-agent')) > 0) AS agent_traces
         WHERE if(rawSessionId = '', concat('trace:', traceId), rawSessionId) IN ('wrun_sql_catalog', 'trace:7f3a4b5c6d7e8f901234567890abcdef')) AS index_traces ON session_traces.traceId = index_traces.traceId
         GROUP BY sessionId
@@ -327,7 +333,8 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-        GROUP BY traceId) AS index_traces
+        GROUP BY traceId
+        HAVING countIf((((SessionId != '' OR IsLlmCall = 1) OR IsToolCall = 1) OR AgentName != '')) > 0) AS index_traces
         GROUP BY sessionId) AS window_sessions) AS netted_sessions) AS session_measures) AS measured_sessions
         WHERE tupleElement(measured, 2) > 0
         GROUP BY measure
@@ -346,7 +353,8 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-        GROUP BY traceId) AS facet_traces
+        GROUP BY traceId
+        HAVING countIf((((SessionId != '' OR IsLlmCall = 1) OR IsToolCall = 1) OR AgentName != '')) > 0) AS facet_traces
         GROUP BY name
         ORDER BY count DESC
         LIMIT 50
@@ -363,7 +371,8 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-        GROUP BY traceId) AS facet_traces
+        GROUP BY traceId
+        HAVING countIf((((SessionId != '' OR IsLlmCall = 1) OR IsToolCall = 1) OR AgentName != '')) > 0) AS facet_traces
         GROUP BY name
         ORDER BY count DESC
         LIMIT 50
@@ -380,7 +389,8 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-        GROUP BY traceId) AS facet_traces
+        GROUP BY traceId
+        HAVING countIf((((SessionId != '' OR IsLlmCall = 1) OR IsToolCall = 1) OR AgentName != '')) > 0) AS facet_traces
         GROUP BY name
         ORDER BY count DESC
         LIMIT 50
@@ -397,7 +407,8 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-        GROUP BY traceId) AS facet_traces
+        GROUP BY traceId
+        HAVING countIf((((SessionId != '' OR IsLlmCall = 1) OR IsToolCall = 1) OR AgentName != '')) > 0) AS facet_traces
         GROUP BY name
         ORDER BY count DESC
         LIMIT 50
@@ -414,7 +425,8 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-        GROUP BY traceId) AS facet_traces
+        GROUP BY traceId
+        HAVING countIf((((SessionId != '' OR IsLlmCall = 1) OR IsToolCall = 1) OR AgentName != '')) > 0) AS facet_traces
         GROUP BY name
         ORDER BY count DESC
         LIMIT 50
@@ -431,7 +443,8 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-        GROUP BY traceId) AS facet_traces
+        GROUP BY traceId
+        HAVING countIf((((SessionId != '' OR IsLlmCall = 1) OR IsToolCall = 1) OR AgentName != '')) > 0) AS facet_traces
         GROUP BY name
         ORDER BY count DESC
         LIMIT 50
@@ -526,7 +539,8 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-        GROUP BY traceId) AS index_traces
+        GROUP BY traceId
+        HAVING countIf((((SessionId != '' OR IsLlmCall = 1) OR IsToolCall = 1) OR AgentName != '')) > 0) AS index_traces
         GROUP BY sessionId
         ORDER BY agentStart DESC, sessionId ASC
         LIMIT 50) AS ranked_sessions) AS netted_sessions
@@ -623,7 +637,8 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
         GROUP BY traceId
-        HAVING countIf(VendorId IN ('eve')) > 0
+        HAVING countIf((((SessionId != '' OR IsLlmCall = 1) OR IsToolCall = 1) OR AgentName != '')) > 0
+          AND countIf(VendorId IN ('eve')) > 0
           AND countIf(ServiceName IN ('maple-slack-agent')) > 0
           AND countIf(DeploymentEnv IN ('production')) > 0
           AND countIf(Model IN ('gpt-5.5')) > 0
@@ -738,7 +753,8 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
         GROUP BY traceId
-        HAVING countIf(VendorId IN ('eve')) > 0
+        HAVING countIf((((SessionId != '' OR IsLlmCall = 1) OR IsToolCall = 1) OR AgentName != '')) > 0
+          AND countIf(VendorId IN ('eve')) > 0
           AND countIf(ServiceName IN ('maple-slack-agent')) > 0) AS index_traces
         GROUP BY sessionId
         ORDER BY agentStart DESC, sessionId ASC
@@ -1066,7 +1082,8 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-        GROUP BY TraceId) AS trace ON ai_trace_index.TraceId = trace.TraceId
+        GROUP BY TraceId
+        HAVING countIf((((SessionId != '' OR IsLlmCall = 1) OR IsToolCall = 1) OR AgentName != '')) > 0) AS trace ON ai_trace_index.TraceId = trace.TraceId
         WHERE ai_trace_index.OrgId = 'org_sql_catalog'
           AND ai_trace_index.Timestamp >= '2026-01-01 10:30:00'
           AND ai_trace_index.Timestamp <= '2026-01-03 14:15:00'
@@ -1130,7 +1147,8 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-        GROUP BY TraceId) AS trace ON ai_trace_index.TraceId = trace.TraceId
+        GROUP BY TraceId
+        HAVING countIf((((SessionId != '' OR IsLlmCall = 1) OR IsToolCall = 1) OR AgentName != '')) > 0) AS trace ON ai_trace_index.TraceId = trace.TraceId
         WHERE ai_trace_index.OrgId = 'org_sql_catalog'
           AND ai_trace_index.Timestamp >= '2026-01-01 10:30:00'
           AND ai_trace_index.Timestamp <= '2026-01-03 14:15:00'
@@ -1207,7 +1225,8 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-        GROUP BY TraceId) AS trace ON ai_trace_index.TraceId = trace.TraceId
+        GROUP BY TraceId
+        HAVING countIf((((SessionId != '' OR IsLlmCall = 1) OR IsToolCall = 1) OR AgentName != '')) > 0) AS trace ON ai_trace_index.TraceId = trace.TraceId
         WHERE ai_trace_index.OrgId = 'org_sql_catalog'
           AND ai_trace_index.Timestamp >= '2026-01-01 10:30:00'
           AND ai_trace_index.Timestamp <= '2026-01-03 14:15:00'
@@ -1279,7 +1298,8 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-        GROUP BY TraceId) AS trace ON ai_trace_index.TraceId = trace.TraceId
+        GROUP BY TraceId
+        HAVING countIf((((SessionId != '' OR IsLlmCall = 1) OR IsToolCall = 1) OR AgentName != '')) > 0) AS trace ON ai_trace_index.TraceId = trace.TraceId
         WHERE ai_trace_index.OrgId = 'org_sql_catalog'
           AND ai_trace_index.Timestamp >= '2026-01-01 10:30:00'
           AND ai_trace_index.Timestamp <= '2026-01-03 14:15:00'
@@ -1334,7 +1354,8 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-        GROUP BY TraceId) AS trace ON ai_trace_index.TraceId = trace.TraceId
+        GROUP BY TraceId
+        HAVING countIf((((SessionId != '' OR IsLlmCall = 1) OR IsToolCall = 1) OR AgentName != '')) > 0) AS trace ON ai_trace_index.TraceId = trace.TraceId
         WHERE ai_trace_index.OrgId = 'org_sql_catalog'
           AND ai_trace_index.Timestamp >= '2026-01-01 10:30:00'
           AND ai_trace_index.Timestamp <= '2026-01-03 14:15:00'
@@ -1396,7 +1417,8 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-        GROUP BY TraceId) AS trace ON ai_trace_index.TraceId = trace.TraceId
+        GROUP BY TraceId
+        HAVING countIf((((SessionId != '' OR IsLlmCall = 1) OR IsToolCall = 1) OR AgentName != '')) > 0) AS trace ON ai_trace_index.TraceId = trace.TraceId
         WHERE ai_trace_index.OrgId = 'org_sql_catalog'
           AND ai_trace_index.Timestamp >= '2026-01-01 10:30:00'
           AND ai_trace_index.Timestamp <= '2026-01-03 14:15:00'
@@ -1443,7 +1465,8 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-        GROUP BY TraceId) AS trace ON ai_trace_index.TraceId = trace.TraceId
+        GROUP BY TraceId
+        HAVING countIf((((SessionId != '' OR IsLlmCall = 1) OR IsToolCall = 1) OR AgentName != '')) > 0) AS trace ON ai_trace_index.TraceId = trace.TraceId
         WHERE ai_trace_index.OrgId = 'org_sql_catalog'
           AND ai_trace_index.Timestamp >= '2026-01-01 10:30:00'
           AND ai_trace_index.Timestamp <= '2026-01-03 14:15:00'
@@ -1483,7 +1506,8 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-        GROUP BY TraceId) AS trace ON ai_trace_index.TraceId = trace.TraceId
+        GROUP BY TraceId
+        HAVING countIf((((SessionId != '' OR IsLlmCall = 1) OR IsToolCall = 1) OR AgentName != '')) > 0) AS trace ON ai_trace_index.TraceId = trace.TraceId
         WHERE ai_trace_index.OrgId = 'org_sql_catalog'
           AND ai_trace_index.Timestamp >= '2026-01-01 10:30:00'
           AND ai_trace_index.Timestamp <= '2026-01-03 14:15:00'
@@ -1526,7 +1550,8 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-        GROUP BY TraceId) AS trace ON ai_trace_index.TraceId = trace.TraceId
+        GROUP BY TraceId
+        HAVING countIf((((SessionId != '' OR IsLlmCall = 1) OR IsToolCall = 1) OR AgentName != '')) > 0) AS trace ON ai_trace_index.TraceId = trace.TraceId
         WHERE ai_trace_index.OrgId = 'org_sql_catalog'
           AND ai_trace_index.Timestamp >= '2026-01-01 10:30:00'
           AND ai_trace_index.Timestamp <= '2026-01-03 14:15:00'
@@ -1568,7 +1593,8 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-        GROUP BY TraceId) AS trace ON ai_trace_index.TraceId = trace.TraceId
+        GROUP BY TraceId
+        HAVING countIf((((SessionId != '' OR IsLlmCall = 1) OR IsToolCall = 1) OR AgentName != '')) > 0) AS trace ON ai_trace_index.TraceId = trace.TraceId
         WHERE ai_trace_index.OrgId = 'org_sql_catalog'
           AND ai_trace_index.Timestamp >= '2026-01-01 10:30:00'
           AND ai_trace_index.Timestamp <= '2026-01-03 14:15:00'
@@ -1615,7 +1641,8 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-        GROUP BY TraceId) AS trace ON ai_trace_index.TraceId = trace.TraceId
+        GROUP BY TraceId
+        HAVING countIf((((SessionId != '' OR IsLlmCall = 1) OR IsToolCall = 1) OR AgentName != '')) > 0) AS trace ON ai_trace_index.TraceId = trace.TraceId
         WHERE ai_trace_index.OrgId = 'org_sql_catalog'
           AND ai_trace_index.Timestamp >= '2026-01-01 10:30:00'
           AND ai_trace_index.Timestamp <= '2026-01-03 14:15:00'
@@ -1669,7 +1696,8 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-        GROUP BY TraceId) AS trace ON ai_trace_index.TraceId = trace.TraceId
+        GROUP BY TraceId
+        HAVING countIf((((SessionId != '' OR IsLlmCall = 1) OR IsToolCall = 1) OR AgentName != '')) > 0) AS trace ON ai_trace_index.TraceId = trace.TraceId
         WHERE ai_trace_index.OrgId = 'org_sql_catalog'
           AND ai_trace_index.Timestamp >= '2026-01-01 10:30:00'
           AND ai_trace_index.Timestamp <= '2026-01-03 14:15:00'
@@ -1720,7 +1748,8 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-        GROUP BY TraceId) AS trace ON ai_trace_index.TraceId = trace.TraceId
+        GROUP BY TraceId
+        HAVING countIf((((SessionId != '' OR IsLlmCall = 1) OR IsToolCall = 1) OR AgentName != '')) > 0) AS trace ON ai_trace_index.TraceId = trace.TraceId
         WHERE ai_trace_index.OrgId = 'org_sql_catalog'
           AND ai_trace_index.Timestamp >= '2026-01-01 10:30:00'
           AND ai_trace_index.Timestamp <= '2026-01-03 14:15:00'
@@ -1767,7 +1796,8 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-        GROUP BY TraceId) AS trace ON ai_trace_index.TraceId = trace.TraceId
+        GROUP BY TraceId
+        HAVING countIf((((SessionId != '' OR IsLlmCall = 1) OR IsToolCall = 1) OR AgentName != '')) > 0) AS trace ON ai_trace_index.TraceId = trace.TraceId
         WHERE ai_trace_index.OrgId = 'org_sql_catalog'
           AND ai_trace_index.Timestamp >= '2026-01-01 10:30:00'
           AND ai_trace_index.Timestamp <= '2026-01-03 14:15:00'
@@ -1822,7 +1852,8 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-        GROUP BY TraceId) AS trace ON ai_trace_index.TraceId = trace.TraceId
+        GROUP BY TraceId
+        HAVING countIf((((SessionId != '' OR IsLlmCall = 1) OR IsToolCall = 1) OR AgentName != '')) > 0) AS trace ON ai_trace_index.TraceId = trace.TraceId
         WHERE ai_trace_index.OrgId = 'org_sql_catalog'
           AND ai_trace_index.Timestamp >= '2026-01-01 10:30:00'
           AND ai_trace_index.Timestamp <= '2026-01-03 14:15:00'
@@ -1878,7 +1909,8 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2025-12-30 06:45:00'
           AND Timestamp <= '2026-01-01 10:30:00'
-        GROUP BY TraceId) AS trace ON ai_trace_index.TraceId = trace.TraceId
+        GROUP BY TraceId
+        HAVING countIf((((SessionId != '' OR IsLlmCall = 1) OR IsToolCall = 1) OR AgentName != '')) > 0) AS trace ON ai_trace_index.TraceId = trace.TraceId
         WHERE ai_trace_index.OrgId = 'org_sql_catalog'
           AND ai_trace_index.Timestamp >= '2025-12-30 06:45:00'
           AND ai_trace_index.Timestamp <= '2026-01-01 10:30:00'
@@ -1908,7 +1940,8 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-        GROUP BY TraceId) AS window_traces
+        GROUP BY TraceId
+        HAVING countIf((((SessionId != '' OR IsLlmCall = 1) OR IsToolCall = 1) OR AgentName != '')) > 0) AS window_traces
 FORMAT JSON
 
 -- builder:billing-usage:dailyProductEventCountQuery:default
