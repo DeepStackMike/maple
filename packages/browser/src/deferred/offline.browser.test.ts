@@ -41,6 +41,7 @@ const storedCount = async (): Promise<number> => {
 let stop: (() => void) | undefined
 
 beforeEach(async () => {
+	localStorage.removeItem("maple-consent-revoked-at")
 	await new Promise((resolve) => {
 		const request = indexedDB.deleteDatabase("maple-offline")
 		request.onsuccess = request.onerror = request.onblocked = () => resolve(undefined)
@@ -129,7 +130,38 @@ describe("offline queue across tabs", () => {
 })
 
 describe("offline queue and consent", () => {
-	it("drops batches captured before the current consent grant instead of sending them", async () => {
+	it("sends an earlier page's batches once consent is granted on this one", async () => {
+		const posts: string[] = []
+		let online = false
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string) => {
+				if (!online) throw new TypeError("Failed to fetch")
+				posts.push(url)
+				return new Response("{}")
+			}),
+		)
+		configurePrivacy({ requireConsent: true })
+		setConsent(true)
+		const first = startOfflineQueue(CONFIG)
+		first.stashSpans(finishedSpans("offline"))
+		await vi.waitFor(async () => expect(await storedCount()).toBe(1))
+		first.stop()
+
+		// The next page load: consent is granted afresh, which is not a revoke.
+		resetConsentForTests()
+		configurePrivacy({ requireConsent: true })
+		await new Promise((resolve) => setTimeout(resolve, 5))
+		setConsent(true)
+		online = true
+		const second = startOfflineQueue(CONFIG)
+		stop = second.stop
+		await second.resend()
+		await vi.waitFor(async () => expect(await storedCount()).toBe(0))
+		expect(posts).toEqual(["https://ingest.test/v1/traces"])
+	})
+
+	it("drops batches captured before consent was withdrawn instead of sending them", async () => {
 		const posts: string[] = []
 		vi.stubGlobal(
 			"fetch",
@@ -145,9 +177,10 @@ describe("offline queue and consent", () => {
 		await vi.waitFor(async () => expect(await storedCount()).toBe(1))
 		first.stop()
 
-		// A later page load that only has consent from now on.
-		configurePrivacy({ requireConsent: true })
+		// Consent was withdrawn somewhere this queue never saw (another tab, which records it), then granted again.
 		await new Promise((resolve) => setTimeout(resolve, 5))
+		localStorage.setItem("maple-consent-revoked-at", String(Date.now()))
+		configurePrivacy({ requireConsent: true })
 		setConsent(true)
 		vi.stubGlobal(
 			"fetch",
@@ -161,6 +194,31 @@ describe("offline queue and consent", () => {
 		await second.resend()
 		await vi.waitFor(async () => expect(await storedCount()).toBe(0))
 		expect(posts.filter((url) => url.endsWith("/v1/traces"))).toEqual([])
+	})
+
+	it("stops a resend when consent is withdrawn during it", async () => {
+		configurePrivacy({ requireConsent: true })
+		setConsent(true)
+		let online = false
+		const posts: string[] = []
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string) => {
+				if (!online) throw new TypeError("Failed to fetch")
+				posts.push(url)
+				// The user withdraws consent while the first batch is in flight.
+				setConsent(false)
+				return new Response("{}")
+			}),
+		)
+		const queue = startOfflineQueue(CONFIG)
+		stop = queue.stop
+		queue.stashSpans(finishedSpans("one"))
+		queue.stashSpans(finishedSpans("two"))
+		await vi.waitFor(async () => expect(await storedCount()).toBe(2))
+		online = true
+		await queue.resend()
+		expect(posts).toHaveLength(1)
 	})
 })
 

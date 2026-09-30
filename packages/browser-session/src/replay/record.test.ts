@@ -263,6 +263,41 @@ describe("startBufferedRecording", () => {
 		expect(posted).toEqual([])
 		expect(stopFn).toHaveBeenCalled()
 	})
+
+	it("takes a checkout snapshot only when the page changed since the last one", () => {
+		vi.useFakeTimers()
+		takeFullSnapshot.mockClear()
+		const recorder = startBufferedRecording(CONFIG, "session-1")
+		snapshot(1_000)
+		vi.advanceTimersByTime(30_000)
+		expect(takeFullSnapshot).not.toHaveBeenCalled()
+		emitRef!(incremental(1_500))
+		vi.advanceTimersByTime(30_000)
+		expect(takeFullSnapshot).toHaveBeenCalledWith(true)
+		recorder.stop()
+		vi.useRealTimers()
+	})
+
+	it("waits for the page to be shown, unless the buffer has nothing to play back", () => {
+		vi.useFakeTimers()
+		vi.stubGlobal("document", { visibilityState: "hidden" })
+		takeFullSnapshot.mockClear()
+		const recorder = startBufferedRecording(CONFIG, "session-1")
+		snapshot(1_000)
+		emitRef!(incremental(1_500))
+		vi.advanceTimersByTime(30_000)
+		expect(takeFullSnapshot).not.toHaveBeenCalled()
+		recorder.stop()
+
+		// Nothing buffered yet (or the size cap emptied it): a snapshot is due even while hidden.
+		const empty = startBufferedRecording(CONFIG, "session-1")
+		emitRef!(incremental(2_000))
+		vi.advanceTimersByTime(30_000)
+		expect(takeFullSnapshot).toHaveBeenCalledWith(true)
+		empty.stop()
+		vi.unstubAllGlobals()
+		vi.useRealTimers()
+	})
 })
 
 describe("canvas capture", () => {

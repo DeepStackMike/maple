@@ -154,7 +154,8 @@ an error is recorded.
 ## Trace sampling
 
 `tracing: { sampleRate: 0.25 }` exports the traces of ~25% of sessions. The decision is per
-session, so a sampled session keeps all of its traces. Error spans are always exported.
+session, so a sampled session keeps all of its traces. Reported errors (uncaught errors, unhandled
+rejections, `captureException`) are always exported.
 
 ## Regions
 
@@ -165,7 +166,7 @@ explicit `endpoint` (a proxy, or self-hosted ingest) always wins over `region`.
 
 ## Tracing across origins
 
-`fetch` spans carry the W3C `traceparent` header to same-origin requests only.
+`fetch` and XHR spans carry the W3C `traceparent` header to same-origin requests only.
 When your API lives on another origin, list it so browser and backend spans
 join one trace, and allow the `traceparent` header in the API's CORS policy:
 
@@ -216,6 +217,8 @@ import { instrumentReactRouter, instrumentTanStackRouter } from "@maple-dev/brow
 instrumentReactRouter(createBrowserRouter(routes)) // navigate /projects/:id
 instrumentTanStackRouter(router) // navigate /projects/$projectId
 ```
+
+Attach them after `MapleBrowser.init`: a navigation reported earlier uses up the page load.
 
 ## Linking a marketing site to your app
 

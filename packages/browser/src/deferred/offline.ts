@@ -2,13 +2,7 @@
 // the exporters send, and sent again when the browser is back online or on the
 // next page load. Best-effort: a private window or blocked storage just means
 // nothing is kept.
-import {
-	consentAllowedSince,
-	hasConsent,
-	ingestHeaders,
-	onConsentChange,
-	sdkHint,
-} from "@maple/browser-session"
+import { consentRevokedAt, hasConsent, ingestHeaders, onConsentChange, sdkHint } from "@maple/browser-session"
 import { JsonLogsSerializer, JsonTraceSerializer } from "@opentelemetry/otlp-transformer"
 import type { ReadableLogRecord } from "@opentelemetry/sdk-logs"
 import type { ReadableSpan } from "@opentelemetry/sdk-trace-base"
@@ -49,11 +43,16 @@ const settle = <T>(request: IDBRequest<T>): Promise<T> =>
 
 function openDb(): Promise<IDBDatabase | undefined> {
 	if (typeof indexedDB === "undefined") return Promise.resolve(undefined)
-	const request = indexedDB.open(DB_NAME, 1)
-	request.onupgradeneeded = () => {
-		request.result.createObjectStore(STORE, { keyPath: "id", autoIncrement: true })
+	try {
+		const request = indexedDB.open(DB_NAME, 1)
+		request.onupgradeneeded = () => {
+			request.result.createObjectStore(STORE, { keyPath: "id", autoIncrement: true })
+		}
+		return settle(request).catch(() => undefined)
+	} catch {
+		// Opaque origins (sandboxed iframes, `data:` pages) throw synchronously.
+		return Promise.resolve(undefined)
 	}
-	return settle(request).catch(() => undefined)
 }
 
 export interface OfflineQueue {
@@ -73,11 +72,12 @@ export function startOfflineQueue(config: ResolvedConfig): OfflineQueue {
 	const store = async (mode: IDBTransactionMode): Promise<IDBObjectStore | undefined> =>
 		(await db)?.transaction(STORE, mode).objectStore(STORE)
 
-	const add = async (signal: Signal, body: Uint8Array | undefined): Promise<void> => {
-		if (!body || !hasConsent()) return
+	const add = async (signal: Signal, body: Uint8Array, createdAt: number): Promise<void> => {
+		// Withdrawn while this write waited its turn: it must not land after the clear.
+		if (!hasConsent() || createdAt <= consentRevokedAt()) return
 		const batches = await store("readwrite")
 		if (!batches) return
-		await settle(batches.add({ signal, body, createdAt: Date.now() } satisfies StoredBatch))
+		await settle(batches.add({ signal, body, createdAt } satisfies StoredBatch))
 		const keys = await settle(batches.getAllKeys())
 		for (const key of keys.slice(0, Math.max(0, keys.length - MAX_BATCHES)))
 			await settle(batches.delete(key))
@@ -88,8 +88,10 @@ export function startOfflineQueue(config: ResolvedConfig): OfflineQueue {
 		const read = await store("readonly")
 		const stored = read ? (await settle(read.getAll())).filter(isStoredBatch) : []
 		for (const batch of stored) {
-			// Expired, or captured before the current consent grant (a revoke this queue never saw): drop it.
-			if (Date.now() - batch.createdAt <= MAX_AGE_MS && batch.createdAt >= consentAllowedSince()) {
+			// Checked per batch: consent can be withdrawn while an earlier POST is in flight.
+			if (!hasConsent()) return
+			// Expired, or captured before consent was last withdrawn (a revoke this queue never saw): drop it.
+			if (Date.now() - batch.createdAt <= MAX_AGE_MS && batch.createdAt > consentRevokedAt()) {
 				const response = await fetch(`${config.endpoint}/v1/${batch.signal}`, {
 					method: "POST",
 					headers,
@@ -132,27 +134,38 @@ export function startOfflineQueue(config: ResolvedConfig): OfflineQueue {
 		if (batches) await settle(batches.clear())
 	}
 
+	/** Writes in order: a revoke's clear runs after the writes before it, and `stop` closes the database after all of them. */
+	let writes: Promise<void> = Promise.resolve()
+	const queue = (write: () => Promise<void>): void => {
+		writes = writes.then(write).catch(() => {})
+	}
+	const stash = (signal: Signal, body: Uint8Array | undefined): void => {
+		// Stamped now, not when the write runs, so a revoke in between is seen for what it is.
+		const createdAt = Date.now()
+		if (body && hasConsent()) queue(() => add(signal, body, createdAt))
+	}
+
 	const onOnline = (): void => void resend()
 	window.addEventListener("online", onOnline)
 	// Withdrawn consent also withdraws what was kept for later.
 	const stopConsent = onConsentChange((allowed) => {
-		if (!allowed) void clear().catch(() => {})
+		// The consent module records the revoke itself, so it holds even where this queue never ran.
+		if (!allowed) queue(clear)
 	})
 	void resend()
 
 	return {
 		stashSpans: (spans) => {
-			if (spans.length > 0)
-				void add("traces", JsonTraceSerializer.serializeRequest(spans)).catch(() => {})
+			if (spans.length > 0) stash("traces", JsonTraceSerializer.serializeRequest(spans))
 		},
 		stashLogs: (logs) => {
-			if (logs.length > 0) void add("logs", JsonLogsSerializer.serializeRequest(logs)).catch(() => {})
+			if (logs.length > 0) stash("logs", JsonLogsSerializer.serializeRequest(logs))
 		},
 		resend,
 		stop: () => {
 			window.removeEventListener("online", onOnline)
 			stopConsent()
-			void db.then((opened) => opened?.close())
+			void writes.then(() => db).then((opened) => opened?.close())
 		},
 	}
 }
