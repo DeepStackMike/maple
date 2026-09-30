@@ -246,7 +246,8 @@ fn resource_facts(attrs: &[KeyValue]) -> ResourceFacts<'_> {
 
 /// Scope-level facts, computed once per `ScopeSpans`. `any` is true when the
 /// scope alone can decide a vendor; the flags that only narrow span evidence
-/// (`spring_boot`, `vercel_ai`, `matches_service_name`, the crewai refusal)
+/// (`genkit`, `spring_boot`, `vercel_ai`, `matches_service_name`, the crewai
+/// refusal)
 /// deliberately don't set it, so they never force predicate evaluation on
 /// evidence-free spans.
 #[expect(
@@ -260,8 +261,10 @@ struct ScopeFacts {
     dspy: bool,
     eve: bool,
     flue: bool,
+    genkit: bool,
     google_adk: bool,
     haystack: bool,
+    haystack_openinference: bool,
     langchain: bool,
     litellm: bool,
     llamaindex: bool,
@@ -292,6 +295,7 @@ const SCOPE_NAMES: &[&str] = &[
     "openinference.instrumentation.",
     "eve",
     "@flue/opentelemetry",
+    "genkit-tracer",
     "gcp.vertex.agent",
     "haystack",
     "langsmith",
@@ -301,6 +305,7 @@ const SCOPE_NAMES: &[&str] = &[
     "agent_framework",
     "Experimental.Microsoft.Agents.AI",
     "@arizeai/openinference-instrumentation-openai-agents",
+    "@arizeai/openinference-instrumentation-langchain",
     "agent_runtime ",
     "openrouter",
     "crewai.telemetry",
@@ -310,6 +315,7 @@ const SCOPE_NAMES: &[&str] = &[
     "ai",
     "gen_ai",
     "semantic_kernel.",
+    "Microsoft.SemanticKernel.Diagnostics",
 ];
 
 static SCOPE_SCREEN: [u64; 256] = build_screen(&[SCOPE_NAMES]);
@@ -334,9 +340,16 @@ fn scope_facts(scope_name: &str, resource: &ResourceFacts) -> ScopeFacts {
         "openinference.instrumentation.dspy" => facts.dspy = true,
         "eve" => facts.eve = true,
         "@flue/opentelemetry" => facts.flue = true,
-        "gcp.vertex.agent" => facts.google_adk = true,
+        "genkit-tracer" => facts.genkit = true,
+        "gcp.vertex.agent" | "openinference.instrumentation.google_adk" => {
+            facts.google_adk = true;
+        }
         "haystack" => facts.haystack = true,
-        "langsmith" | "openinference.instrumentation.langchain" => facts.langchain = true,
+        "openinference.instrumentation.haystack" => facts.haystack_openinference = true,
+        // The `@arizeai/` name is the TypeScript instrumentor.
+        "langsmith"
+        | "openinference.instrumentation.langchain"
+        | "@arizeai/openinference-instrumentation-langchain" => facts.langchain = true,
         "litellm" => facts.litellm = true,
         "llamaindex.opentelemetry.tracer" | "openinference.instrumentation.llama_index" => {
             facts.llamaindex = true;
@@ -354,7 +367,9 @@ fn scope_facts(scope_name: &str, resource: &ResourceFacts) -> ScopeFacts {
         "openrouter" => facts.openrouter = true,
         "openinference.instrumentation.crewai" | "crewai.telemetry" => facts.crewai = true,
         "openinference.instrumentation.smolagents" => facts.smolagents = true,
-        "pydantic-ai" => facts.pydantic = true,
+        "pydantic-ai" | "openinference.instrumentation.pydantic_ai" => facts.pydantic = true,
+        // The .NET build's ActivitySource; Python's are `semantic_kernel.*`.
+        "Microsoft.SemanticKernel.Diagnostics" => facts.semantic_kernel = true,
         "strands.telemetry.tracer" => facts.strands = true,
         "org.springframework.boot" => facts.spring_boot = true,
         "ai" | "gen_ai" => facts.vercel_ai = true,
@@ -377,6 +392,7 @@ fn scope_facts(scope_name: &str, resource: &ResourceFacts) -> ScopeFacts {
         || facts.flue
         || facts.google_adk
         || facts.haystack
+        || facts.haystack_openinference
         || facts.langchain
         || facts.litellm
         || facts.llamaindex
@@ -880,9 +896,26 @@ static VENDORS: &[Vendor] = &[
         session_keys: &["gen_ai.conversation.id"],
     },
     Vendor {
+        id: "genkit",
+        detect: detect_genkit,
+        session_keys: CONVERSATION_ID_ONLY,
+    },
+    Vendor {
         id: "google_adk",
         detect: detect_google_adk,
-        session_keys: &["gen_ai.conversation.id", "gcp.vertex.agent.session_id"],
+        // `session.id` is OpenInference's.
+        session_keys: &[
+            "gen_ai.conversation.id",
+            "gcp.vertex.agent.session_id",
+            "session.id",
+        ],
+    },
+    // One vendor, two dialects with their own session keys: `session.id` is
+    // the OpenInference instrumentor's, and means nothing on a native span.
+    Vendor {
+        id: "haystack",
+        detect: detect_haystack_openinference,
+        session_keys: &["session.id", "gen_ai.conversation.id"],
     },
     Vendor {
         id: "haystack",
@@ -948,7 +981,8 @@ static VENDORS: &[Vendor] = &[
     Vendor {
         id: "pydantic_ai",
         detect: detect_pydantic_ai,
-        session_keys: &["gen_ai.conversation.id"],
+        // `session.id` is OpenInference's.
+        session_keys: &["gen_ai.conversation.id", "session.id"],
     },
     Vendor {
         id: "semantic_kernel",
@@ -1099,8 +1133,19 @@ fn detect_flue(c: &Ctx) -> bool {
     c.scope.flue || c.ev.flue
 }
 
+fn detect_genkit(c: &Ctx) -> bool {
+    // Genkit's raw spans carry only its own `genkit:*` dialect, which nothing
+    // here decodes; the spans an app's GenAI processor has restated name their
+    // operation.
+    c.scope.genkit && c.ev.has_gen_ai_operation_name
+}
+
 fn detect_google_adk(c: &Ctx) -> bool {
     c.scope.google_adk || c.ev.gcp_vertex_agent || c.ev.gen_ai_system == "gcp.vertex.agent"
+}
+
+fn detect_haystack_openinference(c: &Ctx) -> bool {
+    c.scope.haystack_openinference
 }
 
 fn detect_haystack(c: &Ctx) -> bool {
@@ -1256,7 +1301,10 @@ fn detect_vercel_ai_sdk(c: &Ctx) -> bool {
 }
 
 fn detect_unknown_genai(c: &Ctx) -> bool {
-    c.ev.has_gen_ai_operation_name
+    // An OpenInference span that also dual-writes the GenAI operation (every
+    // provider-client instrumentor does) belongs to the bucket that decodes
+    // its dialect.
+    c.ev.has_gen_ai_operation_name && !c.ev.openinference_span_kind
 }
 
 fn detect_unknown_openinference(c: &Ctx) -> bool {
@@ -2047,6 +2095,69 @@ mod tests {
                 "openai_agents_sdk",
                 "oa-1",
             ),
+            (
+                "@arizeai/openinference-instrumentation-langchain",
+                "ChatOpenAI",
+                &[
+                    ("openinference.span.kind", "LLM"),
+                    ("gen_ai.operation.name", "chat"),
+                    ("session.id", "lc-3"),
+                ],
+                "langchain",
+                "lc-3",
+            ),
+            (
+                "openinference.instrumentation.haystack",
+                "OpenAIChatGenerator.run",
+                &[("openinference.span.kind", "LLM"), ("session.id", "h-1")],
+                "haystack",
+                "h-1",
+            ),
+            (
+                "openinference.instrumentation.google_adk",
+                "invoke_agent weather_agent",
+                &[("openinference.span.kind", "AGENT"), ("session.id", "g-2")],
+                "google_adk",
+                "g-2",
+            ),
+            (
+                "openinference.instrumentation.pydantic_ai",
+                "agent run",
+                &[("openinference.span.kind", "AGENT"), ("session.id", "p-2")],
+                "pydantic_ai",
+                "p-2",
+            ),
+            (
+                "Microsoft.SemanticKernel.Diagnostics",
+                "chat.completions gpt-4o",
+                &[
+                    ("gen_ai.operation.name", "chat"),
+                    ("gen_ai.conversation.id", "sk-1"),
+                ],
+                "semantic_kernel",
+                "sk-1",
+            ),
+            (
+                "Microsoft.SemanticKernel.Diagnostics",
+                "invoke_agent WeatherAgent",
+                &[
+                    ("gen_ai.operation.name", "invoke_agent"),
+                    ("gen_ai.conversation.id", "sk-2"),
+                ],
+                "semantic_kernel",
+                "sk-2",
+            ),
+            (
+                "genkit-tracer",
+                "generate",
+                &[
+                    ("genkit:type", "action"),
+                    ("gen_ai.operation.name", "chat"),
+                    ("gen_ai.conversation.id", "gk-1"),
+                ],
+                "genkit",
+                "gk-1",
+            ),
         ];
         for (scope_name, span_name, span_attrs, vendor, session_id) in cases {
             classified(
@@ -2056,6 +2167,83 @@ mod tests {
                 &[],
                 vendor,
                 Some(session_id),
+            );
+        }
+    }
+
+    #[test]
+    fn session_key_order_follows_the_emitting_dialect() {
+        // Every span carries both keys.
+        let both = &[
+            ("gen_ai.conversation.id", "conv-1"),
+            ("session.id", "app-1"),
+        ];
+        for (scope, span_name, vendor, session_id) in [
+            // OpenInference's own session key leads on its instrumentor's spans.
+            (
+                "openinference.instrumentation.haystack",
+                "OpenAIChatGenerator.run",
+                "haystack",
+                "app-1",
+            ),
+            // A native span's `session.id` is not the vendor's: the
+            // conversation id wins.
+            ("haystack", "haystack.pipeline.run", "haystack", "conv-1"),
+            // google_adk and pydantic_ai rank `session.id` after their own keys
+            // on both scopes.
+            (
+                "openinference.instrumentation.google_adk",
+                "invoke_agent weather_agent",
+                "google_adk",
+                "conv-1",
+            ),
+            ("gcp.vertex.agent", "invoke_agent", "google_adk", "conv-1"),
+            (
+                "openinference.instrumentation.pydantic_ai",
+                "agent run",
+                "pydantic_ai",
+                "conv-1",
+            ),
+            ("pydantic-ai", "agent run", "pydantic_ai", "conv-1"),
+        ] {
+            classified(scope, span_name, both, &[], vendor, Some(session_id));
+        }
+    }
+
+    #[test]
+    fn genkit_spans_without_a_gen_ai_operation_are_not_ai() {
+        assert_eq!(
+            classify(
+                "genkit-tracer",
+                "generate",
+                &[("genkit:type", "action"), ("genkit:name", "generate")],
+                &[],
+            ),
+            None,
+        );
+    }
+
+    #[test]
+    fn openinference_provider_clients_land_in_the_openinference_bucket() {
+        // The provider-client instrumentors dual-write the GenAI operation, which
+        // used to file them under `unknown:genai`, whose read path skips the
+        // OpenInference decoding.
+        for scope_name in [
+            "openinference.instrumentation.anthropic",
+            "openinference.instrumentation.google_genai",
+            "@arizeai/openinference-instrumentation-anthropic",
+        ] {
+            classified(
+                scope_name,
+                "Messages",
+                &[
+                    ("openinference.span.kind", "LLM"),
+                    ("gen_ai.operation.name", "chat"),
+                    ("gen_ai.conversation.id", "conv-4"),
+                ],
+                &[],
+                "unknown:openinference",
+                Some("conv-4"),
             );
         }
     }
