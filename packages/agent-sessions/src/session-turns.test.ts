@@ -255,6 +255,23 @@ describe("buildSessionTurns", () => {
 		])
 	})
 
+	it("does not open a turn at a root memory operation", () => {
+		const turns = buildSessionTurns([
+			makeSpan({
+				spanId: "memory",
+				spanName: "search_memory chat-history",
+				startMs: 0,
+				durationMs: SECOND,
+				genAi: { operationName: "search_memory" },
+			}),
+			agentSpan({ spanId: "agent", startMs: 10 * SECOND, durationMs: 10 * SECOND }),
+			llmSpan({ spanId: "chat", parentSpanId: "agent", startMs: 11 * SECOND, durationMs: SECOND }),
+		])
+
+		expect(turns.map((turn) => turn.anchorKind)).toEqual(["agent-root"])
+		expect(turns[0]!.spans.map((span) => span.spanId)).toEqual(["memory", "agent", "chat"])
+	})
+
 	it("falls back to root agent invocations when no conversation id exists", () => {
 		const turns = buildSessionTurns([
 			agentSpan({ spanId: "agent-1", startMs: 0, durationMs: 10 * SECOND }),
@@ -644,6 +661,19 @@ describe("isLlmCall", () => {
 
 		expect(classifyAiSpan(embedding)).toBe("inference")
 		expect(isLlmCall(embedding)).toBe(false)
+	})
+
+	it("reads a memory operation as agent work, even when it names a model", () => {
+		const memory = makeSpan({
+			spanId: "a",
+			startMs: 0,
+			durationMs: 1,
+			spanName: "search_memory chat-history",
+			genAi: { operationName: "search_memory", requestModel: "text-embedding-3-small" },
+		})
+
+		expect(classifyAiSpan(memory)).toBe("agent")
+		expect(isLlmCall(memory)).toBe(false)
 	})
 })
 
