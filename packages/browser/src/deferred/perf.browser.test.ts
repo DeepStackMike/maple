@@ -20,7 +20,7 @@ vi.mock("@opentelemetry/exporter-trace-otlp-http", () => ({
 }))
 
 const { MapleBrowser } = await import("../index")
-const { interactionKey, onLongFrame } = await import("./perf")
+const { interactionKey, onLongFrame } = await import("@maple/sdk-core/browser/perf")
 
 describe("interactionKey", () => {
 	it("skips non-interactions, groups by id, and still keys events from engines without ids", () => {
