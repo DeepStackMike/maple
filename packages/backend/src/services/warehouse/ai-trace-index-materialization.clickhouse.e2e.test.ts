@@ -1178,6 +1178,63 @@ describe.skipIf(!clickhouseE2eEnabled)("ai_trace_index materialization", () => {
 		)
 	})
 
+	it("reads a ranked page to the same rows as the one read that ranks and nets together", async () => {
+		// The list's two reads: which sessions, over the window; then their rows,
+		// over the extent of the ranked sessions alone.
+		// The second window ends inside the second Strands turn, after its
+		// event-loop span started and before that span ended: the chat beneath
+		// it starts past the window, and no read may count it.
+		const windows = [WINDOW, { ...WINDOW, endTime: chDateTime(BASE_MS + 410_001) }]
+		for (const [orgId, bounds] of [ORG_ID, NETTING_ORG_ID].flatMap((org) =>
+			windows.map((window) => [org, window] as const),
+		)) {
+			for (const opts of [
+				{},
+				{ limit: 1 },
+				{ limit: 1, offset: 1 },
+				{ sortBy: "durationMs" },
+			] as const) {
+				const window = { ...bounds, orgId }
+				const whole = compileUnsafe(Integrations.aiSessionPageQuery(opts), window)
+				const rank = compileUnsafe(Integrations.aiSessionRankQuery(opts), window)
+				const ranked = Effect.runSync(rank.decodeRows(await runJson(rank.sql)))
+				if (ranked.length === 0) {
+					assert.deepStrictEqual(await runJson(whole.sql), [])
+					continue
+				}
+				const rows = compileUnsafe(
+					Integrations.aiSessionPageQuery({
+						...opts,
+						sessionIds: ranked.map((row) => row.sessionId),
+					}),
+					{
+						orgId,
+						fanOutStart: ranked.map((row) => row.agentStart).sort()[0]!,
+						fanOutEnd: ranked
+							.map((row) => row.agentEnd)
+							.sort()
+							.at(-1)!,
+						endTime: window.endTime,
+					},
+				)
+				// Sets come back in no order; everything else must match as it is.
+				const comparable = (page: ReadonlyArray<Record<string, unknown>>) =>
+					page.map((row) =>
+						Object.fromEntries(
+							Object.entries(row).map(([key, value]) => [
+								key,
+								Array.isArray(value) ? [...value].sort() : value,
+							]),
+						),
+					)
+				assert.deepStrictEqual(
+					comparable(await runJson(rows.sql)),
+					comparable(await runJson(whole.sql)),
+				)
+			}
+		}
+	})
+
 	it("nets a trace of many model calls inside a fraction of the list read's memory", async () => {
 		const compiled = compileUnsafe(Integrations.aiSessionPageQuery(), { ...WINDOW, orgId: WIDE_ORG_ID })
 		const rows = Effect.runSync(
