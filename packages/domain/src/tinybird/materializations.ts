@@ -326,6 +326,9 @@ export const serviceOverviewSpansMv = defineMaterializedView("service_overview_s
 	description:
 		"Materialized view projecting service entry point spans (Server/Consumer + root) for service overview queries. Pre-extracts deployment attributes from ResourceAttributes at write time.",
 	datasource: serviceOverviewSpans,
+	// Migration 0037's SpanKind/IsRoot are additive and older rows may read ''/0.
+	// Without this, Tinybird rebuilds the target by replaying 30 days of `traces`.
+	deploymentMethod: "alter",
 	nodes: [
 		node({
 			name: "service_overview_spans_mv_node",
@@ -340,7 +343,9 @@ export const serviceOverviewSpansMv = defineMaterializedView("service_overview_s
           ${DEPLOYMENT_ENV_SQL} AS DeploymentEnv,
           ResourceAttributes['vcs.ref.head.revision'] AS CommitSha,
           SampleRate,
-          ResourceAttributes['service.namespace'] AS ServiceNamespace
+          ResourceAttributes['service.namespace'] AS ServiceNamespace,
+          SpanKind,
+          toUInt8(ParentSpanId = '') AS IsRoot
         FROM traces
         WHERE SpanKind IN ('Server', 'Consumer') OR ParentSpanId = ''
       `,
