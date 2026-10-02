@@ -1684,6 +1684,9 @@ export const alertChecks = defineDatasource("alert_checks", {
 		// awkward in ClickHouse.
 		ErrorMessage: t.string().nullable(),
 		ErrorCategory: t.string().lowCardinality(),
+		// Why a skipped check skipped (no_data, below_min_samples, no_value); '' otherwise.
+		// Last, where migration 0036's ADD COLUMN puts it.
+		SkipReason: t.string().lowCardinality().default(""),
 	},
 	engine: engine.mergeTree({
 		partitionKey: "toDate(Timestamp)",

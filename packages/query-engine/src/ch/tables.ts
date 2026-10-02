@@ -669,6 +669,7 @@ export const AlertChecks = table("alert_checks", {
 	EvaluationDurationMs: T.uint32,
 	ErrorMessage: T.nullable(T.string),
 	ErrorCategory: T.string,
+	SkipReason: T.string,
 })
 
 export const AuditLog = table("audit_log", {
