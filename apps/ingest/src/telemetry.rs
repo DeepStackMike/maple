@@ -876,9 +876,9 @@ impl TelemetryPipeline {
     /// this task as alive.
     ///
     /// Shutdown calls this once the drain has done what it can: whatever did not
-    /// export is now in the object store under an owner whose heartbeat is gone,
-    /// so the next task claims it immediately instead of waiting out the
-    /// staleness window. Returns the bytes shipped.
+    /// export is now in the object store under a retired owner, which the next
+    /// task to boot claims without waiting out the staleness window. A clean
+    /// drain ships nothing. Returns the bytes shipped.
     pub async fn flush_wal_to_object_store(&self) -> u64 {
         let shipped = self.inner.wal.flush_to_object_store().await;
         if let Some(store) = self.inner.wal.store.get() {
@@ -1563,20 +1563,32 @@ impl WalLane {
 
     /// Whether the exporter has already moved past this segment.
     fn is_exported(&self, seq: u64) -> bool {
-        self.export.lock().is_ok_and(|state| seq < state.cursor.seq)
+        self.export
+            .lock()
+            .is_ok_and(|state| self.is_behind(state.cursor, seq))
+    }
+
+    /// Whether `cursor` has consumed all of sealed segment `seq`. A cursor
+    /// parked at the end of a segment that sealed after its last export (the
+    /// shutdown seal, typically) counts: it holds nothing left to replay.
+    fn is_behind(&self, cursor: SegmentCursor, seq: u64) -> bool {
+        seq < cursor.seq
+            || (seq == cursor.seq
+                && seq < self.active_seq.load(Ordering::Acquire)
+                && cursor.offset >= file_len(&segment_path(&self.dir, seq)))
     }
 
     /// Sealed segments this lane still owes, oldest first.
     fn unexported_segments(&self) -> Vec<u64> {
-        let cursor_seq = match self.export.lock() {
-            Ok(state) => state.cursor.seq,
+        let cursor = match self.export.lock() {
+            Ok(state) => state.cursor,
             Err(_) => return Vec::new(),
         };
         let active = self.active_seq.load(Ordering::Acquire);
         list_segments(&self.dir)
             .unwrap_or_default()
             .into_iter()
-            .filter(|seq| *seq >= cursor_seq && *seq < active)
+            .filter(|seq| *seq < active && !self.is_behind(cursor, *seq))
             .collect()
     }
 
@@ -1922,6 +1934,9 @@ impl ShardedWal {
                 }
             };
             let mut recovered_frames = 0usize;
+            // Segments still in the bucket after this pass. Any at all keeps the
+            // owner discoverable so a later boot retries them.
+            let mut left_behind = 0usize;
             let mut keys = Vec::with_capacity(segments.len());
             for segment in segments {
                 let Some(lane) = Self::lane_for_key(&segment.lane_key, cfg) else {
@@ -1930,6 +1945,7 @@ impl ShardedWal {
                         lane_key = segment.lane_key,
                         "Skipping an orphaned WAL segment for an unknown lane"
                     );
+                    left_behind += 1;
                     continue;
                 };
                 let frames = decode_segment_frames(&segment.bytes);
@@ -1956,10 +1972,14 @@ impl ShardedWal {
                 }
                 if committed {
                     keys.push(segment.key);
+                } else {
+                    left_behind += 1;
                 }
             }
             if recovered_frames == 0 && keys.is_empty() {
-                drop(store.release_owner(&owner).await);
+                if left_behind == 0 {
+                    drop(store.release_owner(&owner).await);
+                }
                 continue;
             }
             // Sealed and re-shipped under our own owner id *before* the source
@@ -1969,9 +1989,16 @@ impl ShardedWal {
             for key in keys {
                 if let Err(error) = store.release_key(&key).await {
                     warn!(owner, key, error = %error, "Failed to delete a recovered WAL segment");
+                    left_behind += 1;
                 }
             }
-            if let Err(error) = store.release_owner(&owner).await {
+            if left_behind > 0 {
+                warn!(
+                    owner,
+                    left_behind,
+                    "Keeping a WAL owner so a later boot retries its remaining segments"
+                );
+            } else if let Err(error) = store.release_owner(&owner).await {
                 warn!(owner, error = %error, "Failed to retire a recovered WAL owner");
             }
             metrics::wal_frames_recovered(recovered_frames as u64);
@@ -7329,6 +7356,134 @@ mod tests {
             vec![store.owner().to_owned()],
             "a heartbeat that stops refreshing is found as a stale owner"
         );
+    }
+
+    #[tokio::test]
+    async fn a_clean_drain_ships_nothing_but_an_unexported_tail_still_ships() {
+        // The shutdown seal leaves the cursor parked at the end of a segment it
+        // fully exported; shipping that one only buys duplicates on recovery.
+        let queue_dir = unique_test_dir("wal-clean-drain");
+        std::fs::create_dir_all(&queue_dir).unwrap();
+        let cfg = segmented_cfg(queue_dir.clone(), 64 * 1024, WAL_SEGMENT_MAX_BYTES);
+        let (endpoint, bucket) = fake_s3::spawn("maple-wal-test").await;
+        let wal = ShardedWal::open(&cfg).expect("open WAL");
+        wal.attach_object_store(&test_wal_store(&endpoint));
+        let frame = wal_test_frame(200);
+
+        let (seq, _, end) = wal.append(0, &frame).await.expect("append");
+        wal.mark_exported(0, SegmentCursor { seq, offset: end }, end)
+            .await
+            .expect("mark_exported");
+        assert_eq!(
+            wal.flush_to_object_store().await,
+            0,
+            "a drained lane owes nothing"
+        );
+
+        let (_, _, tail) = wal.append(0, &frame).await.expect("append tail");
+        assert_eq!(
+            wal.flush_to_object_store().await,
+            tail,
+            "the unexported tail ships"
+        );
+        sleep(Duration::from_millis(100)).await;
+        let segments: Vec<_> = bucket
+            .keys()
+            .into_iter()
+            .filter(|key| key.contains("/segments/"))
+            .collect();
+        assert_eq!(
+            segments.len(),
+            1,
+            "only the tail is in the bucket: {segments:?}"
+        );
+
+        drop(std::fs::remove_dir_all(queue_dir));
+    }
+
+    #[tokio::test]
+    async fn segments_shipped_at_shutdown_are_claimed_by_the_next_boot() {
+        // Retiring used to only delete the heartbeat, which left the owner
+        // invisible to recovery and its shutdown segments stranded in the bucket.
+        let (endpoint, bucket) = fake_s3::spawn("maple-wal-test").await;
+        let frame = wal_test_frame(64);
+
+        let old_dir = unique_test_dir("wal-retired-owner");
+        std::fs::create_dir_all(&old_dir).unwrap();
+        let old_cfg = segmented_cfg(old_dir.clone(), 64 * 1024, WAL_SEGMENT_MAX_BYTES);
+        let old_wal = ShardedWal::open(&old_cfg).expect("open WAL");
+        // No shipper attached, so its async upload cannot race the cleanup.
+        let old_store = test_wal_store(&endpoint);
+        old_store.heartbeat().await.expect("heartbeat");
+        old_wal.append(0, &frame).await.expect("append");
+        assert!(
+            old_wal.flush_segments_to(&old_store).await > 0,
+            "the undrained tail ships"
+        );
+        old_store.retire().await.expect("retire");
+        let retired = old_store.owner().to_owned();
+
+        // Booting right away: no staleness window to wait out.
+        let new_dir = unique_test_dir("wal-retired-successor");
+        std::fs::create_dir_all(&new_dir).unwrap();
+        let new_cfg = segmented_cfg(new_dir.clone(), 64 * 1024, WAL_SEGMENT_MAX_BYTES);
+        let new_wal = ShardedWal::open(&new_cfg).expect("open WAL");
+        new_wal
+            .recover_orphans(&new_cfg, &test_wal_store(&endpoint))
+            .await;
+
+        let replayed = new_wal.replay(0).await.expect("replay");
+        assert_eq!(replayed.len(), 1, "the shipped frame is recovered");
+        let keys = bucket.keys();
+        assert!(
+            keys.iter().all(|key| !key.contains(&retired)),
+            "the retired owner's segments and markers are cleaned up: {keys:?}"
+        );
+
+        drop(std::fs::remove_dir_all(old_dir));
+        drop(std::fs::remove_dir_all(new_dir));
+    }
+
+    #[tokio::test]
+    async fn an_owner_with_unrecovered_segments_stays_claimable() {
+        // Releasing the owner after a partial recovery dropped its last discovery
+        // path, so the segments it still held were never retried.
+        let (endpoint, bucket) = fake_s3::spawn("maple-wal-test").await;
+        let frame = wal_test_frame(64);
+
+        let old_dir = unique_test_dir("wal-partial-owner");
+        std::fs::create_dir_all(&old_dir).unwrap();
+        let old_cfg = segmented_cfg(old_dir.clone(), 64 * 1024, WAL_SEGMENT_MAX_BYTES);
+        let old_wal = ShardedWal::open(&old_cfg).expect("open WAL");
+        let old_store = test_wal_store(&endpoint);
+        old_store.heartbeat().await.expect("heartbeat");
+        old_wal.append(0, &frame).await.expect("append");
+        assert!(old_wal.flush_segments_to(&old_store).await > 0);
+        // A lane this binary cannot place, so recovery has to leave it behind.
+        old_store
+            .put_segment("shard-000-unknown", 0, b"unplaceable".to_vec())
+            .await
+            .expect("put unknown-lane segment");
+        old_store.retire().await.expect("retire");
+        let retired = old_store.owner().to_owned();
+
+        let new_dir = unique_test_dir("wal-partial-successor");
+        std::fs::create_dir_all(&new_dir).unwrap();
+        let new_cfg = segmented_cfg(new_dir.clone(), 64 * 1024, WAL_SEGMENT_MAX_BYTES);
+        let new_wal = ShardedWal::open(&new_cfg).expect("open WAL");
+        new_wal
+            .recover_orphans(&new_cfg, &test_wal_store(&endpoint))
+            .await;
+
+        assert_eq!(new_wal.replay(0).await.expect("replay").len(), 1);
+        let keys = bucket.keys();
+        assert!(
+            keys.iter().any(|key| key.ends_with(&format!("/retired/{retired}"))),
+            "the retired marker survives while a segment is left: {keys:?}"
+        );
+
+        drop(std::fs::remove_dir_all(old_dir));
+        drop(std::fs::remove_dir_all(new_dir));
     }
 
     /// Cross-language contract with the Prometheus scraper (apps/scraper).
