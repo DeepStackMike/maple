@@ -22,6 +22,11 @@ import { registerGetIncidentTimelineTool } from "./get-incident-timeline"
 import { registerAuditSetupTool } from "./audit-setup"
 import { registerGetInstrumentationRecommendationsTool } from "./get-instrumentation-recommendations"
 import { registerGetServiceTopOperationsTool } from "./get-service-top-operations"
+import { registerServiceDeploymentsTool } from "./service-deployments"
+import { registerRouteUsageTool } from "./route-usage"
+import { registerIngestFreshnessTool } from "./ingest-freshness"
+import { registerDbQueryVolumeTool } from "./db-query-volume"
+import { registerIngestUsageTool } from "./ingest-usage"
 import { registerInspectChartDataTool } from "./inspect-chart-data"
 import { registerInspectTraceTool } from "./inspect-trace"
 import { registerInspectSpanTool } from "./inspect-span"
@@ -403,6 +408,11 @@ const collectMapleToolDefinitions = (): ReadonlyArray<MapleToolDefinition> => {
 	registerExploreAttributesTool(registrar)
 	registerListServicesTool(registrar)
 	registerGetServiceTopOperationsTool(registrar)
+	registerServiceDeploymentsTool(registrar)
+	registerRouteUsageTool(registrar)
+	registerIngestFreshnessTool(registrar)
+	registerDbQueryVolumeTool(registrar)
+	registerIngestUsageTool(registrar)
 	registerGetInstrumentationRecommendationsTool(registrar)
 	registerAuditSetupTool(registrar)
 	registerSourceCodeTools(registrar)

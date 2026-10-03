@@ -82,6 +82,13 @@ import {
 	SearchSourceCodeOutput,
 } from "./setup"
 import {
+	DbQueryVolumeOutput,
+	IngestFreshnessOutput,
+	IngestUsageOutput,
+	RouteUsageOutput,
+	ServiceDeploymentsOutput,
+} from "./service-activity"
+import {
 	FindSlowTracesOutput,
 	InspectSpanOutput,
 	InspectTraceOutput,
@@ -98,6 +105,7 @@ export const McpToolOutputs = {
 	compare_periods: ComparePeriodsOutput,
 	create_alert_rule: CreateAlertRuleOutput,
 	create_dashboard: CreateDashboardOutput,
+	db_query_volume: DbQueryVolumeOutput,
 	delete_alert_rule: DeleteAlertRuleOutput,
 	describe_dashboard_schema: DescribeDashboardSchemaOutput,
 	describe_warehouse_tables: DescribeWarehouseTablesOutput,
@@ -116,6 +124,8 @@ export const McpToolOutputs = {
 	get_service_top_operations: GetServiceTopOperationsOutput,
 	get_session_traces: GetSessionTracesOutput,
 	get_session_transcript: GetSessionTranscriptOutput,
+	ingest_freshness: IngestFreshnessOutput,
+	ingest_usage: IngestUsageOutput,
 	inspect_chart_data: InspectChartDataOutput,
 	inspect_span: InspectSpanOutput,
 	inspect_trace: InspectTraceOutput,
@@ -147,6 +157,7 @@ export const McpToolOutputs = {
 	remove_dashboard_widget: RemoveDashboardWidgetOutput,
 	reorder_dashboard_widgets: ReorderDashboardWidgetsOutput,
 	replace_dashboard_widgets: ReplaceDashboardWidgetsOutput,
+	route_usage: RouteUsageOutput,
 	run_sql: RunSqlOutput,
 	sandbox_exec: SandboxExecOutput,
 	sandbox_grep: SandboxGrepOutput,
@@ -157,6 +168,7 @@ export const McpToolOutputs = {
 	search_source_code: SearchSourceCodeOutput,
 	search_traces: SearchTracesOutput,
 	send_maple_feedback: SendMapleFeedbackOutput,
+	service_deployments: ServiceDeploymentsOutput,
 	service_map: ServiceMapOutput,
 	set_issue_severity: SetIssueSeverityOutput,
 	transition_error_issue: TransitionErrorIssueOutput,

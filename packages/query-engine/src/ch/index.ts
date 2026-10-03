@@ -323,6 +323,11 @@ export {
 	type ReleasesTimelineOutput,
 	type ReleaseErrorFingerprintsOpts,
 	type ReleaseErrorFingerprintsOutput,
+	serviceDeploymentsQuery,
+	serviceDeploymentsRowSchema,
+	DEPLOYMENTS_PER_SERVICE_CAP,
+	type ServiceDeploymentsOpts,
+	type ServiceDeploymentsOutput,
 } from "./queries/releases"
 
 // Queries — Errors
@@ -423,6 +428,10 @@ export {
 	serviceDbQuerySummarySQL,
 	serviceDbQueryTimeseriesSQL,
 	serviceDbTopQueriesSQL,
+	dbQueryVolumeQuery,
+	dbQueryVolumeRowSchema,
+	type DbQueryVolumeOpts,
+	type DbQueryVolumeOutput,
 	servicePlatformsSQL,
 	serviceMapEdgeJoinQuery,
 	type ServiceDependenciesOpts,
@@ -486,6 +495,11 @@ export {
 	type ServiceOperationsSummaryOutput,
 	type ServiceOperationsTimeseriesOpts,
 	type ServiceOperationsTimeseriesOutput,
+	routeUsageQuery,
+	routeUsageRowSchema,
+	type RouteUsageOpts,
+	type RouteUsageOrder,
+	type RouteUsageOutput,
 } from "./queries/service-operations"
 
 // Queries — Service API Endpoints (the HTTP slice of the operations rollup)
@@ -541,6 +555,9 @@ export {
 
 // Queries — Telemetry liveness (auto-resolve gating + local-mode header heartbeat)
 export {
+	ingestFreshnessQuery,
+	ingestFreshnessRowSchema,
+	logsFreshnessQuery,
 	orgTelemetryPulseQuery,
 	serviceLivenessQuery,
 	type ServiceLivenessOpts,
