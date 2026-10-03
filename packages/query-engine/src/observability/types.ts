@@ -38,6 +38,8 @@ export interface SearchTracesInput {
 	readonly service?: string
 	readonly spanName?: string
 	readonly spanNameMatchMode?: "exact" | "contains"
+	/** Deployment environment of the matched span (either semconv spelling). */
+	readonly environment?: string
 	readonly hasError?: boolean
 	readonly minDurationMs?: number
 	readonly maxDurationMs?: number
@@ -49,6 +51,8 @@ export interface SearchTracesInput {
 		mode?: string
 		negated?: boolean
 	}>
+	/** Equality filter on a ResourceAttributes key (at most one at root level). */
+	readonly resourceAttributeFilter?: { readonly key: string; readonly value: string }
 	readonly rootOnly?: boolean
 	readonly limit?: number
 	readonly offset?: number
