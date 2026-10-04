@@ -15,7 +15,6 @@
 import {
 	AiWorker,
 	cachedRecoverable,
-	emailBinding,
 	MapleDb,
 	mapleDbEnv,
 	MapleStack,
@@ -39,10 +38,12 @@ import {
 	tinybirdEnv,
 } from "@maple/infra/env"
 import { WORKER_PURE_OPTIONS } from "@maple/infra/worker-build"
+import { workerEnvLayer } from "@maple/infra/worker-runtime"
 import { WorkerTelemetry } from "@maple/infra/worker-telemetry"
+import { bindEmailSender } from "@maple/backend/platform/email-sender"
 import { chatConnectorOutboundConfigKeys } from "@maple/chat-platform"
 import * as Cloudflare from "alchemy/Cloudflare"
-import { Cause, Effect, Layer, Ref } from "effect"
+import { Cause, Config, Effect, Layer, Option, Ref } from "effect"
 import { HttpServerResponse } from "effect/http"
 
 /**
@@ -57,7 +58,6 @@ const makeWorkerBindings = ({ stage, region }: { stage: MapleStage; region: Mapl
 		className: "ChatSession",
 		scriptName: resolveWorkerName("ai", stage, region),
 	}),
-	...emailBinding(stage),
 })
 
 /**
@@ -65,8 +65,8 @@ const makeWorkerBindings = ({ stage, region }: { stage: MapleStage; region: Mapl
  * source of truth, imported (type-only) by `./scheduled.ts`.
  *
  * `Partial` because a binding's absence is a real runtime state: ref stages
- * attach MAPLE_DB after the Worker exists, EMAIL is prd-only, and `alchemy
- * dev` emulation does not cover every binding. The configuration vars stay
+ * attach MAPLE_DB after the Worker exists and `alchemy dev` emulation does not
+ * cover every binding. EMAIL is not read here: the init binds it (`bindEmailSender`). The configuration vars stay
  * `unknown` on purpose: config is read through the Effect ConfigProvider
  * (`workerEnvLayer` → the shared `Env` service), never off `env` directly.
  */
@@ -164,10 +164,26 @@ const ALERTING_CRONS = ["* * * * *", "*/5 * * * *", "*/15 * * * *", "0 * * * *"]
  * Same gating philosophy as the prd-only EMAIL binding, with an explicit
  * override for deliberately exercising crons on a non-prod stage.
  */
-const cronsEnabled = (env: Record<string, unknown>): boolean =>
-	env.MAPLE_ENVIRONMENT === "production" ||
-	env.MAPLE_ALERTING_ALLOW_NONPROD === "1" ||
-	env.MAPLE_ALERTING_ALLOW_NONPROD === "true"
+const CronGate = Config.all({
+	environment: Config.option(Config.String("MAPLE_ENVIRONMENT")),
+	allowNonProd: Config.option(Config.String("MAPLE_ALERTING_ALLOW_NONPROD")),
+})
+
+/** The gate as this fire's env says; a value that is not a string reads as unset, which keeps crons off. */
+const cronGateFor = (env: Record<string, unknown>) =>
+	CronGate.pipe(
+		Effect.map(({ environment, allowNonProd }) => ({
+			environment,
+			enabled:
+				Option.contains(environment, "production") ||
+				Option.contains(allowNonProd, "1") ||
+				Option.contains(allowNonProd, "true"),
+		})),
+		Effect.orElseSucceed(() => ({ environment: Option.none<string>(), enabled: false })),
+		// The fire's env is the boundary this config belongs to.
+		// oxlint-disable-next-line effecttsgo/strict-effect-provide
+		Effect.provide(workerEnvLayer(env)),
+	)
 
 export default class Alerting extends Cloudflare.Worker<Alerting>()(
 	"alerting",
@@ -183,20 +199,20 @@ export default class Alerting extends Cloudflare.Worker<Alerting>()(
 		// starving the api's connection pool when the two shared one. The ticks
 		// read it off the fire's env.
 		yield* MapleDb("alerting")
+		// `send_email`, prd only; handed to each fire's graph as `EmailSender`.
+		const email = yield* bindEmailSender
 		// Once per isolate, not once per fire.
 		const loggedNonProdSkip = yield* Ref.make(false)
 
 		const onFire = (controller: ScheduledController) =>
 			Effect.gen(function* () {
 				const env = yield* Cloudflare.WorkerEnvironment
-				if (!cronsEnabled(env)) {
+				const gate = yield* cronGateFor(env)
+				if (!gate.enabled) {
 					if (!(yield* Ref.getAndSet(loggedNonProdSkip, true))) {
 						yield* Effect.logInfo("Skipping alerting crons on non-production stage").pipe(
 							Effect.annotateLogs({
-								"maple.environment":
-									typeof env.MAPLE_ENVIRONMENT === "string"
-										? env.MAPLE_ENVIRONMENT
-										: "unset",
+								"maple.environment": Option.getOrElse(gate.environment, () => "unset"),
 								hint: "set MAPLE_ALERTING_ALLOW_NONPROD=1 to run them here",
 							}),
 						)
@@ -206,7 +222,7 @@ export default class Alerting extends Cloudflare.Worker<Alerting>()(
 				const { runScheduled } = yield* scheduled
 				// The tick's spans and logs go to the SDK the bridge built into this
 				// fire's scope; the flush is that scope's finalizer, after the fire.
-				yield* runScheduled(controller.cron, env).pipe(
+				yield* runScheduled(controller.cron, env, email).pipe(
 					// Interrupts are isolate teardown: the schedule re-fires anyway, and
 					// they must not be logged as a failed run (same rule as the ticks').
 					Effect.catchCause((cause) =>
@@ -234,6 +250,7 @@ export default class Alerting extends Cloudflare.Worker<Alerting>()(
 		Effect.provide(
 			Layer.mergeAll(
 				Cloudflare.Hyperdrive.ConnectBinding,
+				Cloudflare.Email.SendBinding,
 				Cloudflare.Workers.CronEventSourceLive,
 				WorkerTelemetry({ serviceName: "alerting" }),
 			),
