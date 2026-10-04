@@ -7,6 +7,7 @@ import {
 	EnvelopeIcon,
 	SlackIcon,
 	GearIcon,
+	GridIcon,
 	GridSquareCirclePlusIcon,
 	KeyboardIcon,
 	LogoutIcon,
@@ -356,7 +357,7 @@ function NavRow({
 						    exists to shorten a list you look at, not to lock pages away.
 						    This is also the only nav the collapsed rail has, so a source
 						    the probe got wrong must still be one click away. */}
-						{hidden.length > 0 ? (
+						{hidden.length > 0 || discoverTo ? (
 							<>
 								<DropdownMenuSeparator />
 								<DropdownMenuGroup>
@@ -371,7 +372,7 @@ function NavRow({
 									{discoverTo ? (
 										<DropdownMenuItem render={<Link to={discoverTo} />}>
 											<CompassIcon size={16} />
-											Discover more
+											Add sources
 										</DropdownMenuItem>
 									) : null}
 								</DropdownMenuGroup>
@@ -397,8 +398,9 @@ function NavRow({
 					// Brand marks keep their own color here — Kubernetes blue and
 					// Cloudflare orange hardcode their fill, PlanetScale takes the tint —
 					// so the cluster is recognisable at 12px instead of four grey smudges.
-					// Non-brand children (Explore's signals, Hosts) stay muted.
-					<span className="flex shrink-0 items-center gap-1 text-muted-foreground group-data-[collapsible=icon]:hidden">
+					// Non-brand children (Explore's signals, Hosts) stay muted. The 2px gap
+					// is what fits six marks beside "Infrastructure" without truncating it.
+					<span className="flex shrink-0 items-center gap-0.5 text-muted-foreground group-data-[collapsible=icon]:hidden">
 						{preview.map((sub) =>
 							sub.icon ? (
 								<sub.icon
@@ -432,7 +434,7 @@ function NavRow({
 							}
 							key={sub.title}
 						>
-							{/* A suggested row wears the same muted ink as "Discover more"
+							{/* A suggested row wears the same muted ink as "Add sources"
 							    below it: it is an offer, not a page that has data, and
 							    the two kinds of row must not read as one list of things
 							    you have. Brand marks keep their own color either way —
@@ -453,7 +455,7 @@ function NavRow({
 							</SidebarMenuSubButton>
 						</SidebarMenuSubItem>
 					))}
-					{discoverTo && hidden.length > 0 ? (
+					{discoverTo ? (
 						<SidebarMenuSubItem
 							className={
 								discoverActive
@@ -474,7 +476,7 @@ function NavRow({
 								    child. A compass says "go look" where a plus says "add
 								    one" — the page behind this row is both. */}
 								<CompassIcon className="size-3.5" />
-								<span className="text-xs">Discover more</span>
+								<span className="text-xs">Add sources</span>
 							</SidebarMenuSubButton>
 						</SidebarMenuSubItem>
 					) : null}
@@ -585,14 +587,29 @@ function PinnedGroup({ currentPath }: { currentPath: string }) {
 }
 
 /**
- * A full nav row rather than a 32px glyph beside the avatar: Settings is a
+ * Full nav rows rather than 32px glyphs beside the avatar: Settings is a
  * destination like any other section, and pairing it with the user menu read as
- * "account settings" when it is org- and project-wide. It stays in the footer so
- * it never scrolls away behind a long Pinned list.
+ * "account settings" when it is org- and project-wide. They stay in the footer so
+ * they never scroll away behind a long Pinned list.
+ *
+ * Integrations sits here rather than only inside Settings: connecting a provider
+ * is how most data arrives, and a page you can only find through Settings is one
+ * nobody finds.
  */
-function SettingsRow({ currentPath }: { currentPath: string }) {
+function FooterNavRows({ currentPath }: { currentPath: string }) {
 	return (
 		<SidebarMenu>
+			<SidebarMenuItem>
+				<SidebarMenuButton
+					className={ACTIVE_RAIL}
+					isActive={isPathActive(currentPath, "/integrations")}
+					render={<Link to="/integrations" />}
+					tooltip="Integrations"
+				>
+					<GridIcon size={18} />
+					<span>Integrations</span>
+				</SidebarMenuButton>
+			</SidebarMenuItem>
 			<SidebarMenuItem>
 				<SidebarMenuButton
 					className={ACTIVE_RAIL}
@@ -735,7 +752,7 @@ export const AppSidebar = memo(function AppSidebar() {
 			    both: Settings is the last nav row, so a line above it would cut it
 			    off from the nav it belongs to. */}
 			<SidebarFooter>
-				<SettingsRow currentPath={currentPath} />
+				<FooterNavRows currentPath={currentPath} />
 				<div className="-mx-2 border-sidebar-border border-t px-2 pt-2">
 					<FooterCluster />
 				</div>
