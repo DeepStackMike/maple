@@ -1,39 +1,29 @@
-import { createHash } from "node:crypto"
 import { existsSync } from "node:fs"
 import { resolve } from "node:path"
 import * as AWS from "alchemy/AWS"
-import * as Cloudflare from "alchemy/Cloudflare"
 import * as Output from "alchemy/Output"
 import type * as Planetscale from "alchemy/Planetscale"
 import * as Effect from "effect/Effect"
-import * as Redacted from "effect/Redacted"
-import type { MapleRegion } from "@maple/infra/aws"
 import {
 	COLLECTOR_DNS_LABEL,
 	COLLECTOR_OTLP_HTTP_PORT,
+	ecsSecrets,
 	pgUrlRequireSsl,
 	resolveAwsRegion,
 	resolveAwsResourceName,
 	resolveCollectorEndpoint,
-	resolveCollectorTaskSize,
 	resolveIngestCidrBlock,
-	resolveIngestDesiredCount,
-	resolveIngestEc2InstanceType,
-	resolveIngestEc2TaskSize,
 	resolveIngestNamespaceName,
-	resolveIngestScaling,
-	resolveIngestSelfTraceSampleRatio,
-	stageDeploysCollector,
-	stageEnablesReplayBlobs,
 } from "@maple/infra/aws"
 import { ReplayBlobs } from "../api/src/resources/replay-blobs.ts"
-import { issueCertificateViaCloudflare, publishProxiedCname } from "@maple/infra/acm"
-import type { MapleDomains, MapleStage } from "@maple/infra/cloudflare"
+import { issueRegionalCertificate, publishProxiedCname } from "@maple/infra/acm"
+import type { MapleRegion, MapleStackContext, MapleStage } from "@maple/infra/cloudflare"
 import {
 	resolveDeploymentEnvironment,
 	resolveStorageJurisdiction,
 	resolveWorkerName,
 } from "@maple/infra/cloudflare"
+import { r2BucketCredentials } from "@maple/infra/r2-credentials"
 // Only the primitives: these values feed ECS `env:` and Secrets Manager, not Worker bindings.
 import { optionalPlain, requiredPlain } from "@maple/infra/env"
 
@@ -91,60 +81,33 @@ ECS_CONTAINER_STOP_TIMEOUT=120s
 CONFIG
 `
 
-export interface CreateMapleIngestOptions {
-	stage: MapleStage
-	domains: MapleDomains
-	/** Geographic instance. Every AWS resource here is scoped to it. */
-	region: MapleRegion
+export interface CreateMapleIngestOptions extends Pick<
+	MapleStackContext,
+	"stage" | "region" | "domains" | "profile"
+> {
 	/** prd's gateway role; a stage without a database branch reads `MAPLE_INGEST_PG_URL` instead. */
 	dbRole?: Planetscale.PostgresRole
 }
 
-/** R2 renders an API token as S3 credentials: key id = token id, secret = SHA-256 of its value. */
-const deriveSecretAccessKey = (value: Output.Output<Redacted.Redacted<string>>) =>
-	Output.map(value, (token) =>
-		Redacted.make(createHash("sha256").update(Redacted.value(token)).digest("hex")),
-	)
-
 /**
  * The gateway's write credentials for the replay payload store
  * (`apps/api/src/resources/replay-blobs.ts`), or `undefined` on a stage that
- * keeps payloads inline (`stageEnablesReplayBlobs`).
+ * keeps payloads inline (`profile.deploys.replayBlobs`).
  */
-const replayBlobWriterCredentials = (stage: MapleStage, region: MapleRegion) =>
+const replayBlobWriterCredentials = (stage: MapleStage, region: MapleRegion, enabled: boolean) =>
 	Effect.gen(function* () {
-		if (!stageEnablesReplayBlobs(stage)) return undefined
+		if (!enabled) return undefined
 		// Yielded so the token is ordered behind the bucket.
 		yield* ReplayBlobs
-		const bucketName = resolveWorkerName("replay-blobs", stage, region)
-		// `default` is the non-jurisdictional US bucket.
-		const jurisdiction = resolveStorageJurisdiction(region) ?? "default"
-		const { accountId } = yield* yield* Cloudflare.CloudflareEnvironment
-
-		// Bucket-scoped. Minting it needs the deploy token to carry account-level `API Tokens > Write`.
-		const token = yield* Cloudflare.ApiToken.AccountApiToken("replay-blobs-writer", {
-			name: `${bucketName}-writer`,
-			accountId,
-			policies: [
-				{
-					effect: "allow",
-					permissionGroups: ["Workers R2 Storage Bucket Item Write"],
-					resources: {
-						[`com.cloudflare.edge.r2.bucket.${accountId}_${jurisdiction}_${bucketName}`]: "*",
-					},
-				},
-			],
+		const bucket = resolveWorkerName("replay-blobs", stage, region)
+		const credentials = yield* r2BucketCredentials({
+			id: "replay-blobs-writer",
+			tokenName: `${bucket}-writer`,
+			bucketName: bucket,
+			jurisdiction: resolveStorageJurisdiction(region),
+			permissions: ["Workers R2 Storage Bucket Item Write"],
 		})
-
-		return {
-			endpoint:
-				jurisdiction === "default"
-					? `https://${accountId}.r2.cloudflarestorage.com`
-					: `https://${accountId}.${jurisdiction}.r2.cloudflarestorage.com`,
-			bucket: bucketName,
-			accessKeyId: Output.asOutput(token.tokenId),
-			secretAccessKey: deriveSecretAccessKey(Output.asOutput(token.value)),
-		}
+		return { ...credentials, bucket }
 	})
 
 /**
@@ -152,12 +115,11 @@ const replayBlobWriterCredentials = (stage: MapleStage, region: MapleRegion) =>
  * ARM64 EC2 hosts with the WAL on local NVMe, behind a public ALB, plus an OTel
  * collector for the gateway's own telemetry, reached by Cloud Map private DNS.
  */
-export const createMapleIngest = ({ stage, domains, region, dbRole }: CreateMapleIngestOptions) =>
+export const createMapleIngest = ({ stage, region, domains, profile, dbRole }: CreateMapleIngestOptions) =>
 	Effect.gen(function* () {
-		const replayBlobs = yield* replayBlobWriterCredentials(stage, region)
-		const selfTraceSampleRatio = resolveIngestSelfTraceSampleRatio(stage)
-		const scaling = resolveIngestScaling(stage, region)
-		const taskSize = resolveIngestEc2TaskSize(stage, region)
+		const replayBlobs = yield* replayBlobWriterCredentials(stage, region, profile.deploys.replayBlobs)
+		const { desiredCount, scaling, instanceType, taskSize, collectorTaskSize, selfTraceSampleRatio } =
+			profile.ingest
 		const name = (base: string) => resolveAwsResourceName(base, stage, region)
 		const tags = { Service: "maple-ingest", Region: region }
 
@@ -251,7 +213,7 @@ export const createMapleIngest = ({ stage, domains, region, dbRole }: CreateMapl
 		const launchTemplate = yield* AWS.AutoScaling.LaunchTemplate("ingest-ec2-launch-template", {
 			launchTemplateName: name("ingest-ec2"),
 			imageId,
-			instanceType: resolveIngestEc2InstanceType(stage, region),
+			instanceType,
 			securityGroupIds: [instanceSecurityGroup.groupId],
 			instanceProfileName: instanceProfile.instanceProfileName,
 			associatePublicIpAddress: true,
@@ -261,7 +223,7 @@ export const createMapleIngest = ({ stage, domains, region, dbRole }: CreateMapl
 
 		// ECS managed scaling owns the instance count (the patch keeps a redeploy from
 		// resetting it to `minSize`). Max is doubled so a rolling deploy can overlap hosts.
-		const maxTasks = scaling?.max ?? resolveIngestDesiredCount(stage, region)
+		const maxTasks = scaling?.max ?? desiredCount
 		const autoScalingGroup = yield* AWS.AutoScaling.AutoScalingGroup("ingest-ec2-asg", {
 			autoScalingGroupName: name("ingest-ec2"),
 			launchTemplate,
@@ -297,14 +259,7 @@ export const createMapleIngest = ({ stage, domains, region, dbRole }: CreateMapl
 			tags,
 		})
 
-		// Secrets Manager, not `env`: task definition env is readable by anyone with
-		// `ecs:DescribeTaskDefinition`. Alchemy grants the execution role these ARNs.
-		const secret = (id: string, value: string | Output.Output<Redacted.Redacted<string>>) =>
-			AWS.SecretsManager.Secret(id, {
-				name: `${name("ingest")}/${id}`,
-				secretString: typeof value === "string" ? Redacted.make(value) : value,
-				tags,
-			})
+		const secret = ecsSecrets(name("ingest"), tags)
 
 		const tinybirdToken = yield* secret("tinybird-token", yield* requiredPlain("TINYBIRD_TOKEN"))
 		// NOT `MAPLE_PG_URL`: that is the migration admin's URL. The gateway reads
@@ -331,14 +286,14 @@ export const createMapleIngest = ({ stage, domains, region, dbRole }: CreateMapl
 			? yield* secret("replay-r2-secret-access-key", replayBlobs.secretAccessKey)
 			: undefined
 		const replayR2AccessKeyId = replayBlobs
-			? yield* secret("replay-r2-access-key-id", Output.map(replayBlobs.accessKeyId, Redacted.make))
+			? yield* secret("replay-r2-access-key-id", replayBlobs.accessKeyId)
 			: undefined
 
 		// ── OTel collector ──────────────────────────────────────────────────
-		// prd only (`stageDeploysCollector`); MAPLE_DEPLOY_AWS_COLLECTOR=1 forces it
+		// prd only (`profile.deploys.collector`); MAPLE_DEPLOY_AWS_COLLECTOR=1 forces it
 		// on for one deploy, which is how a preview tests it.
 		const deployCollector =
-			stageDeploysCollector(stage) ||
+			profile.deploys.collector ||
 			(yield* optionalPlain("MAPLE_DEPLOY_AWS_COLLECTOR")).MAPLE_DEPLOY_AWS_COLLECTOR === "1"
 		const collectorEndpoint = deployCollector ? resolveCollectorEndpoint(stage, region) : undefined
 		if (deployCollector) {
@@ -377,7 +332,6 @@ export const createMapleIngest = ({ stage, domains, region, dbRole }: CreateMapl
 				tags,
 			})
 
-			const collectorTaskSize = resolveCollectorTaskSize(stage, region)
 			yield* AWS.ECS.Service("otel-collector", {
 				cluster,
 				serviceName: name("otel-collector"),
@@ -406,26 +360,12 @@ export const createMapleIngest = ({ stage, domains, region, dbRole }: CreateMapl
 			})
 		}
 
-		// An ALB can only use a certificate from its own region. Maple's zone is on
-		// Cloudflare, so `issueCertificateViaCloudflare` publishes the validation
-		// record and returns the ARN only once ACM has issued it.
-		const certificate = domains.ingest
-			? yield* AWS.ACM.Certificate("ingest-cert", {
-					domainName: domains.ingest,
-					validationMethod: "DNS",
-					region: resolveAwsRegion(region),
-					tags,
-				})
-			: undefined
-		const issuedCertificateArn =
-			certificate && domains.ingest
-				? yield* issueCertificateViaCloudflare({
-						id: "ingest-cert",
-						certificateArn: certificate.certificateArn,
-						hostname: domains.ingest,
-						region: resolveAwsRegion(region),
-					})
-				: undefined
+		const issuedCertificateArn = yield* issueRegionalCertificate({
+			id: "ingest-cert",
+			hostname: domains.ingest,
+			region: resolveAwsRegion(region),
+			tags,
+		})
 
 		// Durability tier for the WAL (`apps/ingest/src/wal_store.rs`): sealed,
 		// unexported segments, claimed by the next task if their owner dies.
@@ -525,7 +465,7 @@ export const createMapleIngest = ({ stage, domains, region, dbRole }: CreateMapl
 				mountPoints: [{ sourceVolume: "wal", containerPath: WAL_CONTAINER_DIR }],
 			},
 
-			desiredCount: resolveIngestDesiredCount(stage, region),
+			desiredCount,
 			// alchemy stops pinning desiredCount while `scaling` is set.
 			...(scaling ? { scaling } : undefined),
 			vpcId: network.vpcId,
