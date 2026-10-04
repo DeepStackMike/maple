@@ -11,6 +11,7 @@
  */
 import * as acm from "@distilled.cloud/aws/acm"
 import * as AwsRegion from "@distilled.cloud/aws/Region"
+import * as ips from "@distilled.cloud/cloudflare/ips"
 import { adopt } from "alchemy/AdoptPolicy"
 import * as AWS from "alchemy/AWS"
 import * as Cloudflare from "alchemy/Cloudflare"
@@ -323,3 +324,44 @@ export const issueRegionalCertificate = Effect.fn(function* ({
 		region,
 	})
 })
+
+/** Cloudflare's published edge ranges could not be read, or came back empty. */
+export class CloudflareRangesError extends Schema.TaggedError<CloudflareRangesError>()(
+	"@maple/infra/CloudflareRangesError",
+	{
+		message: Schema.String,
+		cause: Schema.optionalKey(Schema.Defect()),
+	},
+) {}
+
+/** AWS's default inbound-rule quota per security group; each range is one rule. */
+const SECURITY_GROUP_INBOUND_RULE_LIMIT = 60
+
+/**
+ * Cloudflare's IPv4 edge ranges, read at plan time so an origin's security group follows them.
+ * An empty list fails the deploy (it would lock every proxied request out), and so does one
+ * that would not fit a security group: dropping ranges would block part of Cloudflare's edge.
+ */
+export const cloudflareIpv4Ranges = ips.listIps({}).pipe(
+	Effect.mapError(
+		(cause) =>
+			new CloudflareRangesError({
+				message: `could not read Cloudflare's IP ranges: ${cause.message}`,
+				cause,
+			}),
+	),
+	Effect.flatMap((result) => {
+		const cidrs = result.ipv4Cidrs ?? []
+		if (cidrs.length === 0) {
+			return Effect.fail(new CloudflareRangesError({ message: "Cloudflare returned no IPv4 ranges" }))
+		}
+		if (cidrs.length > SECURITY_GROUP_INBOUND_RULE_LIMIT) {
+			return Effect.fail(
+				new CloudflareRangesError({
+					message: `Cloudflare publishes ${cidrs.length} IPv4 ranges, more than the ${SECURITY_GROUP_INBOUND_RULE_LIMIT} inbound rules a security group allows by default`,
+				}),
+			)
+		}
+		return Effect.succeed(cidrs)
+	}),
+)
