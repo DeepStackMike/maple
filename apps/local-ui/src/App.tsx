@@ -66,6 +66,7 @@ export function parseRoute(path: string): Route {
 	if (serviceName !== null) return { name: "service-detail", serviceName }
 	const sessionId = detail("sessions")
 	if (sessionId !== null) return { name: "session-detail", sessionId }
+	if (path.startsWith("/traces")) return { name: "traces" }
 	if (path.startsWith("/errors")) return { name: "errors" }
 	if (path.startsWith("/logs")) return { name: "logs" }
 	if (path.startsWith("/metrics")) return { name: "metrics" }
