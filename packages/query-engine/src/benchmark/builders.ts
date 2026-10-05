@@ -1858,12 +1858,20 @@ export const builderFixtures: ReadonlyArray<BuilderFixture> = [
 			),
 	},
 	{
-		// The local dashboard's project selector. Grouped over raw `traces` on
-		// purpose — see the builder for why the cheaper MV cannot answer it.
-		module: "traces",
+		// The local dashboard's project selector: the namespace off every signal
+		// with a resource map, so a sessions-only project still appears.
+		module: "namespaces",
 		name: "resourceNamespacesQuery",
 		label: "default",
 		compile: () => CH.compileUnsafe(CH.resourceNamespacesQuery(), window),
+	},
+	{
+		// The selected project's services, which views without a namespace column
+		// (errors, product events, the service map) filter on instead.
+		module: "namespaces",
+		name: "namespaceServicesQuery",
+		label: "default",
+		compile: () => CH.compileUnsafe(CH.namespaceServicesQuery({ namespace: "shop" }), window),
 	},
 
 	// ----- activity: the only deliberately cross-org builders in the product.

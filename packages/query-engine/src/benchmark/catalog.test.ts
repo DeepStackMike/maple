@@ -35,6 +35,7 @@ import * as logQueries from "../ch/queries/logs"
 import * as metricQueries from "../ch/queries/metrics"
 import * as serviceInfraQueries from "../ch/queries/service-infra"
 import * as serviceMapRollupQueries from "../ch/queries/service-map-rollup"
+import * as namespaceQueries from "../ch/queries/namespaces"
 import * as serviceCatalogVersionQueries from "../ch/queries/service-catalog-versions"
 import * as serviceMapQueries from "../ch/queries/service-map"
 import * as serviceEndpointQueries from "../ch/queries/service-endpoints"
@@ -272,6 +273,7 @@ const QUERY_MODULES: Record<string, Record<string, unknown>> = {
 	"service-catalog-versions": serviceCatalogVersionQueries,
 	"service-infra": serviceInfraQueries,
 	"service-map-rollup": serviceMapRollupQueries,
+	namespaces: namespaceQueries,
 	"service-map": serviceMapQueries,
 	"service-endpoints": serviceEndpointQueries,
 	"service-operations": serviceOperationQueries,

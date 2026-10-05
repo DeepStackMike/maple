@@ -24,7 +24,7 @@ import { from, fromQuery, type ColumnAccessor, type CHQuery } from "@maple-dev/e
 import { unionAll, type CHUnionQuery } from "@maple-dev/effect-clickhouse"
 import { SESSION_LIVE_WINDOW_SECONDS, type SessionTag } from "@maple/domain/query-engine"
 import { ProductEvents, SessionReplays, SessionReplayEvents, TraceDetailSpans } from "../tables"
-import { resourceEnvLabel } from "./environment"
+import { resourceEnvLabel, servicesIn } from "./environment"
 import { sessionActivityAggregateQuery, sessionEventMatchQuery } from "./session-events"
 import { sessionQualityExpr, sessionTagFacet, taggedSessionIds } from "./session-tags"
 import type { FacetOutput } from "./query-helpers"
@@ -127,6 +127,12 @@ function tagFilter(
 
 export interface SessionReplaysListOpts {
 	serviceName?: string
+	/**
+	 * The header's project, as its services (see `namespaceServicesQuery`). A
+	 * page-wide scope: applied to every facet branch, the service one included.
+	 * An empty list matches nothing.
+	 */
+	services?: readonly string[]
 	browser?: string
 	country?: string
 	deviceType?: string
@@ -326,6 +332,7 @@ export function sessionReplaysListQuery(
 			$.StartTime.gte(param.dateTimeString("startTime")),
 			$.StartTime.lte(param.dateTimeString("endTime")),
 			CH.when(opts.serviceName, (v: string) => $.ServiceName.eq(v)),
+			servicesIn($.ServiceName, opts.services),
 			CH.when(opts.environment, (v: string) => resourceEnvLabel($.ResourceAttributes).eq(v)),
 			CH.when(opts.browser, (v: string) => $.BrowserName.eq(v)),
 			CH.when(opts.country, (v: string) => $.Country.eq(v)),
@@ -563,6 +570,12 @@ export function sessionReplaysListQuery(
 
 export interface SessionReplaysFacetsOpts {
 	serviceName?: string
+	/**
+	 * The header's project, as its services (see `namespaceServicesQuery`). A
+	 * page-wide scope: applied to every facet branch, the service one included.
+	 * An empty list matches nothing.
+	 */
+	services?: readonly string[]
 	browser?: string
 	country?: string
 	deviceType?: string
@@ -612,6 +625,7 @@ export function sessionReplaysFacetsQuery(
 		$.StartTime.gte(param.dateTimeString("startTime")),
 		$.StartTime.lte(param.dateTimeString("endTime")),
 		exclude === "service" ? undefined : CH.when(opts.serviceName, (v: string) => $.ServiceName.eq(v)),
+		servicesIn($.ServiceName, opts.services),
 		// No facet branch of its own — the environment is a page-wide scope, so it
 		// narrows every dimension's counts rather than listing itself.
 		CH.when(opts.environment, (v: string) => resourceEnvLabel($.ResourceAttributes).eq(v)),
@@ -792,6 +806,8 @@ export function sessionReplaysFacetsQuery(
 				$.StartTime.gte(param.dateTimeString("startTime")),
 				$.StartTime.lte(param.dateTimeString("endTime")),
 				CH.when(opts.serviceName, (v: string) => $.ServiceName.eq(v)),
+				servicesIn($.ServiceName, opts.services),
+				servicesIn($.ServiceName, opts.services),
 				// This branch spells its own WHERE out rather than reusing `baseWhere`
 				// (it is the one that must drop `hasErrors`), so the environment has to
 				// be repeated here — without it the "Has errors" count would span every
@@ -899,6 +915,8 @@ export interface SessionResourceAttributeBreakdownOpts {
 	 * keeps the scan pruned and cannot split a session across the predicate.
 	 */
 	readonly environment?: string
+	/** The header's project, as its services; an empty list matches nothing. */
+	readonly services?: readonly string[]
 }
 
 export interface SessionResourceAttributeBreakdownOutput {
@@ -925,6 +943,7 @@ export function sessionResourceAttributeBreakdownQuery(
 		$.StartTime.gte(param.dateTimeString("startTime")),
 		$.StartTime.lte(param.dateTimeString("endTime")),
 		CH.when(opts.environment, (v: string) => resourceEnvLabel($.ResourceAttributes).eq(v)),
+		servicesIn($.ServiceName, opts.services),
 	]
 
 	if (qualifierKey === undefined) {

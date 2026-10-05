@@ -55,3 +55,19 @@ export const envLabel = (environment: CH.Expr<string>): CH.Expr<string> =>
 export const resourceEnvLabel = (resourceAttributes: {
 	get(key: string): CH.Expr<string>
 }): CH.Expr<string> => envLabel(deploymentEnvExpr(resourceAttributes))
+
+/**
+ * A service column restricted to a list — the header's project, resolved to its
+ * services. `undefined` applies no filter; an empty list matches nothing (a
+ * project with no services in the window has nothing to show), where a bare
+ * `IN ()` would not even parse.
+ */
+export const servicesIn = (
+	column: CH.Expr<string>,
+	services: readonly string[] | undefined,
+): CH.Condition | undefined =>
+	services === undefined
+		? undefined
+		: services.length === 0
+			? CH.rawCond("1 = 0")
+			: CH.inList(column, services)

@@ -38,7 +38,6 @@ export {
 	tracesRootListQuery,
 	traceListQuery,
 	traceServicesByTraceIdsQuery,
-	resourceNamespacesQuery,
 	traceSpanStatsByTraceIdsQuery,
 	traceSummariesQuery,
 	slowTracesQuery,
@@ -55,8 +54,6 @@ export {
 	type TracesRootListOutput,
 	type TraceListOutput,
 	type TraceServicesByTraceIdsOutput,
-	type ResourceNamespacesOpts,
-	type ResourceNamespacesOutput,
 	type TraceSpanStatsByTraceIdsOpts,
 	type TraceSpanStatsByTraceIdsOutput,
 	type TraceSummariesOpts,
@@ -310,6 +307,16 @@ export {
 	type ProductEventAttributeValuesOpts,
 	type ProductEventAttributeValuesOutput,
 } from "./queries/product-events-explore"
+
+// Queries — Projects (service.namespace across every signal)
+export {
+	resourceNamespacesQuery,
+	namespaceServicesQuery,
+	type ResourceNamespacesOpts,
+	type ResourceNamespacesOutput,
+	type NamespaceServicesOpts,
+	type NamespaceServicesOutput,
+} from "./queries/namespaces"
 
 // Queries — Services
 export {

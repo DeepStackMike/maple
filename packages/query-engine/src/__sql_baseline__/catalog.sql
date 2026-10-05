@@ -1575,6 +1575,157 @@ SELECT
         GROUP BY spanId
         FORMAT JSON
 
+-- builder:namespaces:namespaceServicesQuery:default  [bd92b568]
+SELECT
+          serviceName AS serviceName
+        FROM (
+SELECT
+          ResourceAttributes['service.namespace'] AS namespace,
+          ServiceName AS serviceName,
+          count() AS rows
+        FROM traces
+        WHERE OrgId = 'org_sql_catalog'
+          AND ResourceAttributes['service.namespace'] = 'shop'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+        GROUP BY namespace, serviceName
+UNION ALL
+SELECT
+          ResourceAttributes['service.namespace'] AS namespace,
+          ServiceName AS serviceName,
+          count() AS rows
+        FROM logs
+        WHERE OrgId = 'org_sql_catalog'
+          AND ResourceAttributes['service.namespace'] = 'shop'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+        GROUP BY namespace, serviceName
+UNION ALL
+SELECT
+          ResourceAttributes['service.namespace'] AS namespace,
+          ServiceName AS serviceName,
+          count() AS rows
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND ResourceAttributes['service.namespace'] = 'shop'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+        GROUP BY namespace, serviceName
+UNION ALL
+SELECT
+          ResourceAttributes['service.namespace'] AS namespace,
+          ServiceName AS serviceName,
+          count() AS rows
+        FROM metrics_sum
+        WHERE OrgId = 'org_sql_catalog'
+          AND ResourceAttributes['service.namespace'] = 'shop'
+          AND TimeUnix >= '2026-01-01 10:30:00'
+          AND TimeUnix <= '2026-01-03 14:15:00'
+        GROUP BY namespace, serviceName
+UNION ALL
+SELECT
+          ResourceAttributes['service.namespace'] AS namespace,
+          ServiceName AS serviceName,
+          count() AS rows
+        FROM metrics_gauge
+        WHERE OrgId = 'org_sql_catalog'
+          AND ResourceAttributes['service.namespace'] = 'shop'
+          AND TimeUnix >= '2026-01-01 10:30:00'
+          AND TimeUnix <= '2026-01-03 14:15:00'
+        GROUP BY namespace, serviceName
+UNION ALL
+SELECT
+          ResourceAttributes['service.namespace'] AS namespace,
+          ServiceName AS serviceName,
+          count() AS rows
+        FROM metrics_histogram
+        WHERE OrgId = 'org_sql_catalog'
+          AND ResourceAttributes['service.namespace'] = 'shop'
+          AND TimeUnix >= '2026-01-01 10:30:00'
+          AND TimeUnix <= '2026-01-03 14:15:00'
+        GROUP BY namespace, serviceName
+) AS namespace_pairs
+        GROUP BY serviceName
+        ORDER BY serviceName ASC
+        LIMIT 1000
+        FORMAT JSON
+
+-- builder:namespaces:resourceNamespacesQuery:default  [a20fe7b4]
+SELECT
+          namespace AS namespace,
+          sum(rows) AS spanCount
+        FROM (
+SELECT
+          ResourceAttributes['service.namespace'] AS namespace,
+          ServiceName AS serviceName,
+          count() AS rows
+        FROM traces
+        WHERE OrgId = 'org_sql_catalog'
+          AND ResourceAttributes['service.namespace'] != ''
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+        GROUP BY namespace, serviceName
+UNION ALL
+SELECT
+          ResourceAttributes['service.namespace'] AS namespace,
+          ServiceName AS serviceName,
+          count() AS rows
+        FROM logs
+        WHERE OrgId = 'org_sql_catalog'
+          AND ResourceAttributes['service.namespace'] != ''
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+        GROUP BY namespace, serviceName
+UNION ALL
+SELECT
+          ResourceAttributes['service.namespace'] AS namespace,
+          ServiceName AS serviceName,
+          count() AS rows
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND ResourceAttributes['service.namespace'] != ''
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+        GROUP BY namespace, serviceName
+UNION ALL
+SELECT
+          ResourceAttributes['service.namespace'] AS namespace,
+          ServiceName AS serviceName,
+          count() AS rows
+        FROM metrics_sum
+        WHERE OrgId = 'org_sql_catalog'
+          AND ResourceAttributes['service.namespace'] != ''
+          AND TimeUnix >= '2026-01-01 10:30:00'
+          AND TimeUnix <= '2026-01-03 14:15:00'
+        GROUP BY namespace, serviceName
+UNION ALL
+SELECT
+          ResourceAttributes['service.namespace'] AS namespace,
+          ServiceName AS serviceName,
+          count() AS rows
+        FROM metrics_gauge
+        WHERE OrgId = 'org_sql_catalog'
+          AND ResourceAttributes['service.namespace'] != ''
+          AND TimeUnix >= '2026-01-01 10:30:00'
+          AND TimeUnix <= '2026-01-03 14:15:00'
+        GROUP BY namespace, serviceName
+UNION ALL
+SELECT
+          ResourceAttributes['service.namespace'] AS namespace,
+          ServiceName AS serviceName,
+          count() AS rows
+        FROM metrics_histogram
+        WHERE OrgId = 'org_sql_catalog'
+          AND ResourceAttributes['service.namespace'] != ''
+          AND TimeUnix >= '2026-01-01 10:30:00'
+          AND TimeUnix <= '2026-01-03 14:15:00'
+        GROUP BY namespace, serviceName
+) AS namespace_pairs
+        GROUP BY namespace
+        ORDER BY spanCount DESC, namespace ASC
+        LIMIT 100
+        FORMAT JSON
+
 -- builder:product-events-explore:productEventAttributeKeysQuery:default  [f7da3259]
 SELECT
           arrayJoin(mapKeys(Attributes)) AS attributeKey,
@@ -6472,20 +6623,6 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
 FORMAT JSON
-
--- builder:traces:resourceNamespacesQuery:default  [1ea89a80]
-SELECT
-          ResourceAttributes['service.namespace'] AS namespace,
-          count() AS spanCount
-        FROM traces
-        WHERE OrgId = 'org_sql_catalog'
-          AND Timestamp >= '2026-01-01 10:30:00'
-          AND Timestamp <= '2026-01-03 14:15:00'
-          AND ResourceAttributes['service.namespace'] != ''
-        GROUP BY namespace
-        ORDER BY spanCount DESC, namespace ASC
-        LIMIT 100
-        FORMAT JSON
 
 -- builder:traces:traceListQuery:default  [799f01c8]
 SELECT

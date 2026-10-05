@@ -12,7 +12,7 @@ import { from, type CHQuery } from "@maple-dev/effect-clickhouse"
 import { table } from "@maple-dev/effect-clickhouse"
 import { MetricsSum, MetricCatalog, SpanMetricsCallsHourly } from "../tables"
 import { resolveMetricTable, metricsSelectExprs } from "./query-helpers"
-import { deploymentEnvExpr } from "@maple/domain/tinybird/semconv-renames"
+import { resourceEnvLabel, servicesIn } from "./environment"
 import { buildAttrFilterCondition } from "../../traces-shared"
 import { finalizeTimeseries } from "./series-cap"
 
@@ -55,8 +55,10 @@ function attributeFilterConditions(
 interface MetricsQueryOpts {
 	metricType: MetricType
 	serviceName?: string
-	/** Deployment environments to scope to. Empty/undefined means all. */
+	/** Deployment environments to scope to (`unknown` = untagged). Empty/undefined means all. */
 	environments?: readonly string[]
+	/** The header's project, as its services; an empty list matches nothing. */
+	services?: readonly string[]
 	groupByAttributeKey?: string
 	/** Group by a ResourceAttributes key instead of a datapoint Attributes key. */
 	groupByResourceAttributeKey?: string
@@ -125,9 +127,10 @@ export function metricsTimeseriesQuery(opts: MetricsTimeseriesOpts) {
 			$.TimeUnix.gte(param.dateTimeString("startTime")),
 			$.TimeUnix.lte(param.dateTimeString("endTime")),
 			CH.when(opts.serviceName, (v: string) => $.ServiceName.eq(v)),
+			servicesIn($.ServiceName, opts.services),
 			CH.when(opts.attributeKey, (k: string) => $.Attributes.get(k).eq(opts.attributeValue ?? "")),
 			opts.environments?.length
-				? CH.inList(deploymentEnvExpr($.ResourceAttributes), opts.environments)
+				? CH.inList(resourceEnvLabel($.ResourceAttributes), opts.environments)
 				: undefined,
 			...attributeFilterConditions(opts.attributeFilters, (k) => $.Attributes.get(k)),
 			...resourceFilterConditions(opts.resourceAttributeFilters),
@@ -152,8 +155,10 @@ export interface MetricsRateTimeseriesOpts {
 	metricNames?: ReadonlyArray<string>
 	bucketSeconds?: number
 	serviceName?: string
-	/** Deployment environments to scope to. Empty/undefined means all. */
+	/** Deployment environments to scope to (`unknown` = untagged). Empty/undefined means all. */
 	environments?: readonly string[]
+	/** The header's project, as its services; an empty list matches nothing. */
+	services?: readonly string[]
 	groupByAttributeKey?: string
 	/** Group by a ResourceAttributes key instead of a datapoint Attributes key. */
 	groupByResourceAttributeKey?: string
@@ -248,6 +253,7 @@ function metricsTimeseriesRateFromSpanMetricsCallsHourly(
 			$.Hour.gte(previousBucket),
 			$.Hour.lte(endBucket),
 			CH.when(opts.serviceName, (v: string) => $.ServiceName.eq(v)),
+			servicesIn($.ServiceName, opts.services),
 			CH.when(opts.attributeKey === "span.kind" ? opts.attributeValue : undefined, (v: string) =>
 				$.SpanKind.eq(v),
 			),
@@ -395,9 +401,10 @@ export function metricsTimeseriesRateQuery(
 			$.TimeUnix.gte(CH.intervalSub(param.dateTimeString("startTime"), param.int("bucketSeconds"))),
 			$.TimeUnix.lte(param.dateTimeString("endTime")),
 			CH.when(opts.serviceName, (v: string) => $.ServiceName.eq(v)),
+			servicesIn($.ServiceName, opts.services),
 			CH.when(opts.attributeKey, (k: string) => $.Attributes.get(k).eq(opts.attributeValue ?? "")),
 			opts.environments?.length
-				? CH.inList(deploymentEnvExpr($.ResourceAttributes), opts.environments)
+				? CH.inList(resourceEnvLabel($.ResourceAttributes), opts.environments)
 				: undefined,
 			...attributeFilterConditions(opts.attributeFilters, (k) => $.Attributes.get(k)),
 			...resourceFilterConditions(opts.resourceAttributeFilters),
@@ -452,6 +459,10 @@ export interface MetricsSparklinesOpts {
 	metricType: MetricType
 	/** Matched with `MetricName IN (...)` — one query covers a whole grid page. */
 	metricNames: ReadonlyArray<string>
+	/** Deployment environments to scope to (`unknown` = untagged). Empty/undefined means all. */
+	environments?: readonly string[]
+	/** The header's project, as its services; an empty list matches nothing. */
+	services?: readonly string[]
 }
 
 export interface MetricsSparklinesOutput {
@@ -478,6 +489,10 @@ export function metricsSparklinesQuery(opts: MetricsSparklinesOpts) {
 		})
 		.where(($) => [
 			$.MetricName.in_(...opts.metricNames),
+			opts.environments?.length
+				? CH.inList(resourceEnvLabel($.ResourceAttributes), opts.environments)
+				: undefined,
+			servicesIn($.ServiceName, opts.services),
 			$.OrgId.eq(param.string("orgId")),
 			$.TimeUnix.gte(param.dateTimeString("startTime")),
 			$.TimeUnix.lte(param.dateTimeString("endTime")),
@@ -498,6 +513,10 @@ export interface MetricsBreakdownOpts {
 	attributeFilters?: readonly MetricAttributeEquals[]
 	resourceAttributeFilters?: readonly AttributeFilter[]
 	limit?: number
+	/** Deployment environments to scope to (`unknown` = untagged). Empty/undefined means all. */
+	environments?: readonly string[]
+	/** The header's project, as its services; an empty list matches nothing. */
+	services?: readonly string[]
 }
 
 export interface MetricsBreakdownOutput {
@@ -531,6 +550,10 @@ export function metricsBreakdownQuery(opts: MetricsBreakdownOpts) {
 		})
 		.where(($) => [
 			$.MetricName.eq(param.string("metricName")),
+			opts.environments?.length
+				? CH.inList(resourceEnvLabel($.ResourceAttributes), opts.environments)
+				: undefined,
+			servicesIn($.ServiceName, opts.services),
 			$.OrgId.eq(param.string("orgId")),
 			$.TimeUnix.gte(param.dateTimeString("startTime")),
 			$.TimeUnix.lte(param.dateTimeString("endTime")),
@@ -550,6 +573,8 @@ export function metricsBreakdownQuery(opts: MetricsBreakdownOpts) {
 
 export interface ListMetricsOpts {
 	serviceName?: string
+	/** The header's project, as its services; an empty list matches nothing. */
+	services?: readonly string[]
 	metricType?: string
 	search?: string
 	limit?: number
@@ -588,6 +613,7 @@ export function listMetricsQuery(opts: ListMetricsOpts) {
 			$.Hour.gte(CH.toStartOfInterval(CH.toDateTime(param.dateTimeString("startTime")), 3600)),
 			$.Hour.lte(param.dateTimeSeconds("endTime")),
 			CH.when(opts.serviceName, (v: string) => $.ServiceName.eq(v)),
+			servicesIn($.ServiceName, opts.services),
 			CH.when(opts.metricType, (v: string) => $.MetricType.eq(v)),
 			CH.when(opts.search, (v: string) => $.MetricName.ilike(`%${v}%`)),
 		])

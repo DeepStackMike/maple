@@ -13,7 +13,7 @@ import { param, from, inSubquery, unionAll, compileFnCall } from "@maple-dev/eff
 import type { ColumnAccessor, CHQuery, CHUnionQuery } from "@maple-dev/effect-clickhouse"
 import { SessionReplays, SessionEvents, ProductEvents } from "../tables"
 import { isBotCond } from "../user-agent"
-import { resourceEnvLabel } from "./environment"
+import { resourceEnvLabel, servicesIn } from "./environment"
 import type { FacetOutput } from "./query-helpers"
 import { SESSION_LIVE_WINDOW_SECONDS, WEB_ANALYTICS_UNSET } from "@maple/domain/query-engine"
 
@@ -95,6 +95,15 @@ export interface WebAnalyticsFilters {
 	 * `Country` is excluded by a country filter.
 	 */
 	readonly environment?: string
+	/**
+	 * Sessions recorded by any of these services — the header's project, as the
+	 * list of services that belong to it (see `namespaceServicesQuery`). Like
+	 * `environment`, a page-wide scope with no `exclude` arm, and it reaches
+	 * page views and `track()` events through the same `session_replays`
+	 * semi-join. An empty list matches nothing: a project with no services in
+	 * the window has no sessions in it either.
+	 */
+	readonly services?: readonly string[]
 	/**
 	 * Which agents count. `humans` and `bots` partition the window on
 	 * {@link isBotCond}; `all` (and an absent value) applies no predicate.
@@ -387,6 +396,7 @@ export function replaysWhere(
 		// is the population this page is about, not one of the dimensions it
 		// offers to slice.
 		CH.when(filters.environment, (v: string) => resourceEnvLabel($.ResourceAttributes).eq(v)),
+		servicesIn($.ServiceName, filters.services),
 		trafficCondition($, filters),
 		eventSemiJoin($.SessionId, filters, exclude),
 	]
@@ -405,6 +415,7 @@ export function needsSessionSemiJoin(filters: WebAnalyticsFilters): boolean {
 		filters.utmMedium ||
 		filters.utmCampaign ||
 		filters.visitorType ||
+		filters.services ||
 		// `environment` lives in the session's resource map, which only
 		// `session_replays` carries — without it here, narrowing to production
 		// would move the session count while page views kept counting every
