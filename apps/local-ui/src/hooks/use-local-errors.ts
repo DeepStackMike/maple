@@ -4,6 +4,7 @@ import { Option } from "effect"
 import { boundsKey, executeLocalCompiledFirstRow, executeLocalCompiledQuery, localParams } from "@/lib/query"
 import type { TimeBounds } from "../lib/time"
 import { groupSparkPoints, type SparkPoint } from "../lib/error-spark"
+import type { ErrorSlice, VersionTraffic } from "../lib/error-versions"
 
 export interface ErrorsFilters {
 	/** Exact service name match. */
@@ -69,47 +70,131 @@ export function useLocalErrorsByType(filters: ErrorsFilters, bounds: TimeBounds)
 }
 
 /**
- * Per-build occurrence split for every fingerprint on the page, in one query.
- *
- * One request for the whole list, not one per row: chDB runs local queries
- * serially, so fifty round trips would be the page's whole latency budget spent
- * on a subtitle. Returned as a Map so a row looks its own versions up by hash.
- * Rows come back oldest-first within a fingerprint, which is the order
- * "introduced in" reads off.
+ * The filters a per-version breakdown runs under: every one but the Version
+ * facet. Versions are the thing being compared, so filtering to one would leave
+ * its predecessor with nothing and every error would read as new.
+ */
+function versionFilters(filters: ErrorsFilters) {
+	return { ...sharedFilters(filters), serviceVersions: undefined, rootOnly: filters.rootOnly }
+}
+
+/** Keyed by hash list, not row objects: counts change on every refetch. */
+const hashesKey = (fingerprintHashes: ReadonlyArray<string>) => [...fingerprintHashes].sort().join(",")
+
+function groupByFingerprint<T extends { readonly fingerprintHash: string }>(
+	rows: ReadonlyArray<T>,
+	into = new Map<string, Array<T>>(),
+): Map<string, Array<T>> {
+	for (const row of rows) {
+		const list = into.get(row.fingerprintHash)
+		if (list) list.push(row)
+		else into.set(row.fingerprintHash, [row])
+	}
+	return into
+}
+
+/**
+ * Per-build occurrence split for every fingerprint on the page, in one query,
+ * across all services and environments merged. The Compare-versions table uses
+ * it for the count no (service, environment) slice accounts for, so the table
+ * always adds up to the row's count.
  */
 export function useLocalErrorVersions(
 	fingerprintHashes: ReadonlyArray<string>,
 	filters: ErrorsFilters,
 	bounds: TimeBounds,
 ) {
-	// The key is the hash list, not the row objects: counts change on every
-	// refetch and would evict a cache entry whose answer did not move.
-	const key = [...fingerprintHashes].sort().join(",")
 	return useQuery({
-		queryKey: ["local", "errors", "versions", key, filters, boundsKey(bounds)],
+		queryKey: ["local", "errors", "versions", hashesKey(fingerprintHashes), filters, boundsKey(bounds)],
 		placeholderData: keepPreviousData,
 		queryFn:
 			fingerprintHashes.length > 0
-				? async ({ signal }): Promise<Map<string, Array<CH.ErrorVersionsOutput>>> => {
-						const rows = await executeLocalCompiledQuery(
-							CH.compile(
-								CH.errorVersionsQuery({
-									...sharedFilters(filters),
-									rootOnly: filters.rootOnly,
-									fingerprintHashes,
-								}),
-								localParams(bounds),
+				? async ({ signal }): Promise<Map<string, Array<CH.ErrorVersionsOutput>>> =>
+						groupByFingerprint(
+							await executeLocalCompiledQuery(
+								CH.compile(
+									CH.errorVersionsQuery({ ...versionFilters(filters), fingerprintHashes }),
+									localParams(bounds),
+								),
+								signal,
 							),
-							signal,
 						)
-						const byFingerprint = new Map<string, Array<CH.ErrorVersionsOutput>>()
-						for (const row of rows) {
-							const list = byFingerprint.get(row.fingerprintHash)
-							if (list) list.push(row)
-							else byFingerprint.set(row.fingerprintHash, [row])
-						}
-						return byFingerprint
-					}
+				: skipToken,
+	})
+}
+
+/**
+ * Every `service.version` per (service, environment) in the window, with its
+ * span count and first/last span — what orders versions into predecessors and
+ * supplies each side's denominator. Narrowed client-side to the page's service
+ * and environment filters; the environment is labelled the way the errors
+ * queries label it (`''` reads `unknown`).
+ */
+export function useLocalVersionTraffic(filters: ErrorsFilters, bounds: TimeBounds) {
+	return useQuery({
+		queryKey: ["local", "errors", "version-traffic", filters.service, filters.env, boundsKey(bounds)],
+		placeholderData: keepPreviousData,
+		queryFn: async ({ signal }): Promise<Array<VersionTraffic>> => {
+			const rows = await executeLocalCompiledQuery(
+				CH.compile(
+					CH.serviceCatalogVersionsQuery({ serviceName: filters.service }),
+					localParams(bounds),
+				),
+				signal,
+			)
+			return rows
+				.map((row) => ({
+					serviceName: row.serviceName,
+					environment: row.environment || UNKNOWN_ENVIRONMENT,
+					version: row.version,
+					spanCount: Number(row.spanCount),
+					firstSeen: row.firstSeen,
+					lastSeen: row.lastSeen,
+				}))
+				.filter((row) => !filters.env || row.environment === filters.env)
+		},
+	})
+}
+
+/** The errors queries' label for an untagged environment (see query-engine `envLabel`). */
+const UNKNOWN_ENVIRONMENT = "unknown"
+
+/**
+ * Each fingerprint's count per version, split by (service, environment), in
+ * one query batched over the whole page's fingerprints. The environment is
+ * already `envLabel`'d, so an untagged row reads `unknown`, matching
+ * {@link useLocalVersionTraffic}.
+ */
+export function useLocalErrorSlices(
+	fingerprintHashes: ReadonlyArray<string>,
+	filters: ErrorsFilters,
+	bounds: TimeBounds,
+) {
+	return useQuery({
+		queryKey: [
+			"local",
+			"errors",
+			"version-slices",
+			hashesKey(fingerprintHashes),
+			filters,
+			boundsKey(bounds),
+		],
+		placeholderData: keepPreviousData,
+		queryFn:
+			fingerprintHashes.length > 0
+				? async ({ signal }): Promise<Map<string, Array<ErrorSlice>>> =>
+						groupByFingerprint(
+							await executeLocalCompiledQuery(
+								CH.compile(
+									CH.errorVersionSlicesQuery({
+										...versionFilters(filters),
+										fingerprintHashes,
+									}),
+									localParams(bounds),
+								),
+								signal,
+							),
+						)
 				: skipToken,
 	})
 }
@@ -127,9 +212,16 @@ export function useLocalErrorsSpark(
 	bounds: TimeBounds,
 	bucketSeconds: number,
 ) {
-	const key = [...fingerprintHashes].sort().join(",")
 	return useQuery({
-		queryKey: ["local", "errors", "spark", key, filters, boundsKey(bounds), bucketSeconds],
+		queryKey: [
+			"local",
+			"errors",
+			"spark",
+			hashesKey(fingerprintHashes),
+			filters,
+			boundsKey(bounds),
+			bucketSeconds,
+		],
 		placeholderData: keepPreviousData,
 		queryFn:
 			fingerprintHashes.length > 0

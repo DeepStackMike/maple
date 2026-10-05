@@ -6,6 +6,7 @@ import {
 	errorsTimeseriesQuery,
 	errorsSparkQuery,
 	errorVersionsQuery,
+	errorVersionSlicesQuery,
 	errorsSummaryQuery,
 	errorDetailTracesQuery,
 	errorSessionsQuery,
@@ -163,6 +164,16 @@ describe("errorsByTypeQuery", () => {
 })
 
 // errorVersionsQuery — the per-build occurrence split behind "Introduced in"
+
+describe("errorVersionSlicesQuery", () => {
+	it("splits each version by service and labelled environment", () => {
+		const { sql } = compileUnsafe(errorVersionSlicesQuery({ fingerprintHashes: ["123"] }), baseParams)
+		expect(sql).toContain("ServiceName AS serviceName")
+		expect(sql).toContain("coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS environment")
+		expect(sql).toMatch(/GROUP BY fingerprintHash, serviceName, environment, serviceVersion/)
+		expect(sql).toContain("OrgId = 'org_1'")
+	})
+})
 
 describe("errorVersionsQuery", () => {
 	it("splits one scan of the fingerprint-keyed table by deployed version", () => {

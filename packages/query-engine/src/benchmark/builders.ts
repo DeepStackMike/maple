@@ -1089,6 +1089,16 @@ export const builderFixtures: ReadonlyArray<BuilderFixture> = [
 		compile: () => CH.compileUnsafe(CH.errorVersionsQuery({ fingerprintHashes: [FINGERPRINT] }), window),
 	},
 	{
+		// local-ui use-local-errors.ts useLocalErrorVersions — the "Introduced in"
+		// line on every list row and the Compare-versions strip under an open one,
+		// batched over the whole page of fingerprints.
+		module: "errors",
+		name: "errorVersionSlicesQuery",
+		label: "default",
+		compile: () =>
+			CH.compileUnsafe(CH.errorVersionSlicesQuery({ fingerprintHashes: [FINGERPRINT] }), window),
+	},
+	{
 		// local-ui use-local-errors.ts useLocalErrorSessions — "Sessions with this
 		// error" in the expanded row. Both branches of the predicate are exercised:
 		// without a needle the message half never compiles.

@@ -21,7 +21,9 @@ import {
 	useLocalErrorSampleStack,
 	useLocalErrorSessions,
 	useLocalErrorTraces,
+	useLocalErrorSlices,
 	useLocalErrorVersions,
+	useLocalVersionTraffic,
 	useLocalErrorsByType,
 	useLocalErrorsFacets,
 	useLocalErrorsSpark,
@@ -33,7 +35,17 @@ import { useRange } from "../hooks/use-range"
 import { useSignalPresence } from "../hooks/use-signal-presence"
 import { useTimeWindow } from "../hooks/use-time-window"
 import { denseCounts, sparkWindow, type SparkPoint, type SparkWindow } from "../lib/error-spark"
-import { introducedVersion, versionsByRecency } from "../lib/error-versions"
+import {
+	compareErrorVersions,
+	introducedIn,
+	nothingCompared,
+	versionsByRecency,
+	type ComparedVersion,
+	type ErrorSlice,
+	type Introduction,
+	type NotComparedReason,
+	type VersionTraffic,
+} from "../lib/error-versions"
 import { hrefFor, useQueryParams } from "../lib/router"
 import { formatRelativeTime, WIDEST_RANGE, type TimeBounds } from "../lib/time"
 import { detectLanguage } from "../lib/code-block"
@@ -46,6 +58,9 @@ import { EmptyState, ErrorState, ListSkeleton } from "../components/view-states"
 
 /** What a `ServiceVersion` of `''` reads as: the exporter never set one. */
 const UNVERSIONED = "unversioned"
+
+const EMPTY_SLICES: ReadonlyArray<ErrorSlice> = []
+const EMPTY_TRAFFIC: ReadonlyArray<VersionTraffic> = []
 
 export function ErrorsView() {
 	const [query, setParams] = useQueryParams()
@@ -79,6 +94,12 @@ export function ErrorsView() {
 	// not the padded query bounds (see `error-spark.ts`).
 	const spark = useMemo(() => sparkWindow(range, timeWindow.anchorMs), [range, timeWindow.anchorMs])
 	const versions = useLocalErrorVersions(fingerprints, filters, timeWindow.bounds)
+	// Each version against the one it replaced on the same service and
+	// environment: version traffic orders them, and the per-(service,
+	// environment, version) split says how often this error fired on each side.
+	const traffic = useLocalVersionTraffic(filters, timeWindow.bounds)
+	const slices = useLocalErrorSlices(fingerprints, filters, timeWindow.bounds)
+	const versionsPending = traffic.isPending || (fingerprints.length > 0 && slices.isPending)
 	const sparkData = useLocalErrorsSpark(fingerprints, filters, timeWindow.bounds, spark.bucketSeconds)
 
 	const sidebar = (
@@ -176,6 +197,9 @@ export function ErrorsView() {
 									key={row.fingerprintHash}
 									row={row}
 									versions={versions.data?.get(row.fingerprintHash) ?? []}
+									slices={slices.data?.get(row.fingerprintHash) ?? EMPTY_SLICES}
+									traffic={traffic.data ?? EMPTY_TRAFFIC}
+									versionsPending={versionsPending}
 									spark={sparkData.data?.get(row.fingerprintHash) ?? []}
 									sparkWindow={spark}
 									filters={filters}
@@ -268,6 +292,9 @@ function traceLinkParams(query: URLSearchParams, errorSpanId: string): URLSearch
 function ErrorTypeCard({
 	row,
 	versions,
+	slices,
+	traffic,
+	versionsPending,
 	spark,
 	sparkWindow: window,
 	filters,
@@ -276,6 +303,9 @@ function ErrorTypeCard({
 }: {
 	row: ErrorTypeRow
 	versions: ReadonlyArray<CH.ErrorVersionsOutput>
+	slices: ReadonlyArray<ErrorSlice>
+	traffic: ReadonlyArray<VersionTraffic>
+	versionsPending: boolean
 	spark: ReadonlyArray<SparkPoint>
 	sparkWindow: SparkWindow
 	filters: ErrorsFilters
@@ -285,7 +315,8 @@ function ErrorTypeCard({
 	const [expanded, setExpanded] = useState(false)
 	const traces = useLocalErrorTraces(expanded ? row.fingerprintHash : undefined, filters, bounds)
 	const panelId = `error-traces-${row.fingerprintHash}`
-	const introduced = introducedVersion(versions)
+	const compared = useMemo(() => compareErrorVersions(slices, traffic), [slices, traffic])
+	const introduction = versionsPending ? null : introducedIn(compared, traffic)
 
 	return (
 		<div className="rounded-md border bg-card">
@@ -325,14 +356,7 @@ function ErrorTypeCard({
 							{row.sampleMessage}
 						</span>
 					) : null}
-					{introduced ? (
-						<span
-							className="block truncate text-[10px] text-muted-foreground"
-							title="Oldest version this error was seen on inside the selected time range — widen the range to look further back."
-						>
-							Introduced in {introduced}
-						</span>
-					) : null}
+					{introduction ? <IntroductionLine introduction={introduction} /> : null}
 				</span>
 				<span className="hidden shrink-0 sm:block">
 					<OccurrenceSpark points={spark} window={window} />
@@ -360,7 +384,7 @@ function ErrorTypeCard({
 
 			{expanded ? (
 				<div id={panelId} className="space-y-3 border-t px-4 py-3">
-					<CompareVersions rows={versions} />
+					<CompareVersions compared={compared} totals={versions} pending={versionsPending} />
 					<ErrorSampleDetail row={row} bounds={bounds} query={query} />
 					<div className="space-y-1">
 						<h4 className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
@@ -443,39 +467,110 @@ function OccurrenceSpark({ points, window }: { points: ReadonlyArray<SparkPoint>
 	)
 }
 
-/**
- * This fingerprint's occurrences, split by the build they ran on: all of the
- * count on the newest build is a regression, an even spread is something that
- * was always there. Nothing is drawn for a single blank version (an exporter
- * that never set `service.version`).
- */
-function CompareVersions({ rows }: { rows: ReadonlyArray<CH.ErrorVersionsOutput> }) {
-	if (rows.length === 0) return null
-	if (rows.length === 1 && !rows[0].serviceVersion) return null
+const REASON_TEXT = {
+	unversioned: "no version set",
+	"no-traffic": "no traffic recorded for this version",
+	oldest: "oldest version in this window",
+	"low-traffic": "too little traffic to compare",
+} satisfies Record<NotComparedReason, string>
 
-	const total = rows.reduce((sum, row) => sum + row.count, 0)
+/**
+ * The card subtitle: where this error arrived, and whether that is a claim
+ * (it never fired on the version this one replaced) or only an observation
+ * (nothing earlier in the window to check against).
+ */
+function IntroductionLine({ introduction }: { introduction: Introduction }) {
+	if (introduction.kind === "introduced") {
+		return (
+			<span
+				className="block truncate text-[10px] text-muted-foreground"
+				title={`Fired on ${introduction.version} and never on ${introduction.baselineVersion}, the version it replaced on the same service and environment, inside the selected window.`}
+			>
+				Introduced in <span className="font-medium text-foreground">{introduction.version}</span>
+				{" · "}not seen on {introduction.baselineVersion}
+			</span>
+		)
+	}
+	const why =
+		introduction.reason === "present-before"
+			? `also seen on ${introduction.baselineVersion ?? "the version before it"}`
+			: introduction.reason === "low-traffic" && introduction.baselineVersion
+				? `too little traffic on it or ${introduction.baselineVersion} to compare`
+				: introduction.reason === "oldest"
+					? "oldest version in this window, nothing earlier to compare"
+					: REASON_TEXT[introduction.reason]
+	return (
+		<span
+			className="block truncate text-[10px] text-muted-foreground"
+			title="Earliest version this error fired on inside the selected window. Not called an introduction: nothing earlier could be compared — widen the range to look further back."
+		>
+			First seen on {introduction.version} · {why}
+		</span>
+	)
+}
+
+/**
+ * This fingerprint's occurrences per build, each compared against the version
+ * it replaced on the same service and environment — the hosted release rule —
+ * as a rate over each version's own traffic. Rows that could not be compared
+ * say why, and when none could the table says so rather than leaving a column
+ * of blanks. Any count the per-slice result misses (it is row-limited) is one
+ * closing row, so the table still adds up to the merged per-version total.
+ */
+function CompareVersions({
+	compared,
+	totals,
+	pending,
+}: {
+	compared: ReadonlyArray<ComparedVersion>
+	totals: ReadonlyArray<CH.ErrorVersionsOutput>
+	pending: boolean
+}) {
+	if (pending) return <div className="h-12 animate-pulse rounded-md bg-muted/40" />
+
+	const total = totals.reduce((sum, row) => sum + row.count, 0)
+	const attributed = compared.reduce((sum, row) => sum + row.count, 0)
+	const unattributed = Math.max(total - attributed, 0)
+	// Nothing to compare at all: no slice, and the merged split is one blank version.
+	if (compared.length === 0 && (totals.length === 0 || (totals.length === 1 && !totals[0].serviceVersion)))
+		return null
+
+	const multiplePairs =
+		new Set(compared.map((row) => `${row.serviceName}\u0000${row.environment}`)).size > 1
+	const denominator = Math.max(total, attributed)
 
 	return (
 		<div className="space-y-1">
 			<h4 className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
 				Compare versions
+				<span className="ml-1.5 normal-case tracking-normal">
+					· each against the version it replaced
+				</span>
 			</h4>
 			<ul className="divide-y rounded-md border">
-				{versionsByRecency(rows).map((row) => (
+				{versionsByRecency(compared).map((row) => (
 					<li
-						key={row.serviceVersion || UNVERSIONED}
+						key={`${row.serviceName}\u0000${row.environment}\u0000${row.serviceVersion}`}
 						className="flex items-center gap-3 px-2 py-1.5 text-xs"
 					>
-						<span
-							className={cn(
-								"min-w-0 flex-1 truncate font-mono",
-								row.serviceVersion ? "text-foreground" : "text-muted-foreground italic",
-							)}
-						>
-							{row.serviceVersion || UNVERSIONED}
+						<span className="min-w-0 flex-1 truncate">
+							<span
+								className={cn(
+									"font-mono",
+									row.serviceVersion ? "text-foreground" : "text-muted-foreground italic",
+								)}
+							>
+								{row.serviceVersion || UNVERSIONED}
+							</span>
+							{multiplePairs ? (
+								<span className="ml-1.5 text-muted-foreground">
+									{row.serviceName} · {row.environment}
+								</span>
+							) : null}
 						</span>
+						<VersionComparisonCell row={row} />
 						<span className="shrink-0 tabular-nums text-muted-foreground">
-							{total > 0 ? formatErrorRate(row.count / total) : "—"}
+							{denominator > 0 ? formatErrorRate(row.count / denominator) : "—"}
 						</span>
 						<span className="w-14 shrink-0 text-right tabular-nums font-medium text-destructive">
 							{formatNumber(row.count)}
@@ -485,10 +580,84 @@ function CompareVersions({ rows }: { rows: ReadonlyArray<CH.ErrorVersionsOutput>
 						</span>
 					</li>
 				))}
+				{unattributed > 0 ? (
+					<li className="flex items-center gap-3 px-2 py-1.5 text-xs text-muted-foreground">
+						<span
+							className="min-w-0 flex-1 truncate italic"
+							title="Occurrences the per-service breakdown did not return (its result is row-limited), so they have no version to order."
+						>
+							no version data
+						</span>
+						<span className="shrink-0 italic">not compared</span>
+						<span className="shrink-0 tabular-nums">
+							{formatErrorRate(unattributed / denominator)}
+						</span>
+						<span className="w-14 shrink-0 text-right tabular-nums font-medium text-destructive">
+							{formatNumber(unattributed)}
+						</span>
+						<span className="w-20 shrink-0" />
+					</li>
+				) : null}
 			</ul>
+			{nothingCompared(compared) ? (
+				<p className="text-[10px] text-muted-foreground">{nothingComparedText(compared)}</p>
+			) : null}
 		</div>
 	)
 }
+
+function nothingComparedText(compared: ReadonlyArray<ComparedVersion>): string {
+	const reasons = new Set(
+		compared.map((row) => (row.comparison.kind === "not-compared" ? row.comparison.reason : null)),
+	)
+	if (compared.length === 0 || (reasons.has("unversioned") && reasons.size === 1))
+		return "Nothing compared: no versioned traffic for this error in the selected window."
+	if (reasons.size === 1 && reasons.has("oldest"))
+		return "Nothing compared: each version here is the oldest of its service in this window — widen the range to compare against what came before."
+	return "Nothing compared: no version here has a predecessor on the same service and environment with enough traffic in this window."
+}
+
+/** "new", "×3.2", "≈" against the predecessor, or why there is no comparison. */
+function VersionComparisonCell({ row }: { row: ComparedVersion }) {
+	const { comparison } = row
+	if (comparison.kind === "not-compared") {
+		return (
+			<span className="shrink-0 italic text-muted-foreground" title={REASON_TEXT[comparison.reason]}>
+				{comparison.reason === "oldest"
+					? "oldest"
+					: comparison.reason === "low-traffic"
+						? "low traffic"
+						: "not compared"}
+			</span>
+		)
+	}
+	const { baseline, verdict, ratio, errorRate } = comparison
+	const title = `${formatRate(errorRate)} vs ${formatRate(baseline.errorRate)} on ${baseline.version} (${formatNumber(baseline.errorCount)} in ${formatNumber(baseline.spanCount)} spans)`
+	const label =
+		verdict === "new"
+			? `new vs ${baseline.version}`
+			: verdict === "similar"
+				? `≈ ${baseline.version}`
+				: `×${formatRatio(ratio ?? 0)} vs ${baseline.version}`
+	return (
+		<span
+			className={cn(
+				"max-w-40 shrink-0 truncate tabular-nums",
+				verdict === "new" || verdict === "more"
+					? "font-medium text-destructive"
+					: "text-muted-foreground",
+			)}
+			title={title}
+		>
+			{label}
+		</span>
+	)
+}
+
+const formatRatio = (ratio: number) => (ratio >= 10 ? ratio.toFixed(0) : ratio.toFixed(1))
+
+/** Occurrences per thousand spans — readable at the rates one fingerprint reaches. */
+const formatRate = (rate: number) => `${(rate * 1000).toFixed(rate * 1000 >= 10 ? 0 : 1)}/1k spans`
 
 /** The newest occurrence's stack, then the browser sessions it was hit in. */
 function ErrorSampleDetail({

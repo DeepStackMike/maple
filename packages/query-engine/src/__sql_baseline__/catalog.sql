@@ -748,6 +748,25 @@ SELECT
         GROUP BY fingerprintHash
         FORMAT JSON
 
+-- builder:errors:errorVersionSlicesQuery:default  [1d969433]
+SELECT
+          toString(FingerprintHash) AS fingerprintHash,
+          ServiceName AS serviceName,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS environment,
+          ServiceVersion AS serviceVersion,
+          count() AS count,
+          min(Timestamp) AS firstSeen,
+          max(Timestamp) AS lastSeen
+        FROM error_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND FingerprintHash IN (toUInt64('11640393269246331608'))
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+        GROUP BY fingerprintHash, serviceName, environment, serviceVersion
+        ORDER BY fingerprintHash ASC, serviceName ASC, environment ASC, firstSeen ASC
+        LIMIT 2000
+        FORMAT JSON
+
 -- builder:errors:errorVersionsQuery:default  [2df88e39]
 SELECT
           toString(FingerprintHash) AS fingerprintHash,

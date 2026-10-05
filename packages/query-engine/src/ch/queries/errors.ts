@@ -347,6 +347,55 @@ export function errorVersionsQuery(opts: ErrorVersionsOpts) {
 			.format("JSON")
 	)
 }
+
+// Error version slices — the same split, per (service, environment)
+//
+// "Introduced in" and the compare-versions table compare a version with the
+// one it replaced, and a predecessor only means something on the same service
+// in the same environment: `2.4.0` on staging did not replace `2.3.2` on
+// production. `errorVersionsQuery` merges those, so this keeps its filters and
+// adds the two dimensions rather than making callers run it once per pair.
+// The environment goes through `envLabel` so an untagged slice is `unknown`,
+// the name every other errors query gives it.
+
+export interface ErrorVersionSlicesOutput extends ErrorVersionsOutput {
+	readonly serviceName: string
+	readonly environment: string
+}
+
+export function errorVersionSlicesQuery(opts: ErrorVersionsOpts) {
+	return (
+		from(ErrorEvents)
+			.select(($) => ({
+				fingerprintHash: CH.toString_($.FingerprintHash),
+				serviceName: $.ServiceName,
+				environment: envLabel($.DeploymentEnv),
+				serviceVersion: $.ServiceVersion,
+				count: CH.count(),
+				firstSeen: CH.min_($.Timestamp),
+				lastSeen: CH.max_($.Timestamp),
+			}))
+			.where(($) => [
+				$.OrgId.eq(param.string("orgId")),
+				fingerprintHashIn($.FingerprintHash, opts.fingerprintHashes),
+				$.Timestamp.gte(param.dateTimeSeconds("startTime")),
+				$.Timestamp.lte(param.dateTimeSeconds("endTime")),
+				CH.whenTrue(!!opts.rootOnly, () => $.ParentSpanId.eq("")),
+				...sharedFilterConditions($, opts),
+			])
+			.groupBy("fingerprintHash", "serviceName", "environment", "serviceVersion")
+			// Whole fingerprints first under a truncating LIMIT, as above.
+			.orderBy(
+				["fingerprintHash", "asc"],
+				["serviceName", "asc"],
+				["environment", "asc"],
+				["firstSeen", "asc"],
+			)
+			.limit(opts.limit ?? 2000)
+			.format("JSON")
+	)
+}
+
 /** A namespace prefix is a literal, so its `%`/`_` must not act as LIKE wildcards. */
 const likeLiteral = (value: string): string => value.replace(/[\\%_]/g, (c) => `\\${c}`)
 
