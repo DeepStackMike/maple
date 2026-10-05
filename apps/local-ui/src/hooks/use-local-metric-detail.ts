@@ -7,22 +7,56 @@ import { DEFAULT_SERIES_LIMIT, GROUP_BY_SERVICE, type MetricFilter } from "../li
 import type { ChartWindow, TimeBounds } from "../lib/time"
 import { isCounter, isMetricType, type MetricType } from "../lib/units"
 import { foldCatalogRows, type MetricEntry } from "./use-local-metrics"
+import {
+	projectKey,
+	scopedPlaceholder,
+	scopedQueryFn,
+	type ProjectScope,
+	type ProjectServices,
+} from "../lib/project-scope"
 
-/** Catalog row(s) for one metric, aggregated across services. */
-export function useLocalMetricEntry(metricName: string, bounds: TimeBounds) {
+/**
+ * The header scope a metric's own page runs under: the project (as its
+ * services) and the environment. Unlike the list, the series here are read
+ * from the metric tables, which carry the environment in the resource map.
+ */
+export interface MetricScope {
+	readonly project: ProjectScope
+	readonly environment: string | undefined
+}
+
+/** A scope as the metric builders spell it (`services`, `environments`). */
+export interface MetricScopeFilter {
+	readonly services?: ProjectServices
+	readonly environments?: ReadonlyArray<string>
+}
+
+export function metricScopeFilter(scope: MetricScope): MetricScopeFilter {
+	return {
+		services: scope.project.services,
+		environments: scope.environment ? [scope.environment] : undefined,
+	}
+}
+
+/**
+ * Catalog row(s) for one metric, aggregated across the header project's
+ * services (all of them with no project). The catalog has no environment, so
+ * the entry is the same in every one; the series below are not.
+ */
+export function useLocalMetricEntry(metricName: string, bounds: TimeBounds, project: ProjectScope) {
 	return useQuery({
-		queryKey: ["local", "metrics", "entry", metricName, boundsKey(bounds)],
-		placeholderData: keepPreviousData,
-		queryFn: async ({ signal }): Promise<MetricEntry | null> => {
+		queryKey: ["local", "metrics", "entry", metricName, projectKey(project), boundsKey(bounds)],
+		placeholderData: scopedPlaceholder(project),
+		queryFn: scopedQueryFn(project, async ({ signal }): Promise<MetricEntry | null> => {
 			const compiled = CH.compile(
-				CH.listMetricsQuery({ search: metricName, limit: 50 }),
+				CH.listMetricsQuery({ search: metricName, services: project.services, limit: 50 }),
 				localParams(bounds),
 			)
 			const rows = (await executeLocalCompiledQuery(compiled, signal)).filter(
 				(r) => r.metricName === metricName,
 			)
 			return foldCatalogRows(rows).entries[0] ?? null
-		},
+		}),
 	})
 }
 
@@ -56,7 +90,12 @@ const seriesOptionsFor = (options: MetricExplorerOptions) => ({
 })
 
 export const compileMetricRateTimeseriesQuery = (
-	opts: { metricName: string; bucketSeconds: number; options: MetricExplorerOptions },
+	opts: {
+		metricName: string
+		bucketSeconds: number
+		options: MetricExplorerOptions
+		scope?: MetricScopeFilter
+	},
 	params: Parameters<typeof CH.compile>[1],
 ) =>
 	CH.compile(
@@ -64,16 +103,21 @@ export const compileMetricRateTimeseriesQuery = (
 			metricName: opts.metricName,
 			bucketSeconds: opts.bucketSeconds,
 			...seriesOptionsFor(opts.options),
+			...opts.scope,
 		}),
 		params,
 	)
 
 export const compileMetricValueTimeseriesQuery = (
-	opts: { metricType: MetricType; options: MetricExplorerOptions },
+	opts: { metricType: MetricType; options: MetricExplorerOptions; scope?: MetricScopeFilter },
 	params: Parameters<typeof CH.compile>[1],
 ) =>
 	CH.compile(
-		CH.metricsTimeseriesQuery({ metricType: opts.metricType, ...seriesOptionsFor(opts.options) }),
+		CH.metricsTimeseriesQuery({
+			metricType: opts.metricType,
+			...seriesOptionsFor(opts.options),
+			...opts.scope,
+		}),
 		params,
 	)
 
@@ -132,8 +176,10 @@ export function useLocalMetricTimeseries(
 	entry: MetricEntry | null | undefined,
 	bounds: TimeBounds,
 	window: ChartWindow,
-	options: MetricExplorerOptions = DEFAULT_EXPLORER_OPTIONS,
+	options: MetricExplorerOptions,
+	scope: MetricScope,
 ) {
+	const filter = metricScopeFilter(scope)
 	// Grouped by service there is one row per (bucket, service) and no label is
 	// ever missing, so the merge only renames; keep upstream's "value" fallback.
 	const missingLabel = options.groupBy === GROUP_BY_SERVICE ? "value" : "(none)"
@@ -148,16 +194,20 @@ export function useLocalMetricTimeseries(
 			window.bucketSeconds,
 			boundsKey(bounds),
 			options,
+			projectKey(scope.project),
+			scope.environment ?? null,
 		],
-		placeholderData: keepPreviousData,
-		queryFn: entry
-			? async ({ signal }): Promise<ReadonlyArray<SeriesPoint>> => {
+		placeholderData: scopedPlaceholder(scope.project),
+		queryFn: scopedQueryFn(
+			scope.project,
+			!!entry &&
+				(async ({ signal }): Promise<ReadonlyArray<SeriesPoint>> => {
 					const { bucketSeconds } = window
 					const params = { ...localParams(bounds), bucketSeconds, metricName: entry.metricName }
 					if (isCounter(entry)) {
 						const rows = await executeLocalCompiledQuery(
 							compileMetricRateTimeseriesQuery(
-								{ metricName: entry.metricName, bucketSeconds, options },
+								{ metricName: entry.metricName, bucketSeconds, options, scope: filter },
 								params,
 							),
 							signal,
@@ -176,7 +226,7 @@ export function useLocalMetricTimeseries(
 					const metricType = entry.metricType
 					if (!isMetricType(metricType)) return []
 					const rows = await executeLocalCompiledQuery(
-						compileMetricValueTimeseriesQuery({ metricType, options }, params),
+						compileMetricValueTimeseriesQuery({ metricType, options, scope: filter }, params),
 						signal,
 					)
 					return mergeSeriesPoints(
@@ -189,8 +239,8 @@ export function useLocalMetricTimeseries(
 						false,
 						missingLabel,
 					)
-				}
-			: skipToken,
+				}),
+		),
 	})
 }
 
@@ -209,9 +259,11 @@ export interface MetricBreakdownRow {
 export function useLocalMetricBreakdown(
 	entry: MetricEntry | null | undefined,
 	bounds: TimeBounds,
-	options: MetricExplorerOptions = DEFAULT_EXPLORER_OPTIONS,
+	options: MetricExplorerOptions,
+	scope: MetricScope,
 ) {
 	const metricType = entry?.metricType
+	const filter = metricScopeFilter(scope)
 	return useQuery({
 		queryKey: [
 			"local",
@@ -221,32 +273,38 @@ export function useLocalMetricBreakdown(
 			metricType,
 			boundsKey(bounds),
 			options,
+			projectKey(scope.project),
+			scope.environment ?? null,
 		],
-		placeholderData: keepPreviousData,
-		queryFn:
-			entry && metricType && isMetricType(metricType)
-				? async ({ signal }): Promise<ReadonlyArray<MetricBreakdownRow>> => {
-						const rows = await executeLocalCompiledQuery(
-							CH.compile(
-								CH.metricsBreakdownQuery({
-									metricType,
-									groupByAttributeKey:
-										options.groupBy === GROUP_BY_SERVICE ? undefined : options.groupBy,
-									attributeFilters: options.filters,
-									limit: options.seriesLimit,
-								}),
-								{ ...localParams(bounds), metricName: entry.metricName },
-							),
-							signal,
-						)
-						return rows.map((r) => ({
-							name: r.name,
-							avgValue: Number(r.avgValue),
-							sumValue: Number(r.sumValue),
-							count: Number(r.count),
-						}))
-					}
-				: skipToken,
+		placeholderData: scopedPlaceholder(scope.project),
+		queryFn: scopedQueryFn(
+			scope.project,
+			!!entry &&
+				!!metricType &&
+				isMetricType(metricType) &&
+				(async ({ signal }): Promise<ReadonlyArray<MetricBreakdownRow>> => {
+					const rows = await executeLocalCompiledQuery(
+						CH.compile(
+							CH.metricsBreakdownQuery({
+								metricType,
+								groupByAttributeKey:
+									options.groupBy === GROUP_BY_SERVICE ? undefined : options.groupBy,
+								attributeFilters: options.filters,
+								limit: options.seriesLimit,
+								...filter,
+							}),
+							{ ...localParams(bounds), metricName: entry.metricName },
+						),
+						signal,
+					)
+					return rows.map((r) => ({
+						name: r.name,
+						avgValue: Number(r.avgValue),
+						sumValue: Number(r.sumValue),
+						count: Number(r.count),
+					}))
+				}),
+		),
 	})
 }
 

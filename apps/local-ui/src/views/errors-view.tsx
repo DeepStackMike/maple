@@ -47,6 +47,8 @@ import {
 	type VersionTraffic,
 } from "../lib/error-versions"
 import { hrefFor, useQueryParams } from "../lib/router"
+import type { ProjectScope } from "../lib/project-scope"
+import { useNamespaceServices } from "../hooks/use-namespace-services"
 import { formatRelativeTime, WIDEST_RANGE, type TimeBounds } from "../lib/time"
 import { detectLanguage } from "../lib/code-block"
 import { CodeBlock } from "../components/code-block"
@@ -73,9 +75,12 @@ export function ErrorsView() {
 		version: query.get("version") || undefined,
 		rootOnly: query.get("root") === "1",
 	}
-	const summary = useLocalErrorsSummary(filters, timeWindow.bounds)
-	const byType = useLocalErrorsByType(filters, timeWindow.bounds)
-	const facets = useLocalErrorsFacets(filters, timeWindow.bounds)
+	// The header project, as its services: every errors query waits for it and
+	// is intersected with the sidebar's service.
+	const scope = useNamespaceServices(timeWindow.bounds)
+	const summary = useLocalErrorsSummary(filters, timeWindow.bounds, scope)
+	const byType = useLocalErrorsByType(filters, timeWindow.bounds, scope)
+	const facets = useLocalErrorsFacets(filters, timeWindow.bounds, scope)
 	const traces = useSignalPresence("traces")
 	const activeFilterCount = [
 		filters.service,
@@ -93,14 +98,20 @@ export function ErrorsView() {
 	// Drawn window: the range the user asked for, ending at the page's anchor —
 	// not the padded query bounds (see `error-spark.ts`).
 	const spark = useMemo(() => sparkWindow(range, timeWindow.anchorMs), [range, timeWindow.anchorMs])
-	const versions = useLocalErrorVersions(fingerprints, filters, timeWindow.bounds)
+	const versions = useLocalErrorVersions(fingerprints, filters, timeWindow.bounds, scope)
 	// Each version against the one it replaced on the same service and
 	// environment: version traffic orders them, and the per-(service,
 	// environment, version) split says how often this error fired on each side.
-	const traffic = useLocalVersionTraffic(filters, timeWindow.bounds)
-	const slices = useLocalErrorSlices(fingerprints, filters, timeWindow.bounds)
+	const traffic = useLocalVersionTraffic(filters, timeWindow.bounds, scope)
+	const slices = useLocalErrorSlices(fingerprints, filters, timeWindow.bounds, scope)
 	const versionsPending = traffic.isPending || (fingerprints.length > 0 && slices.isPending)
-	const sparkData = useLocalErrorsSpark(fingerprints, filters, timeWindow.bounds, spark.bucketSeconds)
+	const sparkData = useLocalErrorsSpark(
+		fingerprints,
+		filters,
+		timeWindow.bounds,
+		spark.bucketSeconds,
+		scope,
+	)
 
 	const sidebar = (
 		<FilterSidebarFrame className="w-56 shrink-0 px-4" waiting={facets.isFetching}>
@@ -175,7 +186,9 @@ export function ErrorsView() {
 			) : (
 				<div className="space-y-4 p-4">
 					<ErrorsKpis summary={summary.data ?? null} pending={summary.isPending} />
-					{byType.isPending ? (
+					{scope.error ? (
+						<ErrorState label="the project's services" error={scope.error} />
+					) : byType.isPending ? (
 						<ListSkeleton variant="card" rows={6} />
 					) : byType.isError ? (
 						<ErrorState label="errors" error={byType.error} onRetry={() => byType.refetch()} />
@@ -204,6 +217,7 @@ export function ErrorsView() {
 									sparkWindow={spark}
 									filters={filters}
 									bounds={timeWindow.bounds}
+									scope={scope}
 									query={query}
 								/>
 							))}
@@ -299,6 +313,7 @@ function ErrorTypeCard({
 	sparkWindow: window,
 	filters,
 	bounds,
+	scope,
 	query,
 }: {
 	row: ErrorTypeRow
@@ -310,10 +325,11 @@ function ErrorTypeCard({
 	sparkWindow: SparkWindow
 	filters: ErrorsFilters
 	bounds: TimeBounds
+	scope: ProjectScope
 	query: URLSearchParams
 }) {
 	const [expanded, setExpanded] = useState(false)
-	const traces = useLocalErrorTraces(expanded ? row.fingerprintHash : undefined, filters, bounds)
+	const traces = useLocalErrorTraces(expanded ? row.fingerprintHash : undefined, filters, bounds, scope)
 	const panelId = `error-traces-${row.fingerprintHash}`
 	const compared = useMemo(() => compareErrorVersions(slices, traffic), [slices, traffic])
 	const introduction = versionsPending ? null : introducedIn(compared, traffic)
@@ -775,7 +791,9 @@ function SessionsWithError({
 	bounds: TimeBounds
 	query: URLSearchParams
 }) {
-	const sessions = useLocalErrorSessions(fingerprintHash, messageMatch, bounds)
+	// The page's own project lookup, shared through the query cache.
+	const scope = useNamespaceServices(bounds)
+	const sessions = useLocalErrorSessions(fingerprintHash, messageMatch, bounds, scope)
 	const rows = sessions.data ?? []
 	if (sessions.isPending || rows.length === 0) return null
 

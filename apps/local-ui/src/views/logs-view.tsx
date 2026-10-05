@@ -21,6 +21,7 @@ import {
 	type LogFilters,
 } from "../hooks/use-local-logs"
 import { useLocalLogServices } from "../hooks/use-local-log-services"
+import { useNamespaceServices } from "../hooks/use-namespace-services"
 import { useRange } from "../hooks/use-range"
 import { useTimeWindow } from "../hooks/use-time-window"
 import { useQueryParams } from "../lib/router"
@@ -82,11 +83,13 @@ export function LogsView() {
 		})
 	}
 
-	const services = useLocalLogServices(filters, timeWindow.bounds)
-	const severities = useLocalLogSeverities(filters, timeWindow.bounds)
-	const environments = useLocalLogEnvironments(filters, timeWindow.bounds)
-	const histogram = useLocalLogHistogram(filters, timeWindow.bounds)
-	const logs = useLocalLogs(filters, timeWindow.bounds)
+	// The header project, as its services: every query below waits for it.
+	const scope = useNamespaceServices(timeWindow.bounds)
+	const services = useLocalLogServices(filters, timeWindow.bounds, scope)
+	const severities = useLocalLogSeverities(filters, timeWindow.bounds, scope)
+	const environments = useLocalLogEnvironments(filters, timeWindow.bounds, scope)
+	const histogram = useLocalLogHistogram(filters, timeWindow.bounds, scope)
+	const logs = useLocalLogs(filters, timeWindow.bounds, scope)
 	const { hasNextPage, isFetchingNextPage, fetchNextPage } = logs
 
 	const rows = useMemo<ReadonlyArray<LocalLog>>(() => logs.data?.pages.flat() ?? [], [logs.data])
@@ -231,7 +234,9 @@ export function LogsView() {
 				) : null}
 
 				<div className="min-h-0 flex-1">
-					{logs.isPending ? (
+					{scope.error ? (
+						<ErrorState label="the project's services" error={scope.error} />
+					) : logs.isPending ? (
 						<ListSkeleton variant="table" />
 					) : logs.isError ? (
 						<ErrorState label="logs" error={logs.error} onRetry={() => logs.refetch()} />

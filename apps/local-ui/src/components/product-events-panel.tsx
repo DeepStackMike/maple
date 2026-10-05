@@ -19,6 +19,7 @@ import {
 	useLocalProductEventTimeseries,
 	type ProductEventName,
 } from "../hooks/use-local-product-events"
+import type { ProjectScope } from "../lib/project-scope"
 import { formatPercent } from "../lib/product-analytics"
 import { formatRelativeTime } from "../lib/time"
 import { ErrorState } from "./view-states"
@@ -28,6 +29,8 @@ interface ProductEventsPanelProps {
 	range: string
 	/** The header's deployment-environment scope, or `undefined` for all of them. */
 	environment: string | undefined
+	/** The header's project, as its services. */
+	project: ProjectScope
 	/** The event whose detail is expanded, or `null` for none. */
 	selected: string | null
 	onSelect: (next: string | null) => void
@@ -40,6 +43,7 @@ export function ProductEventsPanel({
 	names,
 	range,
 	environment,
+	project,
 	selected,
 	onSelect,
 	propertyKey,
@@ -129,6 +133,7 @@ export function ProductEventsPanel({
 					eventName={selected}
 					range={range}
 					environment={environment}
+					project={project}
 					propertyKey={propertyKey}
 					onPropertyKeyChange={onPropertyKeyChange}
 				/>
@@ -141,21 +146,23 @@ function EventDetail({
 	eventName,
 	range,
 	environment,
+	project,
 	propertyKey,
 	onPropertyKeyChange,
 }: {
 	eventName: string
 	range: string
 	environment: string | undefined
+	project: ProjectScope
 	propertyKey: string | null
 	onPropertyKeyChange: (next: string | null) => void
 }) {
-	const timeseries = useLocalProductEventTimeseries(eventName, range, environment)
-	const keys = useLocalProductEventPropertyKeys(eventName, range, environment)
+	const timeseries = useLocalProductEventTimeseries(eventName, range, environment, project)
+	const keys = useLocalProductEventPropertyKeys(eventName, range, environment, project)
 	// The URL key wins; otherwise the most common one, so the breakdown is
 	// populated the moment an event is opened.
 	const activeKey = propertyKey || keys.data?.[0]?.propertyKey || null
-	const values = useLocalProductEventPropertyValues(eventName, activeKey, range, environment)
+	const values = useLocalProductEventPropertyValues(eventName, activeKey, range, environment, project)
 
 	// The series is keyed `events` rather than by the event name: the chart
 	// reserves `bucket` for the x axis, and a `track('bucket')` call would

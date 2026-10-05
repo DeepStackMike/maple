@@ -23,6 +23,8 @@ import {
 	type MetricEntry,
 	type SparklinePoint,
 } from "../hooks/use-local-metrics"
+import { useEnvironment } from "../hooks/use-environment"
+import { useNamespaceServices } from "../hooks/use-namespace-services"
 import { useRange } from "../hooks/use-range"
 import { useTimeWindow } from "../hooks/use-time-window"
 import { hrefFor, useQueryParams } from "../lib/router"
@@ -51,8 +53,13 @@ export function MetricsListView() {
 	const type = query.get("type") || undefined
 	const search = query.get("q") || undefined
 
-	const list = useLocalMetricsList({ service, type, search }, timeWindow.bounds)
-	const summary = useLocalMetricsSummary(service, timeWindow.bounds)
+	// The header project, as its services. The header environment cannot apply
+	// here: the catalog this list reads has no environment column (see
+	// `useLocalMetricsList`), so the toolbar says so instead of pretending.
+	const scope = useNamespaceServices(timeWindow.bounds)
+	const [environment] = useEnvironment()
+	const list = useLocalMetricsList({ service, type, search }, timeWindow.bounds, scope)
+	const summary = useLocalMetricsSummary(service, timeWindow.bounds, scope)
 	const { entries } = list
 	// Sparklines cover every listed metric, not the service-filtered subset, so
 	// a service click only re-filters and never re-runs their SQL.
@@ -61,7 +68,7 @@ export function MetricsListView() {
 		() => sparklineWindow(allEntries, timeWindow.bounds),
 		[allEntries, timeWindow.bounds],
 	)
-	const sparklines = useLocalMetricsSparklines(allEntries, timeWindow.bounds, chart)
+	const sparklines = useLocalMetricsSparklines(allEntries, timeWindow.bounds, chart, scope)
 
 	const totalDataPoints = (summary.data ?? []).reduce((sum, row) => sum + row.dataPointCount, 0)
 	const typeFacets: FilterOption[] = (summary.data ?? [])
@@ -102,6 +109,14 @@ export function MetricsListView() {
 				className="min-w-48 flex-1"
 			/>
 			<ToolbarStats className="shrink-0">
+				{environment ? (
+					<span
+						className="text-xs text-muted-foreground"
+						title="The metrics catalog has no environment column, so this list cannot be narrowed to one. A metric's own page is."
+					>
+						all environments
+					</span>
+				) : null}
 				<ToolbarStat value={entries.length} label="metrics" />
 				<ToolbarStat value={totalDataPoints} label="datapoints" />
 				<RefreshButton advance={timeWindow.advance} since={list.query.dataUpdatedAt} />
@@ -112,7 +127,9 @@ export function MetricsListView() {
 
 	return (
 		<PageShell sidebar={sidebar} toolbar={toolbar} activeFilterCount={activeFilterCount}>
-			{list.query.isPending ? (
+			{scope.error ? (
+				<ErrorState label="the project's services" error={scope.error} />
+			) : list.query.isPending ? (
 				<ListSkeleton variant="card" rows={6} />
 			) : list.query.isError ? (
 				<ErrorState label="metrics" error={list.query.error} onRetry={() => list.query.refetch()} />

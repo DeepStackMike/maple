@@ -13,6 +13,7 @@ import { Spinner } from "@maple/ui/components/ui/spinner"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@maple/ui/components/ui/table"
 import { QueryBuilderFunnelChart } from "@maple/ui/components/charts/funnel/query-builder-funnel-chart"
 import { useLocalProductEventFunnel, type ProductEventName } from "../hooks/use-local-product-events"
+import type { ProjectScope } from "../lib/project-scope"
 import {
 	CONVERSION_WINDOWS,
 	FUNNEL_MAX_STEPS,
@@ -29,6 +30,8 @@ interface FunnelPanelProps {
 	range: string
 	/** The header's deployment-environment scope, or `undefined` for all of them. */
 	environment: string | undefined
+	/** The header's project, as its services. */
+	project: ProjectScope
 	/** The picker's slots, in order. Always between MIN and MAX; unset slots are `""`. */
 	steps: ReadonlyArray<string>
 	onStepsChange: (next: ReadonlyArray<string>) => void
@@ -40,6 +43,7 @@ export function FunnelPanel({
 	names,
 	range,
 	environment,
+	project,
 	steps,
 	onStepsChange,
 	conversionWindow,
@@ -47,7 +51,7 @@ export function FunnelPanel({
 }: FunnelPanelProps) {
 	const options = names.data ?? []
 	const runnable = isRunnableFunnel(steps)
-	const funnel = useLocalProductEventFunnel(steps, conversionWindow.seconds, range, environment)
+	const funnel = useLocalProductEventFunnel(steps, conversionWindow.seconds, range, environment, project)
 
 	const stages = useMemo(
 		() => (runnable ? toFunnelStages(steps, funnel.data ?? []) : []),

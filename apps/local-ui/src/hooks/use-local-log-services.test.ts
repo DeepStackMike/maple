@@ -42,3 +42,16 @@ describe("compileLocalLogServicesQuery", () => {
 		expect(sql).not.toMatch(/ServiceName\s*=/)
 	})
 })
+
+describe("compileLocalLogServicesQuery under a project", () => {
+	it("lists only the project's services", () => {
+		const { sql } = Effect.runSync(
+			compileLocalLogServicesQuery("2026-07-30 13:05:00", "2026-07-30 14:05:00", {}, [
+				"shop-api",
+				"shop-web",
+			]),
+		)
+
+		expect(sql).toMatch(/ServiceName IN \('shop-api', ?'shop-web'\)/)
+	})
+})

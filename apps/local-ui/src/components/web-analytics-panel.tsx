@@ -20,6 +20,7 @@ import { formatSessionDuration } from "@maple/ui/lib/replay-format"
 import { cn } from "@maple/ui/lib/utils"
 import { useLocalSessionsSummary } from "../hooks/use-local-home"
 import { useLocalSessionFacets } from "../hooks/use-local-sessions"
+import type { ProjectScope } from "../lib/project-scope"
 import {
 	useLocalSessionAttributeBreakdown,
 	useLocalWebBreakdowns,
@@ -100,24 +101,26 @@ interface WebAnalyticsPanelProps {
 	range: string
 	/** The header's deployment-environment scope, or `undefined` for all of them. */
 	environment: string | undefined
+	/** The header's project, as its services (resolved by the view, over this range). */
+	project: ProjectScope
 	/** Which `utm_*` dimension the acquisition card lists. */
 	utm: UtmDimension
 	onUtmChange: (next: UtmDimension) => void
 }
 
-export function WebAnalyticsPanel({ range, environment, utm, onUtmChange }: WebAnalyticsPanelProps) {
+export function WebAnalyticsPanel({ range, environment, project, utm, onUtmChange }: WebAnalyticsPanelProps) {
 	// Home's hook and the sessions tab's hook, called with this page's range —
 	// same objects they build, so these two are cache hits whenever the user
 	// arrived from either.
 	const { bounds } = useTimeWindow(range)
-	const summary = useLocalSessionsSummary(range, environment)
-	const facets = useLocalSessionFacets({ errorsOnly: false, env: environment }, bounds)
-	const sessionsTimeseries = useLocalWebSessionsTimeseries(range, environment)
-	const pageviewsTimeseries = useLocalWebPageviewsTimeseries(range, environment)
-	const pages = useLocalWebPages(range, environment)
-	const breakdowns = useLocalWebBreakdowns(range, environment)
-	const regions = useLocalSessionAttributeBreakdown(range, GEO_REGION, environment)
-	const cities = useLocalSessionAttributeBreakdown(range, GEO_CITY, environment)
+	const summary = useLocalSessionsSummary(range, environment, project)
+	const facets = useLocalSessionFacets({ errorsOnly: false, env: environment }, bounds, project)
+	const sessionsTimeseries = useLocalWebSessionsTimeseries(range, environment, project)
+	const pageviewsTimeseries = useLocalWebPageviewsTimeseries(range, environment, project)
+	const pages = useLocalWebPages(range, environment, project)
+	const breakdowns = useLocalWebBreakdowns(range, environment, project)
+	const regions = useLocalSessionAttributeBreakdown(range, GEO_REGION, environment, project)
+	const cities = useLocalSessionAttributeBreakdown(range, GEO_CITY, environment, project)
 
 	const sessionPoints = sessionsTimeseries.data ?? []
 	const pageviewPoints = pageviewsTimeseries.data ?? []
@@ -155,6 +158,7 @@ export function WebAnalyticsPanel({ range, environment, utm, onUtmChange }: WebA
 			new URLSearchParams(environment ? { range, env: environment, ...params } : { range, ...params }),
 		)
 
+	if (project.error) return <ErrorState label="the project's services" error={project.error} />
 	if (summary.isPending) return <ListSkeleton rows={6} />
 	if (summary.isError) {
 		return <ErrorState label="web analytics" error={summary.error} onRetry={() => summary.refetch()} />

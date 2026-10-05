@@ -43,9 +43,9 @@ import { useLocalServiceCatalog } from "../hooks/use-local-service-catalog"
 import { useLocalSessions } from "../hooks/use-local-sessions"
 import { useEnvironment } from "../hooks/use-environment"
 import { useNamespace } from "../hooks/use-namespace"
+import { useNamespaceServices } from "../hooks/use-namespace-services"
 import { lastSeenByService, overviewSeries, summarizeServices } from "../lib/home-overview"
 import { DOCS_LOCAL_MODE_SEND_TELEMETRY } from "../lib/links"
-import { ALL_PROJECTS_LABEL } from "../lib/namespace"
 import { navigate } from "../lib/router"
 import { formatRelativeTime } from "../lib/time"
 import { useRange } from "../hooks/use-range"
@@ -62,10 +62,10 @@ const SESSION_ROWS = 5
 export function HomeView() {
 	const [range, setRange] = useRange()
 	const timeWindow = useTimeWindow(range)
-	// The header's project selection. Home is the one page that reads across
-	// every signal, so it is also the one page where the filter applies to some
-	// blocks and not others — see the block labels below, and `lib/namespace.ts`
-	// for the list of which and why.
+	// The header's project selection. The services table, the span KPIs and the
+	// chart filter on `service.namespace` directly; the errors and sessions
+	// blocks, whose tables carry no namespace, filter on the project's services
+	// (`useNamespaceServices`) — see `lib/namespace.ts`.
 	const [namespace] = useNamespace()
 	// The header's environment. Unlike the project, every block on this page can
 	// honour it: `error_events` has a `DeploymentEnv` column and `session_replays`
@@ -80,11 +80,12 @@ export function HomeView() {
 	// the same SQL. Matching them makes Home's fetch the tab's fetch, so
 	// following a tile lands on a warm cache.
 	const { bounds } = timeWindow
+	const scope = useNamespaceServices(bounds)
 	const catalog = useLocalServiceCatalog({ ns: namespace, env: environment }, bounds)
-	const errorsSummary = useLocalErrorsSummary({ rootOnly: false, env: environment }, bounds)
-	const errorsByType = useLocalErrorsByType({ rootOnly: false, env: environment }, bounds)
-	const sessions = useLocalSessions({ errorsOnly: false, env: environment }, bounds)
-	const sessionsSummary = useLocalSessionsSummary(range, environment)
+	const errorsSummary = useLocalErrorsSummary({ rootOnly: false, env: environment }, bounds, scope)
+	const errorsByType = useLocalErrorsByType({ rootOnly: false, env: environment }, bounds, scope)
+	const sessions = useLocalSessions({ errorsOnly: false, env: environment }, bounds, scope)
+	const sessionsSummary = useLocalSessionsSummary(range, environment, scope)
 	const timeseries = useLocalOverviewTimeseries(range, namespace, environment)
 
 	const entries = catalog.entries
@@ -113,11 +114,6 @@ export function HomeView() {
 			</div>
 		</Toolbar>
 	)
-
-	// The two KPIs whose source carries no namespace. Spelled into the hint line
-	// the tile already has rather than added as new chrome: the tile is three
-	// lines and the third one is where it says what the number counts.
-	const unscoped = (hint: string) => (namespace ? `${hint}, ${ALL_PROJECTS_LABEL.toLowerCase()}` : hint)
 
 	// Nothing at all has arrived: a setup problem, not an empty filter, so the
 	// answer is the OTLP endpoint rather than "widen the range".
@@ -181,13 +177,13 @@ export function HomeView() {
 							<KpiTile
 								label="Sessions"
 								value={formatNumber(sessionCount)}
-								hint={unscoped("recorded")}
+								hint="recorded"
 								onClick={() => open("/sessions")}
 							/>
 							<KpiTile
 								label="Errors"
 								value={formatNumber(errorCount)}
-								hint={unscoped("events")}
+								hint="events"
 								danger={errorCount > 0}
 								onClick={() => open("/errors")}
 							/>
@@ -271,16 +267,7 @@ export function HomeView() {
 						</Panel>
 
 						<div className="grid gap-6 lg:grid-cols-2">
-							<Panel
-								title="Recent errors"
-								// `errorsByTypeQuery` reads `error_events`, which its
-								// options expose no namespace dimension for. Saying so is
-								// the honest option: a block silently showing every
-								// project under a header that names one is a wrong number
-								// the reader has no way to notice.
-								note={namespace ? ALL_PROJECTS_LABEL.toLowerCase() : undefined}
-								onSeeAll={() => open("/errors")}
-							>
+							<Panel title="Recent errors" onSeeAll={() => open("/errors")}>
 								{errorsByType.isError ? (
 									<ErrorState
 										label="errors"
@@ -326,13 +313,7 @@ export function HomeView() {
 								)}
 							</Panel>
 
-							<Panel
-								// Same for `session_replays`: a browser session is recorded
-								// against a service, not a namespace.
-								title="Recent sessions"
-								note={namespace ? ALL_PROJECTS_LABEL.toLowerCase() : undefined}
-								onSeeAll={() => open("/sessions")}
-							>
+							<Panel title="Recent sessions" onSeeAll={() => open("/sessions")}>
 								{sessions.isError ? (
 									<ErrorState
 										label="sessions"

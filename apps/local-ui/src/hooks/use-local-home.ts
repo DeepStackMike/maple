@@ -11,6 +11,7 @@ import { Option } from "effect"
 import { executeLocalCompiledFirstRow, executeLocalCompiledQuery } from "@/lib/query"
 import { LOCAL_ORG_ID } from "../lib/constants"
 import { namespaceFilter } from "../lib/namespace"
+import { projectKey, scopedPlaceholder, scopedQueryFn, type ProjectScope } from "../lib/project-scope"
 import { boundsForRange } from "../lib/time"
 import type { OverviewPoint } from "../lib/home-overview"
 import { bucketSecondsForRange } from "./use-local-metrics"
@@ -96,21 +97,29 @@ export function useLocalOverviewTimeseries(
  * every environment, not inside all of them — which is the same rule the
  * country and browser filters follow, and the honest one: the recorder did not
  * say which deployment it was watching.
+ *
+ * `project` (the header project, as its services) narrows it to sessions
+ * recorded by one of the project's services.
  */
-export function useLocalSessionsSummary(range: string | undefined, environment?: string) {
+export function useLocalSessionsSummary(
+	range: string | undefined,
+	environment: string | undefined,
+	project: ProjectScope,
+) {
 	return useQuery({
-		queryKey: ["local", "home", "sessions-summary", range, environment],
-		placeholderData: keepPreviousData,
-		queryFn: async (): Promise<CH.WebAnalyticsSummaryOutput | null> => {
+		queryKey: ["local", "home", "sessions-summary", range, environment, projectKey(project)],
+		placeholderData: scopedPlaceholder(project),
+		queryFn: scopedQueryFn(project, async ({ signal }): Promise<CH.WebAnalyticsSummaryOutput | null> => {
 			const { startTime, endTime } = boundsForRange(range)
 			const row = await executeLocalCompiledFirstRow(
-				CH.compile(CH.webAnalyticsSummaryQuery({ environment }), {
+				CH.compile(CH.webAnalyticsSummaryQuery({ environment, services: project.services }), {
 					orgId: LOCAL_ORG_ID,
 					startTime,
 					endTime,
 				}),
+				signal,
 			)
 			return Option.getOrNull(row)
-		},
+		}),
 	})
 }

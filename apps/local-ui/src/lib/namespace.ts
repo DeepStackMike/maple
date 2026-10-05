@@ -11,23 +11,49 @@
 // says what the whole session is *about*, which is why it lives in the header
 // rather than in one view's sidebar, and why it is remembered across restarts.
 //
-// WHICH VIEWS HONOUR IT (2026-09, keep this list current):
-//   - Traces list + its facets — `useLocalTraces` / `useLocalTraceFacets`
-//     already took `ns`; the header now supplies it when the sidebar does not.
-//   - Services list — reads `ns` from the URL on its own, which the mirroring
-//     below keeps populated.
-//   - Home: the Services table + the Spans/Error rate/p95/Services KPIs (via
-//     `serviceCatalogQuery`), and the throughput/error-rate chart (via
-//     `tracesTimeseriesQuery`'s `namespaces`, which routes off the hourly
-//     rollup — it carries no `ServiceNamespace` — and onto the entry-point
-//     projection, which does).
-//   - Home: errors and sessions blocks are NOT filtered and say so. `error_events`
-//     and `session_replays` carry no namespace dimension their builders expose,
-//     so filtering them would mean either a wrong number or a new query.
-// Errors, Logs, Sessions and the Service map are unfiltered for the same
-// reason: their builders take no namespace today. Each is a matter of threading
-// `namespaces` (or the equivalent) through the hook that owns it — the param
-// and the stored preference are already global.
+// WHICH VIEWS HONOUR IT (2026-10, keep this list current): every list view.
+//
+// Two mechanisms, because only spans carry `service.namespace` everywhere:
+//
+//   1. On the namespace itself, where the builder can:
+//      - Traces list + its facets — `useLocalTraces` / `useLocalTraceFacets`.
+//      - Services list — reads `ns` from the URL, which the mirroring in
+//        `useNamespace` keeps populated.
+//      - Home: the Services table + the Spans/Error rate/p95/Services KPIs (via
+//        `serviceCatalogQuery`), and the throughput/error-rate chart (via
+//        `tracesTimeseriesQuery`'s `namespaces`, which routes off the hourly
+//        rollup — it carries no `ServiceNamespace` — and onto the entry-point
+//        projection, which does).
+//
+//   2. As the project's services, everywhere else. `useNamespaceServices`
+//      resolves the project to the services that reported it in the page's
+//      window (`namespaceServicesQuery`, which reads the namespace off spans,
+//      logs, sessions and metrics alike), and the view filters on that list,
+//      intersected with its own service filter (`lib/project-scope.ts`; a
+//      sidebar service outside the project yields nothing). Dependent queries
+//      stay disabled until the list is known, so a page never flashes another
+//      project's rows.
+//      - Logs: list, histogram and every facet (`serviceNames`).
+//      - Errors: KPIs, list, facets (the Service facet narrowed client-side),
+//        sparks, version comparison, a row's traces (`services`).
+//      - Sessions: list + facets (`services`). Session detail needs nothing —
+//        it is one session, reached from a list that was already scoped.
+//      - Metrics: list, summary, sparklines, and a metric's entry, chart and
+//        breakdown (`services`).
+//      - Analytics: every Web card incl. regions/cities, every Product query and
+//        the funnel (`services` in the filters, through the `session_replays`
+//        semi-join).
+//      - Service map: filtered client-side (`scopeServiceMap`) — nodes to the
+//        project's services, and an edge kept when either end is in the project.
+//      - Home: the Sessions/Errors KPIs and the recent errors/sessions blocks.
+//
+//   THE ONE CAVEAT of (2): it maps by service *name*. A service name reported by
+//   two projects belongs to both, so its rows show under either. The Harbr
+//   naming convention (`<namespace>-<component>`) keeps names unique, and the
+//   views in (1) stay exact regardless.
+//
+//   One small gap remains: a metric's attribute-key / value suggestions in the
+//   filter bar are unscoped (suggestions only; the chart they filter is scoped).
 
 /** The `localStorage` key. `""` is stored for an explicit "All projects". */
 export const NAMESPACE_KEY = "maple.local.namespace"

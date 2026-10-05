@@ -1,5 +1,5 @@
 import { useMemo } from "react"
-import { keepPreviousData, skipToken, useQuery } from "@tanstack/react-query"
+import { useQuery } from "@tanstack/react-query"
 import { CH } from "@maple/query-engine"
 import { boundsKey, executeLocalCompiledQuery, localParams } from "@/lib/query"
 import {
@@ -10,6 +10,7 @@ import {
 	type TimeBounds,
 } from "../lib/time"
 import { isCounter, isMetricType } from "../lib/units"
+import { projectKey, scopedPlaceholder, scopedQueryFn, type ProjectScope } from "../lib/project-scope"
 
 export interface MetricsFilters {
 	/** Exact service name match (applied client-side, so it never re-runs SQL). */
@@ -88,8 +89,14 @@ export function foldCatalogRows(rows: ReadonlyArray<CH.ListMetricsOutput>): Metr
  * Metrics catalog list over the hourly rollup. The service filter is applied
  * with `select` over the cached result, so it doubles as the service facet
  * source and a service click never re-runs SQL.
+ *
+ * The header project *is* applied in SQL (`services`, the project's services),
+ * so the facet lists only the project's services and a sidebar service outside
+ * it filters to nothing. The header environment is **not** applied: the
+ * catalog rollup (`metric_catalog`) has no environment column, so the list can
+ * only say which metrics exist, not in which deployment. The view says so.
  */
-export function useLocalMetricsList(filters: MetricsFilters, bounds: TimeBounds) {
+export function useLocalMetricsList(filters: MetricsFilters, bounds: TimeBounds, scope: ProjectScope) {
 	const query = useQuery({
 		queryKey: [
 			"local",
@@ -97,16 +104,22 @@ export function useLocalMetricsList(filters: MetricsFilters, bounds: TimeBounds)
 			"list",
 			filters.type ?? null,
 			filters.search ?? null,
+			projectKey(scope),
 			boundsKey(bounds),
 		],
-		placeholderData: keepPreviousData,
-		queryFn: async ({ signal }): Promise<MetricsListData> => {
+		placeholderData: scopedPlaceholder(scope),
+		queryFn: scopedQueryFn(scope, async ({ signal }): Promise<MetricsListData> => {
 			const compiled = CH.compile(
-				CH.listMetricsQuery({ metricType: filters.type, search: filters.search, limit: 500 }),
+				CH.listMetricsQuery({
+					metricType: filters.type,
+					search: filters.search,
+					services: scope.services,
+					limit: 500,
+				}),
 				localParams(bounds),
 			)
 			return foldCatalogRows(await executeLocalCompiledQuery(compiled, signal))
-		},
+		}),
 	})
 	const service = filters.service
 	const allEntries = useMemo(() => query.data?.entries ?? [], [query.data])
@@ -123,12 +136,54 @@ export interface MetricsSummaryRow {
 	dataPointCount: number
 }
 
-/** Per-type metric/datapoint counts for the summary stats + type facet. */
-export function useLocalMetricsSummary(service: string | undefined, bounds: TimeBounds) {
+/**
+ * Per-type metric/datapoint counts over catalog rows — what `metricsSummaryQuery`
+ * computes, for when it cannot be used (it takes no service list).
+ */
+export function summarizeCatalogRows(rows: ReadonlyArray<CH.ListMetricsOutput>): Array<MetricsSummaryRow> {
+	const byType = new Map<string, { metrics: Set<string>; dataPointCount: number }>()
+	for (const row of rows) {
+		let entry = byType.get(row.metricType)
+		if (!entry) byType.set(row.metricType, (entry = { metrics: new Set(), dataPointCount: 0 }))
+		entry.metrics.add(row.metricName)
+		entry.dataPointCount += Number(row.dataPointCount)
+	}
+	return [...byType.entries()].map(([metricType, entry]) => ({
+		metricType,
+		metricCount: entry.metrics.size,
+		dataPointCount: entry.dataPointCount,
+	}))
+}
+
+/** Catalog rows read for a project-scoped summary; a local catalog is far below this. */
+const PROJECT_SUMMARY_ROW_LIMIT = 10_000
+
+/**
+ * Per-type metric/datapoint counts for the summary stats + type facet.
+ *
+ * `metricsSummaryQuery` takes no service list, so under a header project the
+ * same numbers are folded from the project's catalog rows instead
+ * ({@link summarizeCatalogRows}) — the same table, grouped one level finer.
+ */
+export function useLocalMetricsSummary(service: string | undefined, bounds: TimeBounds, scope: ProjectScope) {
 	return useQuery({
-		queryKey: ["local", "metrics", "summary", service ?? null, boundsKey(bounds)],
-		placeholderData: keepPreviousData,
-		queryFn: async ({ signal }): Promise<ReadonlyArray<MetricsSummaryRow>> => {
+		queryKey: ["local", "metrics", "summary", service ?? null, projectKey(scope), boundsKey(bounds)],
+		placeholderData: scopedPlaceholder(scope),
+		queryFn: scopedQueryFn(scope, async ({ signal }): Promise<ReadonlyArray<MetricsSummaryRow>> => {
+			if (scope.services !== undefined) {
+				const rows = await executeLocalCompiledQuery(
+					CH.compile(
+						CH.listMetricsQuery({
+							serviceName: service,
+							services: scope.services,
+							limit: PROJECT_SUMMARY_ROW_LIMIT,
+						}),
+						localParams(bounds),
+					),
+					signal,
+				)
+				return summarizeCatalogRows(rows)
+			}
 			const rows = await executeLocalCompiledQuery(
 				CH.compile(CH.metricsSummaryQuery({ serviceName: service }), localParams(bounds)),
 				signal,
@@ -138,7 +193,7 @@ export function useLocalMetricsSummary(service: string | undefined, bounds: Time
 				metricCount: Number(r.metricCount),
 				dataPointCount: Number(r.dataPointCount),
 			}))
-		},
+		}),
 	})
 }
 
@@ -182,6 +237,7 @@ export function useLocalMetricsSparklines(
 	entries: ReadonlyArray<MetricEntry>,
 	bounds: TimeBounds,
 	window: ChartWindow,
+	scope: ProjectScope,
 ) {
 	const groups = useMemo(() => {
 		const byType = new Map<string, string[]>()
@@ -194,41 +250,54 @@ export function useLocalMetricsSparklines(
 	}, [entries])
 
 	return useQuery({
-		queryKey: ["local", "metrics", "sparklines", groups, window.bucketSeconds, boundsKey(bounds)],
-		placeholderData: keepPreviousData,
-		queryFn:
-			groups.length === 0
-				? skipToken
-				: async ({ signal }): Promise<ReadonlyMap<string, SparklinePoint[]>> => {
-						const params = { ...localParams(bounds), bucketSeconds: window.bucketSeconds }
-						const results = await Promise.all(
-							groups.flatMap(([metricType, metricNames]) =>
-								isMetricType(metricType)
-									? [
-											executeLocalCompiledQuery(
-												CH.compile(
-													CH.metricsSparklinesQuery({ metricType, metricNames }),
-													params,
-												),
-												signal,
+		queryKey: [
+			"local",
+			"metrics",
+			"sparklines",
+			groups,
+			window.bucketSeconds,
+			projectKey(scope),
+			boundsKey(bounds),
+		],
+		placeholderData: scopedPlaceholder(scope),
+		queryFn: scopedQueryFn(
+			scope,
+			groups.length > 0 &&
+				(async ({ signal }): Promise<ReadonlyMap<string, SparklinePoint[]>> => {
+					const params = { ...localParams(bounds), bucketSeconds: window.bucketSeconds }
+					const results = await Promise.all(
+						groups.flatMap(([metricType, metricNames]) =>
+							isMetricType(metricType)
+								? [
+										executeLocalCompiledQuery(
+											CH.compile(
+												CH.metricsSparklinesQuery({
+													metricType,
+													metricNames,
+													services: scope.services,
+												}),
+												params,
 											),
-										]
-									: [],
-							),
-						)
-						const points = new Map<string, SparklinePoint[]>()
-						for (const row of results.flat()) {
-							const point = {
-								bucket: row.bucket,
-								avgValue: Number(row.avgValue),
-								sumValue: Number(row.sumValue),
-								dataPointCount: Number(row.dataPointCount),
-							}
-							const list = points.get(row.metricName)
-							if (list) list.push(point)
-							else points.set(row.metricName, [point])
+											signal,
+										),
+									]
+								: [],
+						),
+					)
+					const points = new Map<string, SparklinePoint[]>()
+					for (const row of results.flat()) {
+						const point = {
+							bucket: row.bucket,
+							avgValue: Number(row.avgValue),
+							sumValue: Number(row.sumValue),
+							dataPointCount: Number(row.dataPointCount),
 						}
-						return points
-					},
+						const list = points.get(row.metricName)
+						if (list) list.push(point)
+						else points.set(row.metricName, [point])
+					}
+					return points
+				}),
+		),
 	})
 }

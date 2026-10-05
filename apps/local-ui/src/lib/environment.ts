@@ -17,10 +17,19 @@
 // value is discovered — and the header now supplies the value when the sidebar
 // does not.
 //
-// WHICH VIEWS HONOUR IT (2026-09, keep this list current):
-//   - Traces, Logs, Errors, Services, Service map — each already filtered on
-//     the `env` param; `useEnvironment`'s mirror keeps it populated, and
-//     `switchTab` carries it from page to page.
+// WHICH VIEWS HONOUR IT (2026-10, keep this list current):
+//   - Traces, Logs, Errors, Services — each already filtered on the `env`
+//     param; `useEnvironment`'s mirror keeps it populated, and `switchTab`
+//     carries it from page to page.
+//   - Sessions — from `useEnvironment` (it has no environment facet).
+//   - Service map — client-side (`scopeServiceMap`): overviews are per
+//     (service, environment) so they filter exactly; edges carry no
+//     environment, so they are only pruned by their ends and their counts
+//     stay all-environment.
+//   - Metrics: a metric's chart and breakdown (`environments`). NOT the metrics
+//     list, summary or sparklines: the catalog rollup they read has no
+//     environment column, and the list says "all environments" when one is
+//     selected rather than pretending.
 //   - Home: every block. The KPI strip and the services table via
 //     `serviceCatalogQuery`'s `deploymentEnvironment`, the chart via
 //     `tracesTimeseriesQuery`'s `environments`, recent errors via

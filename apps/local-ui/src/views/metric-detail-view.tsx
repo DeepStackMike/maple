@@ -12,6 +12,8 @@ import {
 	useLocalMetricTimeseries,
 	type MetricExplorerOptions,
 } from "../hooks/use-local-metric-detail"
+import { useEnvironment } from "../hooks/use-environment"
+import { useNamespaceServices } from "../hooks/use-namespace-services"
 import { useRange } from "../hooks/use-range"
 import { useTimeWindow } from "../hooks/use-time-window"
 import {
@@ -58,12 +60,17 @@ export function MetricDetailView({ metricName, backLabel, onBack }: MetricDetail
 	const setFilters = (filters: ReadonlyArray<MetricFilter>) =>
 		setParams({ where: encodeMetricFilters(filters) || null })
 
-	const entryQuery = useLocalMetricEntry(metricName, bounds)
+	// The header project (as its services) and environment. The entry comes off
+	// the catalog, which has no environment; the chart and the table do not.
+	const project = useNamespaceServices(bounds)
+	const [environment] = useEnvironment()
+	const scope = { project, environment }
+	const entryQuery = useLocalMetricEntry(metricName, bounds, project)
 	const entry = entryQuery.data
 	const firstSeenMs = parseClickHouseDateTime(entry?.firstSeen)
 	const chart = useMemo(() => chartWindow(bounds, firstSeenMs), [bounds, firstSeenMs])
-	const timeseries = useLocalMetricTimeseries(entry, bounds, chart, options)
-	const breakdown = useLocalMetricBreakdown(entry, bounds, options)
+	const timeseries = useLocalMetricTimeseries(entry, bounds, chart, options, scope)
+	const breakdown = useLocalMetricBreakdown(entry, bounds, options, scope)
 
 	const groupByLabel = options.groupBy === GROUP_BY_SERVICE ? "service" : options.groupBy
 	const counter = entry ? isCounter(entry) : false
@@ -99,7 +106,9 @@ export function MetricDetailView({ metricName, backLabel, onBack }: MetricDetail
 			</div>
 
 			<div className="min-h-0 flex-1 overflow-auto">
-				{entryQuery.isPending ? (
+				{project.error ? (
+					<ErrorState label="the project's services" error={project.error} />
+				) : entryQuery.isPending ? (
 					<div className="flex h-full items-center justify-center">
 						<Spinner />
 					</div>

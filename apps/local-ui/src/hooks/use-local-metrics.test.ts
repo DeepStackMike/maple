@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { CH } from "@maple/query-engine"
-import { foldCatalogRows, previewValues } from "./use-local-metrics"
+import { foldCatalogRows, previewValues, summarizeCatalogRows } from "./use-local-metrics"
 
 const row = (overrides: Partial<CH.ListMetricsOutput>): CH.ListMetricsOutput => ({
 	metricName: "http.server.requests",
@@ -53,6 +53,20 @@ describe("previewValues", () => {
 	it("previews everything else as the average value", () => {
 		expect(previewValues({ metricType: "gauge", isMonotonic: false }, points).map((p) => p.v)).toEqual([
 			100, 130, 10,
+		])
+	})
+})
+
+describe("summarizeCatalogRows", () => {
+	it("counts distinct metrics and sums datapoints per type, across services", () => {
+		const summary = summarizeCatalogRows([
+			row({ serviceName: "api", dataPointCount: 10 }),
+			row({ serviceName: "web", dataPointCount: 5 }),
+			row({ metricName: "process.memory", metricType: "gauge", dataPointCount: 7 }),
+		])
+		expect(summary).toEqual([
+			{ metricType: "sum", metricCount: 1, dataPointCount: 15 },
+			{ metricType: "gauge", metricCount: 1, dataPointCount: 7 },
 		])
 	})
 })

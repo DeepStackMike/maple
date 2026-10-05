@@ -12,6 +12,9 @@ import {
 	parseDbNodeId,
 } from "@maple/ui/components/service-map/service-map-utils"
 import { useLocalServiceMap, type LocalServiceMapData } from "../hooks/use-local-service-map"
+import { useEnvironment } from "../hooks/use-environment"
+import { useNamespaceServices } from "../hooks/use-namespace-services"
+import { scopeServiceMap } from "../lib/project-scope"
 import { useRange } from "../hooks/use-range"
 import { useTimeWindow } from "../hooks/use-time-window"
 import { resolveRange, WIDEST_RANGE } from "../lib/time"
@@ -62,7 +65,18 @@ export function ServiceMapView() {
 	const map = useLocalServiceMap(timeWindow.bounds, durationSeconds)
 	const [layout, setLayout] = useServiceMapLayout()
 	const [viewPrefs, setViewPrefs] = useServiceMapViewPrefs()
-	const data = map.data
+	// Local fork: the header project (as its services) and environment, applied
+	// client-side — see `scopeServiceMap` for what each does to edges. Nothing is
+	// drawn until the project's services are known.
+	const project = useNamespaceServices(timeWindow.bounds)
+	const [environment] = useEnvironment()
+	const data = useMemo(
+		() =>
+			map.data && !project.isPending
+				? scopeServiceMap(map.data, { services: project.services, environment })
+				: undefined,
+		[map.data, project.isPending, project.services, environment],
+	)
 
 	const graph = useMemo(() => (data ? buildGraph(data, durationSeconds) : null), [data, durationSeconds])
 	const databaseCount = graph ? graph.nodes.length - graph.services.length : 0
@@ -115,7 +129,9 @@ export function ServiceMapView() {
 			{data && data.overviews.length > 0 && data.edges.length === 0 ? <NoEdgesNotice /> : null}
 
 			<div className={cn("min-h-0 flex-1", map.isPlaceholderData && "opacity-60 transition-opacity")}>
-				{map.isPending ? (
+				{project.error ? (
+					<ErrorState label="the project's services" error={project.error} />
+				) : map.isPending || project.isPending ? (
 					<ServiceMapLoading />
 				) : map.isError ? (
 					<ErrorState label="the service map" error={map.error} onRetry={() => map.refetch()} />

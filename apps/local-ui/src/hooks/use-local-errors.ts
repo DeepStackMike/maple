@@ -1,10 +1,20 @@
-import { keepPreviousData, skipToken, useQuery } from "@tanstack/react-query"
+import { skipToken, useQuery } from "@tanstack/react-query"
 import { CH } from "@maple/query-engine"
 import { Option } from "effect"
 import { boundsKey, executeLocalCompiledFirstRow, executeLocalCompiledQuery, localParams } from "@/lib/query"
 import type { TimeBounds } from "../lib/time"
 import { groupSparkPoints, type SparkPoint } from "../lib/error-spark"
 import type { ErrorSlice, VersionTraffic } from "../lib/error-versions"
+import {
+	matchesNothing,
+	projectKey,
+	scopedPlaceholder,
+	scopedQueryFn,
+	scopeServices,
+	withinProject,
+	type ProjectScope,
+	type ProjectServices,
+} from "../lib/project-scope"
 
 export interface ErrorsFilters {
 	/** Exact service name match. */
@@ -19,9 +29,15 @@ export interface ErrorsFilters {
 	rootOnly?: boolean
 }
 
-function sharedFilters(filters: ErrorsFilters) {
+/**
+ * The filters every errors builder shares. `project` is the header project as
+ * its services, intersected with the sidebar service; when that leaves nothing
+ * the hooks answer empty without SQL, because these builders read `[]` as no
+ * filter (see `matchesNothing`).
+ */
+function sharedFilters(filters: ErrorsFilters, project: ProjectServices) {
 	return {
-		services: filters.service ? [filters.service] : undefined,
+		services: scopeServices(project, filters.service),
 		deploymentEnvs: filters.env ? [filters.env] : undefined,
 		errorLabels: filters.errorType ? [filters.errorType] : undefined,
 		serviceVersions: filters.version ? [filters.version] : undefined,
@@ -29,20 +45,22 @@ function sharedFilters(filters: ErrorsFilters) {
 }
 
 /** Headline stats for the errors view (error_events × service_usage). */
-export function useLocalErrorsSummary(filters: ErrorsFilters, bounds: TimeBounds) {
+export function useLocalErrorsSummary(filters: ErrorsFilters, bounds: TimeBounds, scope: ProjectScope) {
 	return useQuery({
-		queryKey: ["local", "errors", "summary", filters, boundsKey(bounds)],
-		placeholderData: keepPreviousData,
-		queryFn: async ({ signal }): Promise<CH.ErrorsSummaryOutput | null> => {
+		queryKey: ["local", "errors", "summary", filters, projectKey(scope), boundsKey(bounds)],
+		placeholderData: scopedPlaceholder(scope),
+		queryFn: scopedQueryFn(scope, async ({ signal }): Promise<CH.ErrorsSummaryOutput | null> => {
+			const shared = sharedFilters(filters, scope.services)
+			if (matchesNothing(shared.services)) return null
 			const row = await executeLocalCompiledFirstRow(
 				CH.compile(
-					CH.errorsSummaryQuery({ ...sharedFilters(filters), rootOnly: filters.rootOnly }),
+					CH.errorsSummaryQuery({ ...shared, rootOnly: filters.rootOnly }),
 					localParams(bounds),
 				),
 				signal,
 			)
 			return Option.getOrNull(row)
-		},
+		}),
 	})
 }
 
@@ -50,22 +68,21 @@ export function useLocalErrorsSummary(filters: ErrorsFilters, bounds: TimeBounds
 export type ErrorTypeRow = CH.ErrorsByTypeOutput
 
 /** Fingerprint-grouped error types, most frequent first. */
-export function useLocalErrorsByType(filters: ErrorsFilters, bounds: TimeBounds) {
+export function useLocalErrorsByType(filters: ErrorsFilters, bounds: TimeBounds, scope: ProjectScope) {
 	return useQuery({
-		queryKey: ["local", "errors", "by-type", filters, boundsKey(bounds)],
-		placeholderData: keepPreviousData,
-		queryFn: ({ signal }): Promise<ReadonlyArray<ErrorTypeRow>> =>
-			executeLocalCompiledQuery(
+		queryKey: ["local", "errors", "by-type", filters, projectKey(scope), boundsKey(bounds)],
+		placeholderData: scopedPlaceholder(scope),
+		queryFn: scopedQueryFn(scope, async ({ signal }): Promise<ReadonlyArray<ErrorTypeRow>> => {
+			const shared = sharedFilters(filters, scope.services)
+			if (matchesNothing(shared.services)) return []
+			return executeLocalCompiledQuery(
 				CH.compile(
-					CH.errorsByTypeQuery({
-						...sharedFilters(filters),
-						rootOnly: filters.rootOnly,
-						limit: 50,
-					}),
+					CH.errorsByTypeQuery({ ...shared, rootOnly: filters.rootOnly, limit: 50 }),
 					localParams(bounds),
 				),
 				signal,
-			),
+			)
+		}),
 	})
 }
 
@@ -74,8 +91,8 @@ export function useLocalErrorsByType(filters: ErrorsFilters, bounds: TimeBounds)
  * facet. Versions are the thing being compared, so filtering to one would leave
  * its predecessor with nothing and every error would read as new.
  */
-function versionFilters(filters: ErrorsFilters) {
-	return { ...sharedFilters(filters), serviceVersions: undefined, rootOnly: filters.rootOnly }
+function versionFilters(filters: ErrorsFilters, project: ProjectServices) {
+	return { ...sharedFilters(filters, project), serviceVersions: undefined, rootOnly: filters.rootOnly }
 }
 
 /** Keyed by hash list, not row objects: counts change on every refetch. */
@@ -103,23 +120,36 @@ export function useLocalErrorVersions(
 	fingerprintHashes: ReadonlyArray<string>,
 	filters: ErrorsFilters,
 	bounds: TimeBounds,
+	scope: ProjectScope,
 ) {
 	return useQuery({
-		queryKey: ["local", "errors", "versions", hashesKey(fingerprintHashes), filters, boundsKey(bounds)],
-		placeholderData: keepPreviousData,
-		queryFn:
-			fingerprintHashes.length > 0
-				? async ({ signal }): Promise<Map<string, Array<CH.ErrorVersionsOutput>>> =>
-						groupByFingerprint(
-							await executeLocalCompiledQuery(
-								CH.compile(
-									CH.errorVersionsQuery({ ...versionFilters(filters), fingerprintHashes }),
-									localParams(bounds),
-								),
-								signal,
+		queryKey: [
+			"local",
+			"errors",
+			"versions",
+			hashesKey(fingerprintHashes),
+			filters,
+			projectKey(scope),
+			boundsKey(bounds),
+		],
+		placeholderData: scopedPlaceholder(scope),
+		queryFn: scopedQueryFn(
+			scope,
+			fingerprintHashes.length > 0 &&
+				(async ({ signal }): Promise<Map<string, Array<CH.ErrorVersionsOutput>>> => {
+					const shared = versionFilters(filters, scope.services)
+					if (matchesNothing(shared.services)) return new Map()
+					return groupByFingerprint(
+						await executeLocalCompiledQuery(
+							CH.compile(
+								CH.errorVersionsQuery({ ...shared, fingerprintHashes }),
+								localParams(bounds),
 							),
-						)
-				: skipToken,
+							signal,
+						),
+					)
+				}),
+		),
 	})
 }
 
@@ -127,14 +157,25 @@ export function useLocalErrorVersions(
  * Every `service.version` per (service, environment) in the window, with its
  * span count and first/last span — what orders versions into predecessors and
  * supplies each side's denominator. Narrowed client-side to the page's service
- * and environment filters; the environment is labelled the way the errors
- * queries label it (`''` reads `unknown`).
+ * (within the header project) and environment filters; the environment is
+ * labelled the way the errors queries label it (`''` reads `unknown`).
  */
-export function useLocalVersionTraffic(filters: ErrorsFilters, bounds: TimeBounds) {
+export function useLocalVersionTraffic(filters: ErrorsFilters, bounds: TimeBounds, scope: ProjectScope) {
 	return useQuery({
-		queryKey: ["local", "errors", "version-traffic", filters.service, filters.env, boundsKey(bounds)],
-		placeholderData: keepPreviousData,
-		queryFn: async ({ signal }): Promise<Array<VersionTraffic>> => {
+		queryKey: [
+			"local",
+			"errors",
+			"version-traffic",
+			filters.service,
+			filters.env,
+			projectKey(scope),
+			boundsKey(bounds),
+		],
+		placeholderData: scopedPlaceholder(scope),
+		queryFn: scopedQueryFn(scope, async ({ signal }): Promise<Array<VersionTraffic>> => {
+			const services = scopeServices(scope.services, filters.service)
+			if (matchesNothing(services)) return []
+			const inScope = services === undefined ? undefined : new Set(services)
 			const rows = await executeLocalCompiledQuery(
 				CH.compile(
 					CH.serviceCatalogVersionsQuery({ serviceName: filters.service }),
@@ -151,8 +192,12 @@ export function useLocalVersionTraffic(filters: ErrorsFilters, bounds: TimeBound
 					firstSeen: row.firstSeen,
 					lastSeen: row.lastSeen,
 				}))
-				.filter((row) => !filters.env || row.environment === filters.env)
-		},
+				.filter(
+					(row) =>
+						(!filters.env || row.environment === filters.env) &&
+						(inScope === undefined || inScope.has(row.serviceName)),
+				)
+		}),
 	})
 }
 
@@ -169,6 +214,7 @@ export function useLocalErrorSlices(
 	fingerprintHashes: ReadonlyArray<string>,
 	filters: ErrorsFilters,
 	bounds: TimeBounds,
+	scope: ProjectScope,
 ) {
 	return useQuery({
 		queryKey: [
@@ -177,25 +223,27 @@ export function useLocalErrorSlices(
 			"version-slices",
 			hashesKey(fingerprintHashes),
 			filters,
+			projectKey(scope),
 			boundsKey(bounds),
 		],
-		placeholderData: keepPreviousData,
-		queryFn:
-			fingerprintHashes.length > 0
-				? async ({ signal }): Promise<Map<string, Array<ErrorSlice>>> =>
-						groupByFingerprint(
-							await executeLocalCompiledQuery(
-								CH.compile(
-									CH.errorVersionSlicesQuery({
-										...versionFilters(filters),
-										fingerprintHashes,
-									}),
-									localParams(bounds),
-								),
-								signal,
+		placeholderData: scopedPlaceholder(scope),
+		queryFn: scopedQueryFn(
+			scope,
+			fingerprintHashes.length > 0 &&
+				(async ({ signal }): Promise<Map<string, Array<ErrorSlice>>> => {
+					const shared = versionFilters(filters, scope.services)
+					if (matchesNothing(shared.services)) return new Map()
+					return groupByFingerprint(
+						await executeLocalCompiledQuery(
+							CH.compile(
+								CH.errorVersionSlicesQuery({ ...shared, fingerprintHashes }),
+								localParams(bounds),
 							),
-						)
-				: skipToken,
+							signal,
+						),
+					)
+				}),
+		),
 	})
 }
 
@@ -211,6 +259,7 @@ export function useLocalErrorsSpark(
 	filters: ErrorsFilters,
 	bounds: TimeBounds,
 	bucketSeconds: number,
+	scope: ProjectScope,
 ) {
 	return useQuery({
 		queryKey: [
@@ -219,27 +268,27 @@ export function useLocalErrorsSpark(
 			"spark",
 			hashesKey(fingerprintHashes),
 			filters,
+			projectKey(scope),
 			boundsKey(bounds),
 			bucketSeconds,
 		],
-		placeholderData: keepPreviousData,
-		queryFn:
-			fingerprintHashes.length > 0
-				? async ({ signal }): Promise<Map<string, Array<SparkPoint>>> => {
-						const rows = await executeLocalCompiledQuery(
-							CH.compile(
-								CH.errorsSparkQuery({
-									...sharedFilters(filters),
-									rootOnly: filters.rootOnly,
-									fingerprintHashes,
-								}),
-								{ ...localParams(bounds), bucketSeconds },
-							),
-							signal,
-						)
-						return groupSparkPoints(rows)
-					}
-				: skipToken,
+		placeholderData: scopedPlaceholder(scope),
+		queryFn: scopedQueryFn(
+			scope,
+			fingerprintHashes.length > 0 &&
+				(async ({ signal }): Promise<Map<string, Array<SparkPoint>>> => {
+					const shared = sharedFilters(filters, scope.services)
+					if (matchesNothing(shared.services)) return new Map()
+					const rows = await executeLocalCompiledQuery(
+						CH.compile(
+							CH.errorsSparkQuery({ ...shared, rootOnly: filters.rootOnly, fingerprintHashes }),
+							{ ...localParams(bounds), bucketSeconds },
+						),
+						signal,
+					)
+					return groupSparkPoints(rows)
+				}),
+		),
 	})
 }
 
@@ -255,33 +304,52 @@ export interface ErrorsFacets {
 	versions: Array<FacetOption>
 }
 
+const EMPTY_ERRORS_FACETS: ErrorsFacets = { services: [], environments: [], errorTypes: [], versions: [] }
+
 /**
  * Sidebar facets. Each section counts under the other filters but not its own
  * (the query drops a dimension's own filter from its branch).
+ *
+ * The header project is not one of those dimensions, so the Service section is
+ * narrowed to it client-side: its branch drops the `services` filter along with
+ * the sidebar's pick, and would otherwise offer every project's services. When
+ * the sidebar's service is outside the project, every other section is empty
+ * (the page is) and the Service section still lists the project's services, so
+ * there is somewhere to click back to.
  */
-export function useLocalErrorsFacets(filters: ErrorsFilters, bounds: TimeBounds) {
+export function useLocalErrorsFacets(filters: ErrorsFilters, bounds: TimeBounds, scope: ProjectScope) {
 	return useQuery({
-		queryKey: ["local", "errors", "facets", filters, boundsKey(bounds)],
-		placeholderData: keepPreviousData,
-		queryFn: async ({ signal }): Promise<ErrorsFacets> => {
+		queryKey: ["local", "errors", "facets", filters, projectKey(scope), boundsKey(bounds)],
+		placeholderData: scopedPlaceholder(scope),
+		queryFn: scopedQueryFn(scope, async ({ signal }): Promise<ErrorsFacets> => {
+			const project = scope.services
+			if (matchesNothing(project)) return EMPTY_ERRORS_FACETS
+			const shared = sharedFilters(filters, project)
+			const outside = matchesNothing(shared.services)
 			const rows = await executeLocalCompiledQuery(
 				CH.compileUnion(
-					CH.errorsFacetsQuery({ ...sharedFilters(filters), rootOnly: filters.rootOnly }),
+					CH.errorsFacetsQuery({
+						...shared,
+						services: outside ? project : shared.services,
+						rootOnly: filters.rootOnly,
+					}),
 					localParams(bounds),
 				),
 				signal,
 			)
 			const pick = (facetType: string) =>
-				rows
-					.filter((r) => r.facetType === facetType)
-					.map((r) => ({ name: r.name, count: Number(r.count) }))
+				outside && facetType !== "service"
+					? []
+					: rows
+							.filter((r) => r.facetType === facetType)
+							.map((r) => ({ name: r.name, count: Number(r.count) }))
 			return {
-				services: pick("service"),
+				services: [...withinProject(pick("service"), project)],
 				environments: pick("environment"),
 				errorTypes: pick("error_type"),
 				versions: pick("version"),
 			}
-		},
+		}),
 	})
 }
 
@@ -313,6 +381,7 @@ export function useLocalErrorTraces(
 	fingerprintHash: string | undefined,
 	filters: ErrorsFilters,
 	bounds: TimeBounds,
+	scope: ProjectScope,
 ) {
 	return useQuery({
 		queryKey: [
@@ -325,23 +394,29 @@ export function useLocalErrorTraces(
 			filters.env,
 			filters.errorType,
 			filters.version,
+			projectKey(scope),
 			boundsKey(bounds),
 		],
-		queryFn: fingerprintHash
-			? ({ signal }): Promise<ReadonlyArray<CH.ErrorDetailTracesOutput>> =>
-					executeLocalCompiledQuery(
+		queryFn: scopedQueryFn(
+			scope,
+			fingerprintHash !== undefined &&
+				(async ({ signal }): Promise<ReadonlyArray<CH.ErrorDetailTracesOutput>> => {
+					const shared = sharedFilters(filters, scope.services)
+					if (matchesNothing(shared.services)) return []
+					return executeLocalCompiledQuery(
 						CH.compile(
 							CH.errorDetailTracesQuery({
 								fingerprintHash,
 								rootOnly: filters.rootOnly,
-								...sharedFilters(filters),
+								...shared,
 								limit: 10,
 							}),
 							localParams(bounds),
 						),
 						signal,
 					)
-			: skipToken,
+				}),
+		),
 	})
 }
 
@@ -352,23 +427,43 @@ export function useLocalErrorTraces(
  * caller mounts this only once {@link useLocalErrorSampleStack} has resolved:
  * passing `undefined` drops the branch of the query that finds browser-side
  * errors at all. Unfiltered by service, like the stack.
+ *
+ * Scoped to the header project: the message branch would otherwise match the
+ * same error text from another project's browser session.
  */
 export function useLocalErrorSessions(
 	fingerprintHash: string | undefined,
 	messageMatch: string | undefined,
 	bounds: TimeBounds,
+	scope: ProjectScope,
 ) {
 	return useQuery({
-		queryKey: ["local", "errors", "sessions", fingerprintHash, messageMatch, boundsKey(bounds)],
-		queryFn: fingerprintHash
-			? ({ signal }): Promise<ReadonlyArray<CH.ErrorSessionsOutput>> =>
-					executeLocalCompiledQuery(
-						CH.compile(
-							CH.errorSessionsQuery({ fingerprintHash, messageMatch, limit: 10 }),
-							localParams(bounds),
-						),
-						signal,
-					)
-			: skipToken,
+		queryKey: [
+			"local",
+			"errors",
+			"sessions",
+			fingerprintHash,
+			messageMatch,
+			projectKey(scope),
+			boundsKey(bounds),
+		],
+		queryFn: scopedQueryFn(
+			scope,
+			fingerprintHash
+				? ({ signal }): Promise<ReadonlyArray<CH.ErrorSessionsOutput>> =>
+						executeLocalCompiledQuery(
+							CH.compile(
+								CH.errorSessionsQuery({
+									fingerprintHash,
+									messageMatch,
+									services: scope.services,
+									limit: 10,
+								}),
+								localParams(bounds),
+							),
+							signal,
+						)
+				: undefined,
+		),
 	})
 }

@@ -1,10 +1,18 @@
-import { keepPreviousData, useInfiniteQuery, useQuery } from "@tanstack/react-query"
+import { useInfiniteQuery, useQuery, type QueryKey } from "@tanstack/react-query"
 import { CH, computeBucketSecondsForRange } from "@maple/query-engine"
 import type { FilterOption } from "@maple/ui/components/filters/filter-section"
 import { boundsKey, executeLocalCompiledQuery, localParams, noCursor } from "@/lib/query"
 import { compareSeverity, normalizeLog, type LocalLog } from "../lib/log-shape"
 import { parseClickHouseDateTime, type TimeBounds } from "../lib/time"
 import { buildLogHistogram, EMPTY_LOG_HISTOGRAM, type LogHistogram } from "../lib/log-histogram"
+import {
+	matchesNothing,
+	projectKey,
+	scopedPlaceholder,
+	scopedQueryFn,
+	scopeServices,
+	type ProjectScope,
+} from "../lib/project-scope"
 
 const PAGE_SIZE = 50
 
@@ -35,10 +43,18 @@ export interface LogFilters {
 	search?: string
 }
 
-/** The filter set as the query builders spell it — one place, every caller. */
-function logsQueryOptions(filters: LogFilters) {
+/**
+ * The filter set as the query builders spell it — one place, every caller.
+ *
+ * The header project arrives as its services and is intersected with the
+ * sidebar's service (`serviceNames` would otherwise win over `serviceName`
+ * outright, so the two cannot both be passed). An empty intersection is
+ * answered by the callers without SQL: the logs builders read `[]` as no filter.
+ */
+export function logsQueryOptions(filters: LogFilters, project: ProjectScope["services"] = undefined) {
+	const services = scopeServices(project, filters.service)
 	return {
-		serviceName: filters.service,
+		serviceNames: services,
 		severity: filters.severity,
 		environments: filters.environment ? [filters.environment] : undefined,
 		search: filters.search,
@@ -52,23 +68,28 @@ type LogCursor = NonNullable<CH.LogsListOpts["cursorIdentity"]>
  * identity: a bare timestamp cursor drops every row that shares the boundary
  * timestamp, which batched exporters produce all the time.
  */
-export function useLocalLogs(filters: LogFilters, bounds: TimeBounds) {
+export function useLocalLogs(filters: LogFilters, bounds: TimeBounds, scope: ProjectScope) {
+	const options = logsQueryOptions(filters, scope.services)
 	return useInfiniteQuery({
-		queryKey: ["local", "logs", filters, boundsKey(bounds)],
+		queryKey: ["local", "logs", filters, projectKey(scope), boundsKey(bounds)],
 		initialPageParam: noCursor<LogCursor>(),
-		placeholderData: keepPreviousData,
-		queryFn: async ({ pageParam, signal }): Promise<ReadonlyArray<LocalLog>> => {
-			const compiled = CH.compile(
-				CH.logsListQuery({
-					limit: PAGE_SIZE,
-					cursorIdentity: pageParam,
-					...logsQueryOptions(filters),
-				}),
-				localParams(bounds),
-			)
-			const rows = await executeLocalCompiledQuery(compiled, signal)
-			return rows.map(normalizeLog)
-		},
+		placeholderData: scopedPlaceholder(scope),
+		queryFn: scopedQueryFn<ReadonlyArray<LocalLog>, QueryKey, LogCursor | undefined>(
+			scope,
+			async ({ pageParam, signal }) => {
+				if (matchesNothing(options.serviceNames)) return []
+				const compiled = CH.compile(
+					CH.logsListQuery({
+						limit: PAGE_SIZE,
+						cursorIdentity: pageParam,
+						...options,
+					}),
+					localParams(bounds),
+				)
+				const rows = await executeLocalCompiledQuery(compiled, signal)
+				return rows.map(normalizeLog)
+			},
+		),
 		getNextPageParam: (lastPage): LogCursor | undefined => {
 			const last = lastPage.length === PAGE_SIZE ? lastPage[lastPage.length - 1] : undefined
 			return last
@@ -110,27 +131,31 @@ export function logHistogramBucketSeconds(bounds: TimeBounds): number {
  * chart that unmounts to a skeleton on every filter click moves the list under
  * the pointer that clicked.
  */
-export function useLocalLogHistogram(filters: LogFilters, bounds: TimeBounds) {
+export function useLocalLogHistogram(filters: LogFilters, bounds: TimeBounds, scope: ProjectScope) {
 	const bucketSeconds = logHistogramBucketSeconds(bounds)
 	return useQuery<LogHistogram>({
-		queryKey: ["local", "logs", "histogram", filters, boundsKey(bounds)],
-		placeholderData: keepPreviousData,
-		queryFn: async ({ signal }) => {
+		queryKey: ["local", "logs", "histogram", filters, projectKey(scope), boundsKey(bounds)],
+		placeholderData: scopedPlaceholder(scope),
+		queryFn: scopedQueryFn(scope, async ({ signal }) => {
 			const startMs = parseClickHouseDateTime(bounds.startTime)
 			const endMs = parseClickHouseDateTime(bounds.endTime)
 			if (startMs === null || endMs === null) return EMPTY_LOG_HISTOGRAM
+			const options = logsQueryOptions(filters, scope.services)
+			// Still a real (empty) grid, so the strip keeps its axis.
+			if (matchesNothing(options.serviceNames))
+				return buildLogHistogram([], { startMs, endMs, bucketSeconds })
 
 			const compiled = CH.compile(
 				CH.logsTimeseriesQuery({
 					groupBy: ["severity"],
 					bucketSeconds,
-					...logsQueryOptions(filters),
+					...options,
 				}),
 				{ ...localParams(bounds), bucketSeconds },
 			)
 			const rows = await executeLocalCompiledQuery(compiled, signal)
 			return buildLogHistogram(rows, { startMs, endMs, bucketSeconds })
-		},
+		}),
 	})
 }
 
@@ -138,7 +163,7 @@ export function useLocalLogHistogram(filters: LogFilters, bounds: TimeBounds) {
  * Severity facet: counts under every filter except severity itself, so picking
  * one level never collapses the list of levels. Ordered by level, not count.
  */
-export function useLocalLogSeverities(filters: LogFilters, bounds: TimeBounds) {
+export function useLocalLogSeverities(filters: LogFilters, bounds: TimeBounds, scope: ProjectScope) {
 	return useQuery<ReadonlyArray<FilterOption>>({
 		queryKey: [
 			"local",
@@ -146,16 +171,19 @@ export function useLocalLogSeverities(filters: LogFilters, bounds: TimeBounds) {
 			filters.service ?? null,
 			filters.environment ?? null,
 			filters.search ?? null,
+			projectKey(scope),
 			boundsKey(bounds),
 		],
 		staleTime: 60_000,
-		placeholderData: keepPreviousData,
-		queryFn: async ({ signal }) => {
+		placeholderData: scopedPlaceholder(scope),
+		queryFn: scopedQueryFn(scope, async ({ signal }) => {
+			const options = logsQueryOptions({ ...filters, severity: undefined }, scope.services)
+			if (matchesNothing(options.serviceNames)) return []
 			const compiled = CH.compile(
 				CH.logsBreakdownQuery({
 					groupBy: "severity",
 					limit: 20,
-					...logsQueryOptions({ ...filters, severity: undefined }),
+					...options,
 				}),
 				localParams(bounds),
 			)
@@ -164,7 +192,7 @@ export function useLocalLogSeverities(filters: LogFilters, bounds: TimeBounds) {
 				.filter((row) => row.name)
 				.map((row) => ({ name: row.name, count: Number(row.count) }))
 				.sort((a, b) => compareSeverity(a.name, b.name))
-		},
+		}),
 	})
 }
 
@@ -185,7 +213,7 @@ export function useLocalLogSeverities(filters: LogFilters, bounds: TimeBounds) {
  * Untagged logs come back as `unknown` (the query engine's `envLabel`), which is
  * a selectable option that matches exactly those rows.
  */
-export function useLocalLogEnvironments(filters: LogFilters, bounds: TimeBounds) {
+export function useLocalLogEnvironments(filters: LogFilters, bounds: TimeBounds, scope: ProjectScope) {
 	return useQuery<ReadonlyArray<FilterOption>>({
 		queryKey: [
 			"local",
@@ -194,22 +222,25 @@ export function useLocalLogEnvironments(filters: LogFilters, bounds: TimeBounds)
 			filters.service ?? null,
 			filters.severity ?? null,
 			filters.search ?? null,
+			projectKey(scope),
 			boundsKey(bounds),
 		],
 		staleTime: 60_000,
-		placeholderData: keepPreviousData,
-		queryFn: async ({ signal }) => {
+		placeholderData: scopedPlaceholder(scope),
+		queryFn: scopedQueryFn(scope, async ({ signal }) => {
+			const options = logsQueryOptions({ ...filters, environment: undefined }, scope.services)
+			if (matchesNothing(options.serviceNames)) return []
 			const compiled = CH.compile(
 				CH.logsBreakdownQuery({
 					groupBy: "environment",
 					limit: null,
 					source: "raw",
-					...logsQueryOptions({ ...filters, environment: undefined }),
+					...options,
 				}),
 				localParams(bounds),
 			)
 			const rows = await executeLocalCompiledQuery(compiled, signal)
 			return rows.filter((row) => row.name).map((row) => ({ name: row.name, count: Number(row.count) }))
-		},
+		}),
 	})
 }

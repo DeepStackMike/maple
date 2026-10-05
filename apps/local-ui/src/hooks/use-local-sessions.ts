@@ -1,8 +1,9 @@
-import { keepPreviousData, useInfiniteQuery, useQuery } from "@tanstack/react-query"
+import { useInfiniteQuery, useQuery, type QueryKey } from "@tanstack/react-query"
 import { CH } from "@maple/query-engine"
 import type { SessionReplaysListOutput } from "@maple/query-engine/ch"
 import type { FilterOption } from "@maple/ui/components/filters/filter-section"
 import { boundsKey, executeLocalCompiledQuery, localParams, noCursor } from "@/lib/query"
+import { projectKey, scopedPlaceholder, scopedQueryFn, type ProjectScope } from "../lib/project-scope"
 import { sessionTagsOf, type SessionTag } from "../lib/session-tags"
 import type { TimeBounds } from "../lib/time"
 
@@ -47,32 +48,42 @@ export interface SessionListRow extends SessionReplaysListOutput {
 const tagsOrUndefined = (tags: ReadonlyArray<SessionTag> | undefined) =>
 	tags && tags.length > 0 ? tags : undefined
 
-/** Infinite list of browser sessions, newest first (keyset on StartTime). */
-export function useLocalSessions(filters: SessionFilters, bounds: TimeBounds) {
+/**
+ * Infinite list of browser sessions, newest first (keyset on StartTime).
+ *
+ * `project` is the header project as its services. The builder ANDs it with
+ * the sidebar's `serviceName`, so a sidebar service outside the project lists
+ * nothing, and an empty project matches nothing in SQL.
+ */
+export function useLocalSessions(filters: SessionFilters, bounds: TimeBounds, project: ProjectScope) {
 	return useInfiniteQuery({
-		queryKey: ["local", "sessions", filters, boundsKey(bounds)],
+		queryKey: ["local", "sessions", filters, projectKey(project), boundsKey(bounds)],
 		initialPageParam: noCursor<SessionCursor>(),
-		placeholderData: keepPreviousData,
-		queryFn: async ({ pageParam, signal }) => {
-			const compiled = CH.compile(
-				CH.sessionReplaysListQuery({
-					limit: PAGE_SIZE,
-					cursor: pageParam,
-					serviceName: filters.service,
-					browser: filters.browser,
-					deviceType: filters.device,
-					country: filters.country,
-					environment: filters.env,
-					hasErrors: filters.errorsOnly,
-					search: filters.search,
-					pagePath: filters.pagePath,
-					tags: tagsOrUndefined(filters.tags),
-				}),
-				localParams(bounds),
-			)
-			const rows = await executeLocalCompiledQuery(compiled, signal)
-			return rows.map((row): SessionListRow => ({ ...row, tags: sessionTagsOf(row) }))
-		},
+		placeholderData: scopedPlaceholder(project),
+		queryFn: scopedQueryFn<ReadonlyArray<SessionListRow>, QueryKey, SessionCursor | undefined>(
+			project,
+			async ({ pageParam, signal }) => {
+				const compiled = CH.compile(
+					CH.sessionReplaysListQuery({
+						limit: PAGE_SIZE,
+						cursor: pageParam,
+						serviceName: filters.service,
+						services: project.services,
+						browser: filters.browser,
+						deviceType: filters.device,
+						country: filters.country,
+						environment: filters.env,
+						hasErrors: filters.errorsOnly,
+						search: filters.search,
+						pagePath: filters.pagePath,
+						tags: tagsOrUndefined(filters.tags),
+					}),
+					localParams(bounds),
+				)
+				const rows = await executeLocalCompiledQuery(compiled, signal)
+				return rows.map((row): SessionListRow => ({ ...row, tags: sessionTagsOf(row) }))
+			},
+		),
 		// (StartTime, SessionId), not StartTime alone: the SDK stamps start times
 		// from a JS `Date`, so they are only millisecond-resolution and two
 		// sessions sharing one is ordinary. A page boundary landing inside such a
@@ -119,14 +130,18 @@ const EMPTY_FACETS: SessionFacets = {
  * active filter so selecting it doesn't collapse the option list (handled in
  * the DSL query).
  */
-export function useLocalSessionFacets(filters: SessionFilters, bounds: TimeBounds) {
+export function useLocalSessionFacets(filters: SessionFilters, bounds: TimeBounds, project: ProjectScope) {
+	const placeholder = scopedPlaceholder(project)
 	return useQuery<SessionFacets>({
-		queryKey: ["local", "session-facets", filters, boundsKey(bounds)],
+		queryKey: ["local", "session-facets", filters, projectKey(project), boundsKey(bounds)],
 		staleTime: 30_000,
-		queryFn: async ({ signal }) => {
+		queryFn: scopedQueryFn(project, async ({ signal }) => {
 			const compiled = CH.compileUnion(
 				CH.sessionReplaysFacetsQuery({
 					serviceName: filters.service,
+					// A page-wide scope, so it narrows every branch — the service
+					// facet then lists only the project's services.
+					services: project.services,
 					browser: filters.browser,
 					deviceType: filters.device,
 					country: filters.country,
@@ -161,7 +176,9 @@ export function useLocalSessionFacets(filters: SessionFilters, bounds: TimeBound
 				total: count("total"),
 				live: count("live"),
 			}
-		},
-		placeholderData: (previous) => previous ?? EMPTY_FACETS,
+		}),
+		// Empty facets rather than none, so the sidebar keeps its sections — but
+		// never another project's counts (see `scopedPlaceholder`).
+		placeholderData: (previous, previousQuery) => placeholder(previous, previousQuery) ?? EMPTY_FACETS,
 	})
 }

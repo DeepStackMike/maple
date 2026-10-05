@@ -24,10 +24,11 @@
 // visitor-level dimension — which is why the page-view numbers move with the
 // session numbers instead of staying put.
 
-import { keepPreviousData, useQuery } from "@tanstack/react-query"
+import { useQuery } from "@tanstack/react-query"
 import { CH } from "@maple/query-engine"
 import { executeLocalCompiledQuery } from "@/lib/query"
 import { LOCAL_ORG_ID } from "../lib/constants"
+import { projectKey, scopedPlaceholder, scopedQueryFn, type ProjectScope } from "../lib/project-scope"
 import { boundsForRange } from "../lib/time"
 import { groupFacets, type FacetRow, type PageviewsPoint, type SessionsPoint } from "../lib/web-analytics"
 import { bucketSecondsForRange } from "./use-local-metrics"
@@ -52,30 +53,46 @@ const PAGES_LIMIT = 100
 const PAGEVIEW_SOURCE = { useProductEvents: false } as const
 
 /** Sessions per bucket, from `session_replays`, bucketed on the session's start. */
-export function useLocalWebSessionsTimeseries(range: string | undefined, environment?: string) {
+export function useLocalWebSessionsTimeseries(
+	range: string | undefined,
+	environment: string | undefined,
+	project: ProjectScope,
+) {
 	return useQuery({
-		queryKey: ["local", "web-analytics", "sessions-timeseries", range, environment],
-		placeholderData: keepPreviousData,
-		queryFn: async (): Promise<ReadonlyArray<SessionsPoint>> => {
+		queryKey: ["local", "web-analytics", "sessions-timeseries", range, environment, projectKey(project)],
+		placeholderData: scopedPlaceholder(project),
+		queryFn: scopedQueryFn(project, async ({ signal }): Promise<ReadonlyArray<SessionsPoint>> => {
 			const { startTime, endTime } = boundsForRange(range)
 			const bucketSeconds = bucketSecondsForRange(range)
 			return executeLocalCompiledQuery(
-				CH.compile(CH.webAnalyticsTimeseriesQuery({ bucketSeconds, environment }), {
-					orgId: LOCAL_ORG_ID,
-					startTime,
-					endTime,
-				}),
+				CH.compile(
+					CH.webAnalyticsTimeseriesQuery({
+						bucketSeconds,
+						environment,
+						services: project.services,
+					}),
+					{
+						orgId: LOCAL_ORG_ID,
+						startTime,
+						endTime,
+					},
+				),
+				signal,
 			)
-		},
+		}),
 	})
 }
 
 /** Page views per bucket, from the navigation rows of `session_events`. */
-export function useLocalWebPageviewsTimeseries(range: string | undefined, environment?: string) {
+export function useLocalWebPageviewsTimeseries(
+	range: string | undefined,
+	environment: string | undefined,
+	project: ProjectScope,
+) {
 	return useQuery({
-		queryKey: ["local", "web-analytics", "pageviews-timeseries", range, environment],
-		placeholderData: keepPreviousData,
-		queryFn: async (): Promise<ReadonlyArray<PageviewsPoint>> => {
+		queryKey: ["local", "web-analytics", "pageviews-timeseries", range, environment, projectKey(project)],
+		placeholderData: scopedPlaceholder(project),
+		queryFn: scopedQueryFn(project, async ({ signal }): Promise<ReadonlyArray<PageviewsPoint>> => {
 			const { startTime, endTime } = boundsForRange(range)
 			const bucketSeconds = bucketSecondsForRange(range)
 			return executeLocalCompiledQuery(
@@ -83,6 +100,7 @@ export function useLocalWebPageviewsTimeseries(range: string | undefined, enviro
 					CH.webAnalyticsPageviewsTimeseriesQuery({
 						bucketSeconds,
 						environment,
+						services: project.services,
 						...PAGEVIEW_SOURCE,
 					}),
 					{
@@ -91,8 +109,9 @@ export function useLocalWebPageviewsTimeseries(range: string | undefined, enviro
 						endTime,
 					},
 				),
+				signal,
 			)
-		},
+		}),
 	})
 }
 
@@ -103,23 +122,36 @@ export function useLocalWebPageviewsTimeseries(range: string | undefined, enviro
  * with full coverage: it reads `session_events`, which every session writes,
  * where Entries and Exits beside it come from the analytics block and do not.
  */
-export function useLocalWebPages(range: string | undefined, environment?: string) {
+export function useLocalWebPages(
+	range: string | undefined,
+	environment: string | undefined,
+	project: ProjectScope,
+) {
 	return useQuery({
-		queryKey: ["local", "web-analytics", "pages", range, environment],
-		placeholderData: keepPreviousData,
-		queryFn: async (): Promise<ReadonlyArray<CH.WebAnalyticsPagesOutput>> => {
-			const { startTime, endTime } = boundsForRange(range)
-			return executeLocalCompiledQuery(
-				CH.compile(
-					CH.webAnalyticsPagesQuery({ limit: PAGES_LIMIT, environment, ...PAGEVIEW_SOURCE }),
-					{
-						orgId: LOCAL_ORG_ID,
-						startTime,
-						endTime,
-					},
-				),
-			)
-		},
+		queryKey: ["local", "web-analytics", "pages", range, environment, projectKey(project)],
+		placeholderData: scopedPlaceholder(project),
+		queryFn: scopedQueryFn(
+			project,
+			async ({ signal }): Promise<ReadonlyArray<CH.WebAnalyticsPagesOutput>> => {
+				const { startTime, endTime } = boundsForRange(range)
+				return executeLocalCompiledQuery(
+					CH.compile(
+						CH.webAnalyticsPagesQuery({
+							limit: PAGES_LIMIT,
+							environment,
+							services: project.services,
+							...PAGEVIEW_SOURCE,
+						}),
+						{
+							orgId: LOCAL_ORG_ID,
+							startTime,
+							endTime,
+						},
+					),
+					signal,
+				)
+			},
+		),
 	})
 }
 
@@ -132,20 +164,32 @@ export function useLocalWebPages(range: string | undefined, environment?: string
  * in the query function rather than in the component so the split happens once
  * per fetch instead of once per render.
  */
-export function useLocalWebBreakdowns(range: string | undefined, environment?: string) {
+export function useLocalWebBreakdowns(
+	range: string | undefined,
+	environment: string | undefined,
+	project: ProjectScope,
+) {
 	return useQuery({
-		queryKey: ["local", "web-analytics", "breakdowns", range, environment],
-		placeholderData: keepPreviousData,
-		queryFn: async (): Promise<ReadonlyMap<string, ReadonlyArray<FacetRow>>> => {
-			const { startTime, endTime } = boundsForRange(range)
-			const rows = await executeLocalCompiledQuery(
-				CH.compileUnion(
-					CH.webAnalyticsBreakdownsQuery({ limitPerDimension: BREAKDOWN_LIMIT, environment }),
-					{ orgId: LOCAL_ORG_ID, startTime, endTime },
-				),
-			)
-			return groupFacets(rows)
-		},
+		queryKey: ["local", "web-analytics", "breakdowns", range, environment, projectKey(project)],
+		placeholderData: scopedPlaceholder(project),
+		queryFn: scopedQueryFn(
+			project,
+			async ({ signal }): Promise<ReadonlyMap<string, ReadonlyArray<FacetRow>>> => {
+				const { startTime, endTime } = boundsForRange(range)
+				const rows = await executeLocalCompiledQuery(
+					CH.compileUnion(
+						CH.webAnalyticsBreakdownsQuery({
+							limitPerDimension: BREAKDOWN_LIMIT,
+							environment,
+							services: project.services,
+						}),
+						{ orgId: LOCAL_ORG_ID, startTime, endTime },
+					),
+					signal,
+				)
+				return groupFacets(rows)
+			},
+		),
 	})
 }
 
@@ -166,7 +210,8 @@ export function useLocalWebBreakdowns(range: string | undefined, environment?: s
 export function useLocalSessionAttributeBreakdown(
 	range: string | undefined,
 	attribute: { readonly key: string; readonly qualifierKey?: string },
-	environment?: string,
+	environment: string | undefined,
+	project: ProjectScope,
 ) {
 	return useQuery({
 		queryKey: [
@@ -177,20 +222,26 @@ export function useLocalSessionAttributeBreakdown(
 			attribute.qualifierKey ?? null,
 			range,
 			environment,
+			projectKey(project),
 		],
-		placeholderData: keepPreviousData,
-		queryFn: async (): Promise<ReadonlyArray<CH.SessionResourceAttributeBreakdownOutput>> => {
-			const { startTime, endTime } = boundsForRange(range)
-			return executeLocalCompiledQuery(
-				CH.compile(
-					CH.sessionResourceAttributeBreakdownQuery({
-						...attribute,
-						limit: BREAKDOWN_LIMIT,
-						environment,
-					}),
-					{ orgId: LOCAL_ORG_ID, startTime, endTime },
-				),
-			)
-		},
+		placeholderData: scopedPlaceholder(project),
+		queryFn: scopedQueryFn(
+			project,
+			async ({ signal }): Promise<ReadonlyArray<CH.SessionResourceAttributeBreakdownOutput>> => {
+				const { startTime, endTime } = boundsForRange(range)
+				return executeLocalCompiledQuery(
+					CH.compile(
+						CH.sessionResourceAttributeBreakdownQuery({
+							...attribute,
+							limit: BREAKDOWN_LIMIT,
+							environment,
+							services: project.services,
+						}),
+						{ orgId: LOCAL_ORG_ID, startTime, endTime },
+					),
+					signal,
+				)
+			},
+		),
 	})
 }

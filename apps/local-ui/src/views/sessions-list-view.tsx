@@ -15,6 +15,7 @@ import { cn } from "@maple/ui/lib/utils"
 import { useLocalSessions, useLocalSessionFacets, type SessionListRow } from "../hooks/use-local-sessions"
 import { useLiveClock } from "../hooks/use-live-clock"
 import { useEnvironment } from "../hooks/use-environment"
+import { useNamespaceServices } from "../hooks/use-namespace-services"
 import { useRange } from "../hooks/use-range"
 import { useTimeWindow } from "../hooks/use-time-window"
 import { countryLabel, countryName, flagEmoji } from "../lib/geo"
@@ -140,8 +141,10 @@ export function SessionsListView() {
 		search,
 		env,
 	}
-	const facets = useLocalSessionFacets(filters, timeWindow.bounds)
-	const list = useLocalSessions(filters, timeWindow.bounds)
+	// The header project, as its services; both queries wait for it.
+	const scope = useNamespaceServices(timeWindow.bounds)
+	const facets = useLocalSessionFacets(filters, timeWindow.bounds, scope)
+	const list = useLocalSessions(filters, timeWindow.bounds, scope)
 	const { isPending, isError, error, refetch, fetchNextPage, hasNextPage, isFetchingNextPage } = list
 	const sessions = list.data?.pages.flat() ?? []
 
@@ -255,7 +258,9 @@ export function SessionsListView() {
 
 	return (
 		<PageShell sidebar={sidebar} toolbar={toolbar} activeFilterCount={activeFilterCount}>
-			{isPending ? (
+			{scope.error ? (
+				<ErrorState label="the project's services" error={scope.error} />
+			) : isPending ? (
 				<ListSkeleton variant="card" rows={6} />
 			) : isError ? (
 				<ErrorState label="sessions" error={error} onRetry={() => refetch()} />

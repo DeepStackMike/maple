@@ -18,11 +18,18 @@
 // query on the page. `session_replays` carries it in its resource map; page
 // views and `track()` rows carry none and reach it through the semi-join the
 // builders already run for every other session-level dimension.
+//
+// The header project narrows it the same way, as the list of services that
+// belong to it (`useNamespaceServices`): a session is recorded against a
+// service, and `services` rides the same semi-join.
 
 import { SquareActivityChartIcon } from "@maple/ui/components/icons"
 import { Tabs, TabsList, TabsTrigger } from "@maple/ui/components/ui/tabs"
 import type { ReactNode } from "react"
 import { useEnvironment } from "../hooks/use-environment"
+import { useNamespaceServices } from "../hooks/use-namespace-services"
+import { useTimeWindow } from "../hooks/use-time-window"
+import type { ProjectScope } from "../lib/project-scope"
 import { useLocalProductEventNames } from "../hooks/use-local-product-events"
 import {
 	decodeFunnelSteps,
@@ -49,6 +56,11 @@ export function AnalyticsView() {
 		query.get("event") !== null || query.get("steps") !== null,
 	)
 	const [environment] = useEnvironment()
+	// The header project, as the services that reported it over this range. A
+	// session belongs to the service that recorded it, and page views and
+	// `track()` rows reach that through the same `session_replays` semi-join the
+	// environment takes.
+	const project = useNamespaceServices(useTimeWindow(range).bounds)
 
 	// Shared by both sections, and rendered by each so the stats between the
 	// label and these controls can be the section's own.
@@ -79,6 +91,7 @@ export function AnalyticsView() {
 		<WebSection
 			range={range}
 			environment={environment}
+			project={project}
 			switcher={switcher}
 			controls={controls}
 			utm={parseUtmDimension(query.get("utm"))}
@@ -88,6 +101,7 @@ export function AnalyticsView() {
 		<ProductSection
 			range={range}
 			environment={environment}
+			project={project}
 			switcher={switcher}
 			controls={controls}
 			selected={query.get("event")}
@@ -105,6 +119,7 @@ export function AnalyticsView() {
 function WebSection({
 	range,
 	environment,
+	project,
 	switcher,
 	controls,
 	utm,
@@ -112,6 +127,7 @@ function WebSection({
 }: {
 	range: string
 	environment: string | undefined
+	project: ProjectScope
 	switcher: ReactNode
 	controls: ReactNode
 	utm: ReturnType<typeof parseUtmDimension>
@@ -123,6 +139,7 @@ function WebSection({
 				<WebAnalyticsPanel
 					range={range}
 					environment={environment}
+					project={project}
 					utm={utm}
 					onUtmChange={onUtmChange}
 				/>
@@ -138,6 +155,7 @@ function WebSection({
 function ProductSection({
 	range,
 	environment,
+	project,
 	switcher,
 	controls,
 	selected,
@@ -151,6 +169,7 @@ function ProductSection({
 }: {
 	range: string
 	environment: string | undefined
+	project: ProjectScope
 	switcher: ReactNode
 	controls: ReactNode
 	selected: string | null
@@ -162,7 +181,7 @@ function ProductSection({
 	conversionWindow: ReturnType<typeof parseConversionWindow>
 	onConversionWindowChange: (next: string) => void
 }) {
-	const names = useLocalProductEventNames(range, environment)
+	const names = useLocalProductEventNames(range, environment, project)
 	const rows = names.data ?? []
 	const totalEvents = rows.reduce((sum, row) => sum + row.count, 0)
 
@@ -175,7 +194,9 @@ function ProductSection({
 
 	return (
 		<Section switcher={switcher} controls={controls} stats={stats}>
-			{names.isPending ? (
+			{project.error ? (
+				<ErrorState label="the project's services" error={project.error} />
+			) : names.isPending ? (
 				<ListSkeleton rows={6} />
 			) : names.isError ? (
 				<ErrorState label="product events" error={names.error} onRetry={() => names.refetch()} />
@@ -204,6 +225,7 @@ function ProductSection({
 						names={names}
 						range={range}
 						environment={environment}
+						project={project}
 						selected={selected}
 						onSelect={onSelect}
 						propertyKey={propertyKey}
@@ -213,6 +235,7 @@ function ProductSection({
 						names={names}
 						range={range}
 						environment={environment}
+						project={project}
 						steps={steps}
 						onStepsChange={onStepsChange}
 						conversionWindow={conversionWindow}
