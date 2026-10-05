@@ -18,12 +18,9 @@ const queryClient = new QueryClient({
 	},
 })
 
-// Follow the OS theme. Dark stays the default when nothing says light (the
-// markup ships `class="dark"`), and `setTheme` keeps chart colors in step.
-const prefersLight = window.matchMedia("(prefers-color-scheme: light)")
-const applyColorScheme = () => setTheme(prefersLight.matches ? "light" : "dark", { persist: false })
-applyColorScheme()
-prefersLight.addEventListener("change", applyColorScheme)
+// Harbr fork: always dark (upstream v0.0.23 follows the OS theme). The markup
+// ships `class="dark"`; `setTheme` keeps chart colors in step with it.
+setTheme("dark", { persist: false })
 
 const container = document.getElementById("app")
 if (container) {
