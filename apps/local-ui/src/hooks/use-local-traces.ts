@@ -1,7 +1,7 @@
 import { keepPreviousData, useInfiniteQuery } from "@tanstack/react-query"
 import { CH } from "@maple/query-engine"
 import { parseAttributes } from "@maple/ui/lib/span-tree"
-import { HEALTH_CHECK_PATTERNS, healthCheckPatterns } from "@/lib/health-checks"
+import { healthCheckPatterns } from "@/lib/health-checks"
 import { boundsKey, executeLocalCompiledQuery, localParams, noCursor } from "@/lib/query"
 import type { TimeBounds } from "../lib/time"
 
@@ -66,41 +66,12 @@ function httpAttributes(row: CH.TraceSummaryOutput): Record<string, string> {
 	return attrs
 }
 
-/** One fetched page: the rows to show, and the keyset position the next page starts from. */
-interface TracePage {
-	readonly rows: ReadonlyArray<TraceRow>
-	readonly next: TraceCursor | undefined
-}
-
-function nextCursor(raw: ReadonlyArray<{ startTime: string; traceId: string }>): TraceCursor | undefined {
-	const last = raw.length === PAGE_SIZE ? raw[raw.length - 1] : undefined
-	return last ? { timestamp: last.startTime, traceId: last.traceId } : undefined
-}
-
-/** `ILIKE` pattern → case-insensitive regex, for the patterns the engine can't apply. */
-const likeToRegExp = (pattern: string): RegExp =>
-	new RegExp(
-		`^${pattern
-			.split("")
-			.map((ch) => (ch === "%" ? ".*" : ch === "_" ? "." : ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))
-			.join("")}$`,
-		"i",
-	)
-
-const HEALTH_CHECK_REGEXPS = HEALTH_CHECK_PATTERNS.map(likeToRegExp)
-
-/** Whether a trace's root is a probe, by span name or route (the engine's root-mode test). */
-function isHealthCheckRoot(row: TraceRow): boolean {
-	const route = row.rootSpanAttributes["http.route"] ?? ""
-	return HEALTH_CHECK_REGEXPS.some((re) => re.test(row.rootSpanName) || (route !== "" && re.test(route)))
-}
-
 async function rootScopedPage(
 	filters: TraceFilters,
 	bounds: TimeBounds,
 	cursor: TraceCursor | undefined,
 	signal: AbortSignal,
-): Promise<TracePage> {
+): Promise<ReadonlyArray<TraceRow>> {
 	// HTTP method/status have no first-class list opts; the web app filters them
 	// as span attribute filters too (old-semconv keys, matching prod).
 	const attributeFilters = [
@@ -131,20 +102,17 @@ async function rootScopedPage(
 		),
 		signal,
 	)
-	return {
-		next: nextCursor(rows),
-		rows: rows.map((row) => ({
-			traceId: row.traceId,
-			startTime: row.startTime,
-			durationMs: row.durationMicros / 1000,
-			spanCount: row.spanCount,
-			services: row.services,
-			rootSpanName: row.rootSpanName,
-			rootSpanKind: row.rootSpanKind,
-			rootSpanAttributes: parseAttributes(row.rootSpanAttributes),
-			hasError: row.hasError === 1,
-		})),
-	}
+	return rows.map((row) => ({
+		traceId: row.traceId,
+		startTime: row.startTime,
+		durationMs: row.durationMicros / 1000,
+		spanCount: row.spanCount,
+		services: row.services,
+		rootSpanName: row.rootSpanName,
+		rootSpanKind: row.rootSpanKind,
+		rootSpanAttributes: parseAttributes(row.rootSpanAttributes),
+		hasError: row.hasError === 1,
+	}))
 }
 
 const spanCountOf = (stats: { readonly spanCount: number } | undefined): number | null =>
@@ -155,7 +123,7 @@ async function spanScopedPage(
 	bounds: TimeBounds,
 	cursor: TraceCursor | undefined,
 	signal: AbortSignal,
-): Promise<TracePage> {
+): Promise<ReadonlyArray<TraceRow>> {
 	const params = localParams(bounds)
 	const summaries = await executeLocalCompiledQuery(
 		CH.compile(
@@ -173,6 +141,7 @@ async function spanScopedPage(
 				namespace: filters.ns,
 				minDurationMs: filters.minDurationMs,
 				maxDurationMs: filters.maxDurationMs,
+				excludeNamePatterns: healthCheckPatterns(filters.hideHealthChecks === true),
 			}),
 			params,
 		),
@@ -188,7 +157,7 @@ async function spanScopedPage(
 					signal,
 				)
 	const statsByTrace = new Map(stats.map((row) => [row.traceId, row]))
-	const rows: TraceRow[] = summaries.map((row) => ({
+	return summaries.map((row) => ({
 		traceId: row.traceId,
 		startTime: row.startTime,
 		durationMs: Number(row.durationMs),
@@ -199,13 +168,6 @@ async function spanScopedPage(
 		rootSpanAttributes: httpAttributes(row),
 		hasError: Number(row.hasError) > 0,
 	}))
-	// `traceSummariesQuery` has no name-exclusion option, so span mode drops
-	// probe-rooted traces here. The cursor still comes from the unfiltered page,
-	// so a page that was all probes is empty but never ends the list early.
-	return {
-		next: nextCursor(summaries),
-		rows: filters.hideHealthChecks ? rows.filter((row) => !isHealthCheckRoot(row)) : rows,
-	}
 }
 
 /** Infinite list of traces, newest first, keyset-paged on (root timestamp, TraceId). */
@@ -218,8 +180,9 @@ export function useLocalTraces(filters: TraceFilters, bounds: TimeBounds) {
 			filters.scope === "spans"
 				? spanScopedPage(filters, bounds, pageParam, signal)
 				: rootScopedPage(filters, bounds, pageParam, signal),
-		getNextPageParam: (lastPage: TracePage): TraceCursor | undefined => lastPage.next,
-		// Callers see pages of rows; the cursor is paging bookkeeping.
-		select: (data) => ({ ...data, pages: data.pages.map((page) => page.rows) }),
+		getNextPageParam: (lastPage): TraceCursor | undefined => {
+			const last = lastPage.length === PAGE_SIZE ? lastPage[lastPage.length - 1] : undefined
+			return last ? { timestamp: last.startTime, traceId: last.traceId } : undefined
+		},
 	})
 }

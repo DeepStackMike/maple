@@ -1,15 +1,13 @@
-import { useCallback, useMemo } from "react"
-import { isTraceView, TraceViewTabs } from "@maple/ui/components/traces/trace-view-tabs"
+import { isTraceView } from "@maple/ui/components/traces/trace-view-tabs"
 import { Button } from "@maple/ui/components/ui/button"
 import { Spinner } from "@maple/ui/components/ui/spinner"
 import { ArrowLeftIcon } from "@maple/ui/components/icons"
-import type { SpanNode } from "@maple/ui/lib/types"
 import { useLocalTraceDetail } from "../hooks/use-local-trace-detail"
-import { useLocalTraceLogCounts } from "../hooks/use-local-span-logs"
-import { SpanDetailPanel, type SpanPanelTab } from "../components/span-detail-panel"
+import type { SpanPanelTab } from "../components/span-detail-panel"
+import { TraceWaterfall } from "../components/trace-waterfall"
 import { RefreshButton } from "../components/toolbar"
 import { EmptyState, ErrorState } from "../components/view-states"
-import { useQueryParams } from "../lib/router"
+import { type ParamUpdates, useQueryParams } from "../lib/router"
 
 interface TraceDetailViewProps {
 	traceId: string
@@ -17,41 +15,15 @@ interface TraceDetailViewProps {
 	onBack: () => void
 }
 
-/** Depth-first lookup of a span in the rendered tree (the panel needs the node, children included). */
-function findSpanNode(nodes: ReadonlyArray<SpanNode>, spanId: string): SpanNode | undefined {
-	for (const node of nodes) {
-		if (node.spanId === spanId) return node
-		const found = findSpanNode(node.children, spanId)
-		if (found) return found
-	}
-	return undefined
-}
-
 export function TraceDetailView({ traceId, backLabel, onBack }: TraceDetailViewProps) {
 	const trace = useLocalTraceDetail(traceId)
 	const [query, setParams] = useQueryParams()
-	// The selected span and tab live in the URL, so a reload or a shared link reopens them.
+	// The selected span, its panel tab and the view live in the URL, so a reload
+	// or a shared link reopens them. An absent tab means the details tab.
 	const selectedSpanId = query.get("spanId") || undefined
 	const rawView = query.get("view")
 	const view = isTraceView(rawView) ? rawView : undefined
-	const selectedSpan = useMemo(
-		() => (selectedSpanId && trace.data ? findSpanNode(trace.data.rootSpans, selectedSpanId) : undefined),
-		[selectedSpanId, trace.data],
-	)
-	// The panel's tab rides along in the URL too; absent means the details tab.
 	const panelTab: SpanPanelTab = query.get("spanTab") === "logs" ? "logs" : "details"
-
-	// One query for the trace, not one per span: which rows have logs is a
-	// property of the whole waterfall, wanted before anything is clicked.
-	const logCounts = useLocalTraceLogCounts(traceId)
-
-	// A marker click says both things at once — this span, and its logs. Picking
-	// a row the ordinary way leaves the tab alone, so a reader working through a
-	// trace log-first keeps the logs tab across selections.
-	const openSpanLogs = useCallback(
-		(span: SpanNode) => setParams({ spanId: span.spanId, spanTab: "logs" }),
-		[setParams],
-	)
 
 	return (
 		<div className="flex h-full flex-col">
@@ -79,35 +51,24 @@ export function TraceDetailView({ traceId, backLabel, onBack }: TraceDetailViewP
 						hint="It may be outside the store's retention, or its spans have not arrived yet."
 					/>
 				) : (
-					<div className="flex h-full min-h-0">
-						<div className="min-w-0 flex-1">
-							<TraceViewTabs
-								rootSpans={trace.data.rootSpans}
-								spans={trace.data.spans}
-								totalDurationMs={trace.data.totalDurationMs}
-								traceStartTime={trace.data.traceStartTime}
-								services={trace.data.services}
-								selectedSpanId={selectedSpan?.spanId}
-								onSelectSpan={(span) => setParams({ spanId: span.spanId })}
-								spanLogMarkers={logCounts.data}
-								onOpenSpanLogs={openSpanLogs}
-								view={view ?? "timeline"}
-								onViewChange={(next) =>
-									setParams({ view: next === "timeline" ? null : next })
-								}
-							/>
-						</div>
-						{selectedSpan ? (
-							<SpanDetailPanel
-								span={selectedSpan}
-								tab={panelTab}
-								onTabChange={(next) =>
-									setParams({ spanTab: next === "details" ? null : next })
-								}
-								onClose={() => setParams({ spanId: null, spanTab: null })}
-							/>
-						) : null}
-					</div>
+					<TraceWaterfall
+						traceId={traceId}
+						data={trace.data}
+						selectedSpanId={selectedSpanId}
+						onSelectSpan={(spanId) =>
+							setParams(spanId ? { spanId } : { spanId: null, spanTab: null })
+						}
+						panelTab={panelTab}
+						onPanelTabChange={(tab, spanId) => {
+							const updates: ParamUpdates = {
+								spanTab: tab === "details" ? null : tab,
+							}
+							if (spanId) updates.spanId = spanId
+							setParams(updates)
+						}}
+						view={view ?? "timeline"}
+						onViewChange={(next) => setParams({ view: next === "timeline" ? null : next })}
+					/>
 				)}
 			</div>
 		</div>

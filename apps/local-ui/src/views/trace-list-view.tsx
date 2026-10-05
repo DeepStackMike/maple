@@ -5,6 +5,8 @@ import { Spinner } from "@maple/ui/components/ui/spinner"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@maple/ui/components/ui/table"
 import { formatDuration } from "@maple/ui/lib/format"
 import { cn } from "@maple/ui/lib/utils"
+import { useIsMobile } from "@maple/ui/hooks/use-media-query"
+import { useCallback, type MouseEvent } from "react"
 import { useHideHealthChecks } from "../hooks/use-hide-health-checks"
 import { useNamespace } from "../hooks/use-namespace"
 import { DurationRangeFilter } from "@maple/ui/components/filters/duration-range-filter"
@@ -22,11 +24,21 @@ import { useLocalTraces, type TraceFilters, type TraceRow } from "../hooks/use-l
 import { useLocalTraceFacets } from "../hooks/use-local-trace-facets"
 import { useRange } from "../hooks/use-range"
 import { useTimeWindow } from "../hooks/use-time-window"
-import { hrefFor, useQueryParams } from "../lib/router"
+import { hrefFor, navigate, useLocation, useQueryParams } from "../lib/router"
+import {
+	isPlainClick,
+	openTraceQuery,
+	PEEK_PARAM,
+	PEEK_SPAN_PARAM,
+	resolvePeek,
+	stepTarget,
+	withoutPeek,
+} from "../lib/trace-peek"
 import { formatLocalDateTime, formatRelativeTime, formatUtcTitle, WIDEST_RANGE } from "../lib/time"
 import { PageShell } from "../components/page-shell"
 import { LinkRow, RowLink } from "../components/row-link"
 import { SignalEmptyState } from "../components/signal-empty-state"
+import { TracePeekBody, TracePeekSheet } from "../components/trace-peek-sheet"
 import {
 	HideHealthChecksToggle,
 	Toolbar,
@@ -88,6 +100,39 @@ export function TraceListView() {
 	const facets = useLocalTraceFacets(filters, timeWindow.bounds, !spanScope)
 	const traces = useLocalTraces(filters, timeWindow.bounds)
 	const rows = traces.data?.pages.flat() ?? []
+
+	// The peek: a plain click opens the trace in a sheet over the list. A phone
+	// has no room for a sheet beside the list, so there a click takes the page.
+	const { path } = useLocation()
+	const peekEnabled = !useIsMobile()
+	const peek = peekEnabled ? resolvePeek(rows, query.get(PEEK_PARAM)) : null
+	const peekSpanId = query.get(PEEK_SPAN_PARAM) || undefined
+	// Opening pushes a history entry (Back closes the sheet); stepping, span
+	// selection and closing replace it, so walking fifty rows leaves no trail.
+	const openPeek = useCallback(
+		(traceId: string, opts?: { replace?: boolean }) => {
+			const next = withoutPeek(new URLSearchParams(window.location.hash.split("?")[1] ?? ""))
+			next.set(PEEK_PARAM, traceId)
+			navigate(path, next, opts)
+		},
+		[path],
+	)
+	const stepPeek = (delta: 1 | -1) => {
+		const next = stepTarget(rows, peek, delta)
+		if (next) openPeek(next.traceId, { replace: true })
+	}
+	const closePeek = () => navigate(path, withoutPeek(query), { replace: true })
+	const selectPeekSpan = (spanId: string | undefined) => setParams({ [PEEK_SPAN_PARAM]: spanId ?? null })
+	const onRowClick = peekEnabled
+		? (event: MouseEvent, traceId: string) => {
+				// Only the row's own link: a modified, middle or right click keeps its
+				// default (new tab, context menu), and so does any other control.
+				if (!isPlainClick(event)) return
+				if (!(event.target instanceof Element) || !event.target.closest("a[data-row-link]")) return
+				event.preventDefault()
+				openPeek(traceId)
+			}
+		: undefined
 
 	const activeFilterCount = FILTER_KEYS.filter((key) => query.get(key)).length
 	const clearFilters = () => {
@@ -247,7 +292,13 @@ export function TraceListView() {
 						</TableHeader>
 						<TableBody>
 							{rows.map((row) => (
-								<TraceListRow key={row.traceId} row={row} query={query} />
+								<TraceListRow
+									key={row.traceId}
+									row={row}
+									query={withoutPeek(query)}
+									active={row.traceId === peek?.traceId}
+									onClick={onRowClick}
+								/>
 							))}
 						</TableBody>
 					</Table>
@@ -266,6 +317,28 @@ export function TraceListView() {
 					) : null}
 				</div>
 			)}
+			<TracePeekSheet
+				traceId={peek?.traceId ?? null}
+				position={peek?.position ?? null}
+				onStep={stepPeek}
+				onClose={closePeek}
+				openHref={
+					peek
+						? hrefFor(
+								`/traces/${encodeURIComponent(peek.traceId)}`,
+								openTraceQuery(query, peekSpanId),
+							)
+						: "#"
+				}
+			>
+				{peek ? (
+					<TracePeekBody
+						traceId={peek.traceId}
+						selectedSpanId={peekSpanId}
+						onSelectSpan={selectPeekSpan}
+					/>
+				) : null}
+			</TracePeekSheet>
 		</PageShell>
 	)
 }
@@ -305,11 +378,28 @@ function SpanScopeBanner({
 	)
 }
 
-function TraceListRow({ row, query }: { row: TraceRow; query: URLSearchParams }) {
+function TraceListRow({
+	row,
+	query,
+	active,
+	onClick,
+}: {
+	row: TraceRow
+	query: URLSearchParams
+	/** Open in the peek sheet. */
+	active: boolean
+	/** A click on the row's link, bubbled to its cell; absent when the peek is off. */
+	onClick?: (event: MouseEvent, traceId: string) => void
+}) {
 	const href = hrefFor(`/traces/${encodeURIComponent(row.traceId)}`, query)
 	return (
-		<LinkRow className={cn(row.hasError && "bg-destructive/5")}>
-			<TableCell className="min-w-0">
+		<LinkRow className={cn(row.hasError && "bg-destructive/5", active && "bg-primary/5")}>
+			{/* The link's hit area stretches over the whole row, so every click on the
+			    row is a click on it, and it bubbles here. */}
+			<TableCell
+				className="min-w-0"
+				onClick={onClick ? (event) => onClick(event, row.traceId) : undefined}
+			>
 				<RowLink
 					href={href}
 					label={`Trace ${row.rootSpanName || row.traceId}`}
