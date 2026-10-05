@@ -311,6 +311,10 @@ function LogRow({
 				top: 0,
 				transform: `translateY(${top}px)`,
 				height,
+				// Upstream's severity stripe: scanning a long list, the WARN and
+				// ERROR rows stand out at a glance where the dot alone does not.
+				borderLeftWidth: "3px",
+				borderLeftColor: severityColor,
 			}}
 			className="flex cursor-pointer items-center gap-3 border-b px-4 font-mono text-xs hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:outline-none data-[selected]:bg-primary/5"
 			tabIndex={0}
@@ -324,11 +328,9 @@ function LogRow({
 				}
 			}}
 		>
-			{/* A dot rather than the left-edge stripe this row used to carry. The
-			    stripe was the only severity signal below `md`, where the level word
-			    is hidden — but it sat outside the row's own rhythm and read as a
-			    selection marker. The dot keeps the signal at every width and sits
-			    where the eye already starts the row. */}
+			{/* The dot repeats the stripe's colour where the eye starts reading the
+			    row, matching the hosted logs table; below `md`, where the level word
+			    is hidden, the two are the row's only severity signal. */}
 			<span
 				className="size-2 shrink-0 rounded-full"
 				style={{ backgroundColor: severityColor }}
