@@ -1,7 +1,9 @@
 import { keepPreviousData, useInfiniteQuery, useQuery } from "@tanstack/react-query"
 import { CH } from "@maple/query-engine"
+import type { SessionReplaysListOutput } from "@maple/query-engine/ch"
 import type { FilterOption } from "@maple/ui/components/filters/filter-section"
 import { boundsKey, executeLocalCompiledQuery, localParams, noCursor } from "@/lib/query"
+import { sessionTagsOf, type SessionTag } from "../lib/session-tags"
 import type { TimeBounds } from "../lib/time"
 
 const PAGE_SIZE = 50
@@ -31,7 +33,19 @@ export interface SessionFilters {
 	errorsOnly?: boolean
 	/** Substring match on the initial page URL. */
 	search?: string
+	/** Exact page path visited anywhere in the session, not just where it landed. */
+	pagePath?: string
+	/** Only sessions carrying every one of these tags (see `lib/session-tags.ts`). */
+	tags?: ReadonlyArray<SessionTag>
 }
+
+/** A list row plus its rule-based tags, derived once here rather than per render. */
+export interface SessionListRow extends SessionReplaysListOutput {
+	readonly tags: ReadonlyArray<SessionTag>
+}
+
+const tagsOrUndefined = (tags: ReadonlyArray<SessionTag> | undefined) =>
+	tags && tags.length > 0 ? tags : undefined
 
 /** Infinite list of browser sessions, newest first (keyset on StartTime). */
 export function useLocalSessions(filters: SessionFilters, bounds: TimeBounds) {
@@ -51,10 +65,13 @@ export function useLocalSessions(filters: SessionFilters, bounds: TimeBounds) {
 					environment: filters.env,
 					hasErrors: filters.errorsOnly,
 					search: filters.search,
+					pagePath: filters.pagePath,
+					tags: tagsOrUndefined(filters.tags),
 				}),
 				localParams(bounds),
 			)
-			return executeLocalCompiledQuery(compiled, signal)
+			const rows = await executeLocalCompiledQuery(compiled, signal)
+			return rows.map((row): SessionListRow => ({ ...row, tags: sessionTagsOf(row) }))
 		},
 		// (StartTime, SessionId), not StartTime alone: the SDK stamps start times
 		// from a JS `Date`, so they are only millisecond-resolution and two
@@ -73,8 +90,16 @@ export interface SessionFacets {
 	readonly device: ReadonlyArray<FilterOption>
 	/** Option names are ISO country codes — labelled for display, filtered by code. */
 	readonly country: ReadonlyArray<FilterOption>
+	/** Page paths visited anywhere in a session, by sessions that reached them (top 200). */
+	readonly page: ReadonlyArray<FilterOption>
+	/** Sessions per tag, each counted under the other selected tags; absent tags have none. */
+	readonly tag: ReadonlyArray<FilterOption>
 	/** Distinct sessions with at least one error, for the toggle count. */
 	readonly errorCount: number
+	/** Sessions in the window under every active filter, not just the loaded pages. */
+	readonly total: number | undefined
+	/** Sessions with activity in the live window before the window's end. */
+	readonly live: number | undefined
 }
 
 const EMPTY_FACETS: SessionFacets = {
@@ -82,7 +107,11 @@ const EMPTY_FACETS: SessionFacets = {
 	browser: [],
 	device: [],
 	country: [],
+	page: [],
+	tag: [],
 	errorCount: 0,
+	total: undefined,
+	live: undefined,
 }
 
 /**
@@ -104,10 +133,17 @@ export function useLocalSessionFacets(filters: SessionFilters, bounds: TimeBound
 					environment: filters.env,
 					hasErrors: filters.errorsOnly,
 					search: filters.search,
+					pagePath: filters.pagePath,
+					tags: tagsOrUndefined(filters.tags),
 				}),
 				localParams(bounds),
 			)
 			const rows = await executeLocalCompiledQuery(compiled, signal)
+
+			const count = (facetType: string): number | undefined => {
+				const row = rows.find((candidate) => candidate.facetType === facetType)
+				return row === undefined ? undefined : Number(row.count)
+			}
 
 			const pick = (facetType: string): ReadonlyArray<FilterOption> =>
 				rows
@@ -119,7 +155,11 @@ export function useLocalSessionFacets(filters: SessionFilters, bounds: TimeBound
 				browser: pick("browser"),
 				device: pick("device"),
 				country: pick("country"),
-				errorCount: rows.find((row) => row.facetType === "error")?.count ?? 0,
+				page: pick("page"),
+				tag: pick("tag"),
+				errorCount: count("error") ?? 0,
+				total: count("total"),
+				live: count("live"),
 			}
 		},
 		placeholderData: (previous) => previous ?? EMPTY_FACETS,

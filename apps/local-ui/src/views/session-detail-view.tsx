@@ -43,7 +43,15 @@ import {
 import { parseAttributes } from "@maple/ui/lib/span-tree"
 import { formatLocation, type FormattedLocation } from "../lib/geo"
 import { formatLocalDateTime, formatRelativeTime, formatUtcTitle, toClickHouseDateTime } from "../lib/time"
-import { formatSessionDuration, gradientFor, hostFromUrl, isMobileDevice } from "@maple/ui/lib/replay-format"
+import {
+	formatSessionDuration,
+	gradientFor,
+	hostFromUrl,
+	isMobileDevice,
+	isSessionLive,
+	sessionDurationMs,
+} from "@maple/ui/lib/replay-format"
+import { useLiveClock } from "../hooks/use-live-clock"
 import { ErrorState } from "../components/view-states"
 import { RefreshButton } from "../components/toolbar"
 import {
@@ -123,7 +131,12 @@ export function SessionDetailView({ sessionId, backLabel, onBack }: SessionDetai
 	const traces = useLocalSessionTraces(traceIds)
 	const traceLinks = useMemo(() => recoverTraceLinks(events, spans), [events, spans])
 
-	const isActive = session?.status === "active"
+	// Live means a recent heartbeat, not just `status === "active"`: the SDK writes
+	// "ended" from an unload handler that a killed tab, a crash or a slept phone
+	// never runs, leaving the row "active" for good. The clock only ticks while
+	// the row still claims to be active, so the badge expires on its own.
+	const nowMs = useLiveClock({ enabled: session?.status === "active" })
+	const isActive = session ? isSessionLive(session, nowMs) : false
 	const hasError = (session?.errorCount ?? 0) > 0
 
 	// Transcript → player. The recording's clock starts at its first rrweb event,
@@ -273,7 +286,9 @@ export function SessionDetailView({ sessionId, backLabel, onBack }: SessionDetai
 							<dl className="grid grid-cols-3 gap-x-6 gap-y-3 sm:grid-cols-6">
 								<Stat
 									label="Duration"
-									value={isActive ? "Live" : formatSessionDuration(session.durationMs)}
+									value={
+										isActive ? "Live" : formatSessionDuration(sessionDurationMs(session))
+									}
 								/>
 								<Stat label="Active" value={statDuration(activity.activeMs)} />
 								<Stat label="Idle" value={statDuration(activity.idleMs)} />
@@ -877,7 +892,7 @@ function StatusBadge({ active }: { active: boolean }) {
 					<span className="absolute inline-flex size-full animate-ping rounded-full bg-success opacity-75" />
 					<span className="relative inline-flex size-1.5 rounded-full bg-success" />
 				</span>
-				Active
+				Live
 			</span>
 		)
 	}
