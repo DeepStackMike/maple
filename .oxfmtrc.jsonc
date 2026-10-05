@@ -19,6 +19,8 @@
 	// `ios:openapi:check` re-runs that generator and compares byte for byte — so
 	// formatting it does not merely churn, it fails CI for anyone who has run
 	// `bun run format` since the last regeneration.
+	// CLAUDE.md (AGENTS.md links to it) has a bare `yield*` snippet that oxfmt parses
+	// outside a generator and rewrites to `yield *`, a multiplication.
 	"ignorePatterns": [
 		".agents/**",
 		".codex/**",
@@ -30,11 +32,13 @@
 		"deploy",
 		"skills",
 		"packages/db/drizzle",
+		"packages/eventing-core/schemas",
 		"lib/thinking-orbs",
 		"packages/email/emails",
 		"packages/email/components",
 		"apps/web/src/routeTree.gen.ts",
 		"apps/ios/Packages/MapleAPI/Sources/MapleAPI/openapi.json",
 		"scripts/oxlint-plugins/anti-slop/**",
+		"CLAUDE.md",
 	],
 }

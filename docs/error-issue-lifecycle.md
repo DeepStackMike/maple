@@ -3,22 +3,28 @@
 How an error goes from "something threw in production" to "fixed, and we checked".
 
 This is the flow both humans and agents are meant to follow. If you are changing anything under
-`apps/api/src/services/errors/`, this page is the contract you are changing.
+`packages/backend/src/services/errors/`, this page is the contract you are changing.
 
 ## The pieces
 
-| Thing                      | Where it lives                        | What it is                                                    |
-| -------------------------- | ------------------------------------- | ------------------------------------------------------------- |
-| Occurrence                 | ClickHouse / Tinybird                 | One exception, one row. Never mutated.                        |
-| Fingerprint                | `cityHash64(org, service, type, frame)` | The identity of an error *class*.                            |
-| Candidate                  | `error_fingerprint_candidates`        | A fingerprint seen, but not yet worth a row of its own.       |
-| **Issue**                  | `error_issues`                        | The durable, assignable record. One per fingerprint.          |
-| Incident                   | `error_incidents`                     | A time-bounded flare-up *under* an issue.                     |
-| Investigation              | `investigations`                      | One AI diagnostic run. Zero or more per issue.                |
-| Verification               | `error_issue_verifications`           | One post-merge "did that actually work?" check.               |
+| Thing         | Where it lives                                              | What it is                                              |
+| ------------- | ----------------------------------------------------------- | ------------------------------------------------------- |
+| Occurrence    | ClickHouse / Tinybird                                       | One exception, one row. Never mutated.                  |
+| Fingerprint   | `cityHash64(org, service, type, frames, message signature)` | The identity of an error _class_.                       |
+| Candidate     | `error_fingerprint_candidates`                              | A fingerprint seen, but not yet worth a row of its own. |
+| **Issue**     | `error_issues`                                              | The durable, assignable record. One per fingerprint.    |
+| Incident      | `error_incidents`                                           | A time-bounded flare-up _under_ an issue.               |
+| Investigation | `investigations`                                            | One AI diagnostic run. Zero or more per issue.          |
+| Verification  | `error_issue_verifications`                                 | One post-merge "did that actually work?" check.         |
 
-The distinction that matters: **an incident is a flare-up, an issue is the bug**. An issue can flare
-up ten times; it gets fixed once.
+The exception comes from the first OTel `exception` event, or the status message when
+there is no event. Only spans missing both fall back to `exception.*` span attributes,
+then `error.type` / `error.message`, then `Unknown Error`. This keeps existing fingerprints
+stable while separating previously unlabelled errors. The SQL in `error_events_mv`
+(`packages/domain/src/tinybird/materializations.ts`) owns this precedence.
+
+**An incident is a flare-up. An issue is the bug.** An issue can flare up ten times; it gets
+fixed once.
 
 ## The flow
 
@@ -67,7 +73,7 @@ up ten times; it gets fixed once.
     │ an occurrence from a build that postdates the fix
     ▼
 ┌───────────┐
-│ regressed │  NOT `triage` — the issue remembers it was fixed once, so the
+│ regressed │  NOT `triage`. The issue remembers it was fixed once, so the
 └───────────┘  next person doesn't fix the same bug a second time
 ```
 
@@ -76,40 +82,65 @@ and wakes back into `triage` when it expires.
 
 ## Who owns which edge
 
-Three actors move issues, and the split is the whole design:
+Three actors move issues:
 
-- **Humans and agents** move an issue through the states that record an *intention*: `triage`,
+- **Humans and agents** move an issue through the states that record an _intention_: `triage`,
   `todo`, `in_progress`, `in_review`, `done`, `cancelled`, `wontfix`.
-- **The errors tick** (every minute) owns `regressed`. It records an *observation* — this error
-  fired from a build that was not running when it was resolved — and it would overwrite any
-  human claim to the contrary on its next pass.
+- **The errors tick** (every minute) owns `regressed`. It records an _observation_: this error
+  fired from a build that was not running when it was resolved. It would overwrite any human
+  claim to the contrary on its next pass.
 - **The verification tick** (every minute) owns `verifying` and the exit from it.
 
 `regressed` and `verifying` are therefore in `MACHINE_OWNED_WORKFLOW_STATES`: legal edges in
 `WORKFLOW_TRANSITIONS` because the ticks travel them, but filtered out of every surface that lets
-somebody *choose* a state — the web state picker, the bulk bar, and the `transition_error_issue`
+somebody _choose_ a state: the web state picker, the bulk bar, and the `transition_error_issue`
 MCP tool, which rejects them with an explanation.
 
-The single source of truth for all of this is `WORKFLOW_TRANSITIONS` in
+The source of truth is `WORKFLOW_TRANSITIONS` in
 `packages/domain/src/http/errors.ts`. The MCP tool description is rendered from it at registration
 time by `describeWorkflowTransitions()`, so the rules an agent is told can never drift from the
 rules the server enforces.
 
 ## Where the AI enters
 
-There are exactly **three** places, and they do different jobs:
+There are **three** places, each with a different job.
 
 ### 1. Auto-investigation on a new incident
 
-Off by default; an admin opts in per org (`ai_triage_settings`). When an incident opens — first-seen
-or regression — `maybeEnqueueTriage` starts an investigation, subject to a daily budget counted in
-*model passes*, not runs (`maxPassesPerDay`, default 90; one fanned-out incident is about six
-passes).
+Off by default; an admin opts in per org (`ai_triage_settings`). When an incident opens (first-seen
+or regression), `maybeEnqueueTriage` starts an investigation, subject to a daily budget in runs and
+in model passes (`maxRunsPerDay`, `maxPassesPerDay`; one investigation is one pass).
 
-The run either takes the single-pass path or fans out: a **planner** writes hypotheses for this
-specific incident, each is dispatched to its own **lens** agent, and a **validator** ranks them and
-promotes one cause. Everything it decided — including the hypotheses it chose *not* to test — is
-persisted on the investigation, which is what makes a conclusion readable a week later.
+Three gates stand between an open incident and that pass, cheapest first, and every refusal lands
+on the `maybeStartInvestigation` span as `maple.investigation.start_result`:
+
+1. **The issue's own history** (`evaluateIssueGate`, no model). An issue past `triage`/`regressed`
+   is somebody's already; one diagnosed within the last week (a day for alerts and anomalies) is
+   answered already, unless the incident is a `regression`; a pass still under way answers for
+   this flare-up too. This is where the repeats die: an error incident auto-resolves after thirty
+   quiet minutes and the next occurrence opens a fresh one, so an issue firing on a retry cadence
+   opened 83 incidents in five days and was diagnosed, identically, on fifteen of them.
+2. **The decision model** (`IncidentClassifier` → maple-ai's `POST /internal/triage/classify`,
+   Jev over OpenRouter). It answers what the incident is (`investigate` / `monitor` / `noise`),
+   how bad, whether a customer noticed, and whether one of the service's recent diagnoses already
+   explains it. `evaluateIncidentGate` skips confident noise (`noise`) and confident matches
+   (`covered_by_prior`), never anything the detector called `high` or `critical`, and only ever
+   raises the severity the run is seeded with. A skipped noise incident labels its issue's
+   severity if nobody had, without escalating. No verdict (no binding, no token, a failed or
+   slow call) always reads as investigate. A broken classifier must not become a policy of
+   dropping incidents.
+3. **The daily budget**, judged by the severity the classifier settled on, so the reserve for
+   `high`/`critical` is reachable by an incident the detector left unclassified.
+
+A manual start (`force`) passes the first two; the quota still applies.
+
+The run is one turn of the investigate agent on the investigation's `ChatSession` Durable Object:
+it gathers the evidence, tests the rival explanations itself, and closes on `submit_diagnosis`. A
+pass that stops in prose or dies on a model error gets one close-out turn over its own tool
+transcript; a pass that still files nothing is marked `failed` with `no_diagnosis`. The report's
+`ruledOut` records the explanations it tested and dropped, which makes a conclusion readable a
+week later. (Until 2026-09 this was a planner → hypothesis lanes → validator workflow;
+the handoffs lost the evidence and most passes never reached a verdict.)
 
 The result lands back on the issue as an `ai_triage` timeline event plus an applied severity.
 Severity is what escalates, so an AI-set severity can page people (`issue_escalations`), gated on
@@ -121,17 +152,17 @@ An external coding agent claims an issue, reads its timeline, fixes the bug, and
 The lease is what keeps two agents off the same bug; it renews on every action and is dropped when
 the issue closes.
 
-**The claim is taken by the work, not by a ceremony before it.** `propose_fix` and a transition to
-`in_progress` both acquire the lease. This is not a convenience — it is the fix to the flow's worst
-failure. For as long as claiming was a separate step an agent was merely *told* to take, it was
+**Doing the work takes the claim.** `propose_fix` and a transition to `in_progress` both acquire
+the lease. This fixes the flow's worst failure. For as long as claiming was a separate step an agent was merely _told_ to take, it was
 never taken once: across 50 live issues in the internal org every `lease_holder` was null, and the
 most common MCP error in the org was `Illegal transition from 'triage' to 'in_review'`, which is
 `propose_fix` being rejected on an issue nobody had claimed. Agents responded by hand-walking
 `transition_error_issue` instead, which "worked" and left the lease empty. A guarantee that depends
 on an agent reading a rule is not a guarantee.
 
-The agent-facing map of this flow lives in the `maple://instructions` MCP resource, and the
-`issue-workflow.eval.ts` cases check a real model still picks these tools. Keep both in sync with
+The agent-facing map of this flow lives in the `maple://instructions` MCP resource
+(`apps/ai/src/mcp/resources/instructions.ts`), and the
+`apps/ai/src/mcp/__evals__/issue-workflow.eval.ts` cases check a real model still picks these tools. Keep both in sync with
 this page.
 
 ### 3. Post-merge verification
@@ -146,10 +177,10 @@ issue had been seen from at merge time. An occurrence from a build already in th
 client still in the wild; one from a build absent from it is the fix demonstrably not working, and
 that alone refutes the fix without asking an agent anything.
 
-Only a *clean* window goes to an agent, and it is asked the inverted question: not "what is wrong"
-but "find anything that contradicts this fix holding". Hence the mapping in
-`verdictFromInvestigationStatus`, which reads backwards until you hold that question — an agent that
-*establishes* a cause means `not_fixed`, and an agent that finds nothing means `verified`.
+Only a _clean_ window goes to an agent, and it is asked the inverted question: "find anything
+that contradicts this fix holding". That explains the mapping in
+`verdictFromInvestigationStatus`, which reads backwards until you hold that question. An agent
+that _establishes_ a cause means `not_fixed`, and an agent that finds nothing means `verified`.
 
 An inconclusive verdict re-arms exactly one longer window and then gives up, so an issue can never
 loop in verification without a human ever seeing it.
@@ -171,15 +202,16 @@ loop in verification without a human ever seeing it.
 
 ## The files
 
-| Concern                                | File                                                            |
-| -------------------------------------- | --------------------------------------------------------------- |
-| State machine, transitions, labels     | `packages/domain/src/http/errors.ts`                            |
-| Verification windows, verdicts         | `packages/domain/src/http/fix-verification.ts`                  |
-| Transitions, leases, timeline events   | `apps/api/src/services/errors/ErrorIssueWorkflowService.ts`     |
-| The errors tick (incidents, regression)| `apps/api/src/services/errors/error-tick-persistence.ts`        |
-| Starting an investigation              | `apps/api/src/services/errors/ai-triage-enqueue.ts`             |
-| Planner / lenses / validator           | `apps/api/src/workflows/`                                       |
-| Writing a diagnosis back               | `apps/api/src/services/errors/apply-diagnosis.ts`               |
-| PR links and verification windows      | `apps/api/src/services/errors/IssueFixVerificationService.ts`   |
-| The verification tick                  | `apps/api/src/services/errors/FixVerificationTickService.ts`    |
-| What agents are told                   | `apps/api/src/mcp/resources/instructions.ts`                    |
+| Concern                                 | File                                                                                                         |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| State machine, transitions, labels      | `packages/domain/src/http/errors.ts`                                                                         |
+| Verification windows, verdicts          | `packages/domain/src/http/fix-verification.ts`                                                               |
+| Transitions, leases, timeline events    | `packages/backend/src/services/errors/ErrorIssueWorkflowService.ts`                                          |
+| The errors tick (incidents, regression) | `packages/backend/src/services/errors/error-tick-persistence.ts`                                             |
+| Starting an investigation               | `packages/backend/src/services/errors/ai-triage-enqueue.ts`                                                  |
+| The gates in front of it                | `packages/backend/src/services/errors/investigation-gate.ts`, `IncidentClassifier.ts`, `apps/ai/src/triage/` |
+| The investigate agent and its close-out | `apps/ai/src/chat/turn-runner.ts`, `apps/ai/src/chat/prompts.ts`                                             |
+| Writing a diagnosis back                | `packages/backend/src/services/errors/apply-diagnosis.ts`                                                    |
+| PR links and verification windows       | `packages/backend/src/services/errors/IssueFixVerificationService.ts`                                        |
+| The verification tick                   | `packages/backend/src/services/errors/FixVerificationTickService.ts`                                         |
+| What agents are told                    | `apps/ai/src/mcp/resources/instructions.ts`                                                                  |

@@ -21,7 +21,8 @@ import type {
 	V2InvestigationSubject,
 } from "@maple/domain/http/v2"
 import { Effect, Match, Schema } from "effect"
-import { InvestigationService } from "@/services/errors/InvestigationService"
+import { recordHttpAudit } from "@maple/backend/services/audit/AuditLogService"
+import { InvestigationService } from "@maple/backend/services/errors/InvestigationService"
 
 const toWireSubject = Effect.fn("HttpV2Investigations.toWireSubject")(function* (
 	investigationId: InvestigationId,
@@ -154,6 +155,7 @@ const toV2Investigation = Effect.fn("HttpV2Investigations.toV2Investigation")(fu
 		subject: yield* toWireSubject(doc.id, doc.subject),
 		snapshot: doc.snapshot,
 		report,
+		progress: doc.progress,
 		model: doc.model,
 		severity: doc.severity,
 		confidence: doc.confidence,
@@ -166,32 +168,6 @@ const toV2Investigation = Effect.fn("HttpV2Investigations.toV2Investigation")(fu
 		started_at: doc.startedAt,
 		diagnosed_at: doc.diagnosedAt,
 		updated_at: doc.updatedAt,
-		// Ordering is a contract — `LENS_DISPATCH_ORDER` decides which lenses a
-		// narrow run gets — and the service already returns them ordered by ordinal.
-		lens_runs: doc.lensRuns.map((lens) => ({
-			lensId: lens.lensId,
-			status: lens.status,
-			verdict: lens.verdict,
-			claim: lens.claim,
-			reason: lens.reason,
-			progressNote: lens.progressNote,
-			confidence: lens.confidence,
-			toolCount: lens.toolCount,
-			elapsedSeconds: lens.elapsedSeconds,
-			name: lens.name,
-			question: lens.question,
-			priority: lens.priority,
-			deadlineHit: lens.deadlineHit,
-		})),
-		validator:
-			doc.validator === null
-				? null
-				: {
-						status: doc.validator.status,
-						note: doc.validator.note,
-						elapsedSeconds: doc.validator.elapsedSeconds,
-					},
-		fanout: { state: doc.fanout.state, size: doc.fanout.size },
 	}
 })
 
@@ -265,6 +241,10 @@ export const HttpV2InvestigationsLive = HttpApiBuilder.group(MapleApiV2, "invest
 								: undefined),
 						}),
 					)
+					yield* recordHttpAudit("investigation.created", {
+						resourceId: doc.id,
+						metadata: { subject_type: payload.subject.type },
+					})
 
 					return yield* serializeInvestigation(doc)
 				}),
@@ -273,6 +253,7 @@ export const HttpV2InvestigationsLive = HttpApiBuilder.group(MapleApiV2, "invest
 				Effect.gen(function* () {
 					const tenant = yield* CurrentTenant.Context
 					const doc = yield* service.restartInvestigation(tenant.orgId, params.id)
+					yield* recordHttpAudit("investigation.restarted", { resourceId: doc.id })
 
 					return yield* serializeInvestigation(doc)
 				}),
@@ -281,6 +262,10 @@ export const HttpV2InvestigationsLive = HttpApiBuilder.group(MapleApiV2, "invest
 				Effect.gen(function* () {
 					const tenant = yield* CurrentTenant.Context
 					const doc = yield* service.updateStatus(tenant.orgId, params.id, payload.status)
+					yield* recordHttpAudit("investigation.status_changed", {
+						resourceId: doc.id,
+						metadata: { to_status: payload.status },
+					})
 
 					return yield* serializeInvestigation(doc)
 				}),

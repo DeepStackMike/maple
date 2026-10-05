@@ -8,7 +8,7 @@ import {
 	makeEdgeCacheService,
 	makeMemoryBackend,
 } from "@maple/cache"
-import { Env } from "@/platform/Env"
+import { Env } from "@maple/backend/platform/Env"
 import {
 	CUSTOMER_CACHE_BUCKET,
 	CUSTOMER_CACHE_TTL_SECONDS,
@@ -19,8 +19,8 @@ import {
 	responseHasActivePlan,
 	responseHasPlanHistory,
 	summariseSubscriptions,
-} from "@/services/billing/autumn-client"
-import { AutumnClient, type AutumnResult } from "@/services/billing/autumn-http"
+} from "@maple/backend/services/billing/autumn-client"
+import { AutumnClient, type AutumnResult } from "@maple/backend/services/billing/autumn-http"
 import {
 	BillingApiGroup,
 	BillingConflictError,
@@ -32,11 +32,11 @@ import {
 	UpdateBillingSpendLimit,
 	UpdateBillingUsageAlert,
 } from "@maple/domain/http"
-import { DailySpendService } from "@/services/billing/DailySpendService"
-import { ProductEventsService } from "@/services/product-events/ProductEventsService"
-import { StripeClient } from "@/services/billing/stripe-http"
+import { DailySpendService } from "@maple/backend/services/billing/DailySpendService"
+import { ProductEventsService } from "@maple/backend/services/product-events/ProductEventsService"
+import { StripeClient } from "@maple/backend/services/billing/stripe-http"
 import { decodeInvoices, HttpBillingLive, resolveCycleWindow } from "./billing.http"
-import { V1ErrorBoundaryLive } from "../v1/error-boundary"
+import { V1ErrorBoundaryLive } from "@maple/backend/http/error-boundary"
 
 const ORG = "org_test_123"
 
@@ -171,6 +171,33 @@ describe("AutumnClient.updateCustomerBillingControls", () => {
 					},
 				],
 			},
+		})
+	})
+
+	// The provider replaces any list it is sent, so an omitted list must stay off
+	// the wire: `usage_alerts: []` would wipe the org's existing alerts.
+	it("omits usage_alerts from the body when the caller doesn't send them", async () => {
+		let body: string | undefined
+		const fetch = (async (_input, init) => {
+			body = await new Response(init?.body).text()
+			return new Response(JSON.stringify({ id: ORG }), { status: 200 })
+		}) as typeof globalThis.fetch
+
+		await Effect.runPromise(
+			Effect.gen(function* () {
+				const autumn = yield* AutumnClient
+				return yield* autumn
+					.updateCustomerBillingControls(ORG, {
+						spendLimits: [
+							{ featureId: "logs", enabled: true, limitType: "absolute", overageLimit: 250 },
+						],
+					})
+					.pipe(Effect.provideService(FetchHttpClient.Fetch, fetch))
+			}).pipe(Effect.provide(autumnClientLayer)),
+		)
+
+		assert.deepStrictEqual(JSON.parse(body ?? "{}").billing_controls, {
+			spend_limits: [{ feature_id: "logs", enabled: true, limit_type: "absolute", overage_limit: 250 }],
 		})
 	})
 })

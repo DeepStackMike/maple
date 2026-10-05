@@ -9,6 +9,7 @@ import { anomalyServiceCountFromV2, type AnomalyServiceCount } from "@/lib/servi
 import { disabledResultAtom } from "@/lib/services/atoms/disabled-result-atom"
 import { useAlertIncidentsList, useAlertRulesList } from "@/hooks/use-alerts-list"
 import { QueryErrorState } from "@/components/common/query-error-state"
+import { SignalEmptyState } from "@/components/common/signal-empty-state"
 import { AlertFiringHero } from "@/components/alerts/alert-stat-card"
 import { anomalyAffectsServiceHealth } from "@/components/anomalies/anomaly-format"
 import { StatRail, StatRailItem, StatRailLoading } from "@/components/infra/primitives/stat-rail"
@@ -151,7 +152,7 @@ function enrichServices(
 					(incident) =>
 						anomalyAffectsServiceHealth(incident) &&
 						incident.serviceName === service.serviceName &&
-						incident.deploymentEnv === service.environment,
+						(incident.deploymentEnv || "unknown") === service.environment,
 				)
 				.map((incident) => ({
 					severity: incident.severity,
@@ -249,7 +250,7 @@ export function ServiceHealthOverview(props: ServiceHealthProps) {
 							delay={0}
 						/>
 						<StatRailItem
-							eyebrow="No active issues"
+							eyebrow="Healthy"
 							value={String(counts.healthy)}
 							tone={counts.healthy > 0 ? "ok" : "neutral"}
 							action={railAction("healthy")}
@@ -335,9 +336,12 @@ export function ServiceHealthList(props: ServiceHealthProps) {
 					{header}
 					<Card className="overflow-hidden p-0">
 						{rows.length === 0 ? (
-							<div className="px-4 py-8 text-center text-sm text-muted-foreground">
-								No services reporting in this window.
-							</div>
+							<SignalEmptyState
+								signal="traces"
+								noun="services"
+								guideDocs="services"
+								className="py-8"
+							/>
 						) : (
 							<ul className="divide-y divide-border">
 								{rows.map(({ service, health, causes }) => (

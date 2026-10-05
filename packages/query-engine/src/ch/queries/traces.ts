@@ -3,12 +3,12 @@
 // DSL-based query definitions for traces timeseries, breakdown, and list.
 
 import type { TracesMetric } from "@maple/domain/query-engine"
-import { compileFnCall, subqueryCond, subqueryExpr, untypedSubqueryExpr } from "@maple-dev/clickhouse-builder"
-import * as CH from "@maple-dev/clickhouse-builder/expr"
+import { compileFnCall, subqueryCond, subqueryExpr, untypedSubqueryExpr } from "@maple-dev/effect-clickhouse"
+import * as CH from "@maple-dev/effect-clickhouse/expr"
 import { envLabel, resourceEnvLabel } from "./environment"
-import { param } from "@maple-dev/clickhouse-builder"
-import { from, fromUnion, unionAll, type CHQuery, type ColumnAccessor } from "@maple-dev/clickhouse-builder"
-import type { Table } from "@maple-dev/clickhouse-builder"
+import { param } from "@maple-dev/effect-clickhouse"
+import { from, fromUnion, unionAll, type CHQuery, type ColumnAccessor } from "@maple-dev/effect-clickhouse"
+import type { Table } from "@maple-dev/effect-clickhouse"
 import {
 	ServiceMapSpans,
 	ServiceOverviewSpans,
@@ -19,9 +19,10 @@ import {
 	Traces,
 	TracesAggregatesHourly,
 } from "../tables"
+import { httpRequestMethodExpr, httpResponseStatusCodeExpr } from "@maple/domain/tinybird/semconv-renames"
 import { METRIC_NEEDS } from "../../traces-shared"
-import type { ColumnDefs } from "@maple-dev/clickhouse-builder/types"
-import * as T from "@maple-dev/clickhouse-builder/types"
+import type { ColumnDefs } from "@maple-dev/effect-clickhouse/types"
+import * as T from "@maple-dev/effect-clickhouse/types"
 import { finalizeTimeseries } from "./series-cap"
 import { edgeCondition, hourGrain, interiorBounds, interiorConditions, minuteGrain } from "./rollup-splice"
 import {
@@ -89,6 +90,12 @@ interface MetricCols {
 	SampleRate: CH.Expr<number>
 }
 
+function metricNeeds(metric: TracesMetric, allMetrics?: boolean): Set<string> {
+	return new Set(
+		allMetrics ? ["count", "avg_duration", "quantiles", "error_rate", "apdex"] : METRIC_NEEDS[metric],
+	)
+}
+
 function metricSelectExprs(
 	$: MetricCols,
 	metric: TracesMetric,
@@ -96,9 +103,7 @@ function metricSelectExprs(
 	needsSampling: boolean,
 	allMetrics?: boolean,
 ) {
-	const needs = allMetrics
-		? new Set<string>(["count", "avg_duration", "quantiles", "error_rate", "apdex"])
-		: new Set(METRIC_NEEDS[metric])
+	const needs = metricNeeds(metric, allMetrics)
 	const durationMs = $.Duration.div(1000000)
 
 	const apdex = needs.has("apdex")
@@ -170,7 +175,7 @@ function buildGroupNameExpr(
 				parts.push(CH.toString_($.StatusCode))
 				break
 			case "http_method":
-				parts.push(CH.toString_($.SpanAttributes.get("http.method")))
+				parts.push(CH.toString_(httpRequestMethodExpr($.SpanAttributes)))
 				break
 			case "attribute":
 				if (groupByAttributeKeys?.length) {
@@ -293,7 +298,7 @@ function buildBreakdownGroupExpr(
 		case "status_code":
 			return $.StatusCode
 		case "http_method":
-			return $.SpanAttributes.get("http.method")
+			return httpRequestMethodExpr($.SpanAttributes)
 		case "attribute":
 			return groupByAttributeKey ? $.SpanAttributes.get(groupByAttributeKey) : $.ServiceName
 		default:
@@ -347,7 +352,7 @@ export interface TracesTimeseriesOpts extends TracesQueryOpts {
 	allMetrics?: boolean
 	/**
 	 * Opt-in top-N series cap for group-by charts. When set, only the N groups
-	 * with the largest total count (across all buckets) are fetched — the long
+	 * with the largest peak count (across all buckets) are fetched — the long
 	 * tail is dropped server-side to avoid OOMing the browser tab.
 	 */
 	seriesLimit?: number
@@ -382,7 +387,7 @@ export interface TracesTimeseriesOutput {
 }
 
 // Synthetic column defs matching TracesTimeseriesOutput, used to wrap the inner
-// query in a CTE when the top-N series cap is applied. CH types are nominal
+// query when the top-N series cap is applied. CH types are nominal
 // here (the cap helper references columns by name), so numerics use Float64.
 const TRACES_TS_COLUMNS: ColumnDefs = {
 	bucket: T.string,
@@ -424,10 +429,9 @@ const OVERVIEW_ROLLUP_GROUP_KEYS: ReadonlySet<string> = new Set(["service", "non
  * Reading the hourly tier for a sub-hour bucket would pile every interior hour
  * onto the bucket containing `:00` and leave the rest of the hour reading zero.
  *
- * No longer gated on `allMetrics === true`. That flag only picks which aggregates
- * the *raw* paths bother computing (`metricSelectExprs`); the tiers here read
- * pre-aggregated columns and produce all five `MetricNeed`s unconditionally, so
- * every `TracesMetric` is serveable. Requiring it kept alert evaluation
+ * Every `TracesMetric` is serveable; `allMetrics` selects whether to compute all
+ * aggregates or only those needed by the selected metric. Requiring it kept
+ * alert evaluation
  * (`computeAlertBuckets`, which never sets it) off this route entirely and on a
  * flat scan of the per-span `service_overview_spans` — 165k scans / 3 days.
  * The apdex threshold check below is the real capability limit: `rawEdges`
@@ -439,7 +443,7 @@ const OVERVIEW_ROLLUP_GROUP_KEYS: ReadonlySet<string> = new Set(["service", "non
  *
  * Exported because it names a distinct SQL *route*: the SQL it selects is
  * structurally unlike every other branch of `tracesTimeseriesQuery`, so the
- * catalog sweep in `sql-catalog.ts` asserts a fixture exercises it both ways.
+ * catalog sweep in `benchmark/catalog.ts` asserts a fixture exercises it both ways.
  * A route with no fixture is a route no test has ever executed — which is
  * exactly how a `NO_COMMON_TYPE` shipped to prod here.
  */
@@ -500,6 +504,11 @@ export function tracesTimeseriesQuery(
 	const apdexThresholdMs = opts.apdexThresholdMs ?? 500
 
 	if (canUseAnnualServiceOverview(opts)) {
+		const needs = metricNeeds(opts.metric, opts.allMetrics)
+		const wantsQuantiles = needs.has("quantiles")
+		// Both UNION arms must carry the same type even when no digest is needed.
+		const durationState = (sql: string) =>
+			CH.rawExpr(wantsQuantiles ? sql : "''", wantsQuantiles ? DURATION_STATE : T.string)
 		// An hour-multiple bucket can be placed inside the hourly tier; anything
 		// finer must stop at the minute tier (and is bounded by its 90d retention).
 		const includeHourly = (opts.bucketSeconds ?? 0) % 3600 === 0
@@ -549,18 +558,21 @@ export function tracesTimeseriesQuery(
 				groupName: buildOverviewRollupGroupNameExpr($, opts.groupBy),
 				bCount: CH.count(),
 				bEstimatedSpanCount: CH.sum($.SampleRate),
-				bErrorCount: CH.countIf($.StatusCode.eq("Error")),
-				bDurationSum: CH.sum(CH.rawExpr("toFloat64(Duration)", T.float64)),
-				bDurationQuantiles: CH.rawExpr(
-					"quantilesTDigestState(0.5, 0.95, 0.99)(Duration)",
-					DURATION_STATE,
-				),
-				bSatisfiedCount: CH.countIf($.StatusCode.neq("Error").and($.Duration.lt(500_000_000))),
-				bToleratingCount: CH.countIf(
-					$.StatusCode.neq("Error")
-						.and($.Duration.gte(500_000_000))
-						.and($.Duration.lt(2_000_000_000)),
-				),
+				bErrorCount: needs.has("error_rate") ? CH.countIf($.StatusCode.eq("Error")) : CH.lit(0),
+				bDurationSum: needs.has("avg_duration")
+					? CH.sum(CH.rawExpr("toFloat64(Duration)", T.float64))
+					: CH.lit(0),
+				bDurationQuantiles: durationState("quantilesTDigestState(0.5, 0.95, 0.99)(Duration)"),
+				bSatisfiedCount: needs.has("apdex")
+					? CH.countIf($.StatusCode.neq("Error").and($.Duration.lt(500_000_000)))
+					: CH.lit(0),
+				bToleratingCount: needs.has("apdex")
+					? CH.countIf(
+							$.StatusCode.neq("Error")
+								.and($.Duration.gte(500_000_000))
+								.and($.Duration.lt(2_000_000_000)),
+						)
+					: CH.lit(0),
 			}))
 			.where(($) => [...serviceOverviewWhereConditions($, opts), edgeCondition("Timestamp", edgeGrain)])
 			.groupBy("bucket", "groupName")
@@ -571,14 +583,13 @@ export function tracesTimeseriesQuery(
 				groupName: buildOverviewRollupGroupNameExpr($, opts.groupBy),
 				bCount: CH.sum($.SpanCount),
 				bEstimatedSpanCount: CH.sum($.EstimatedSpanCount),
-				bErrorCount: CH.sum($.ErrorCount),
-				bDurationSum: CH.sum($.DurationSum),
-				bDurationQuantiles: CH.rawExpr(
+				bErrorCount: needs.has("error_rate") ? CH.sum($.ErrorCount) : CH.lit(0),
+				bDurationSum: needs.has("avg_duration") ? CH.sum($.DurationSum) : CH.lit(0),
+				bDurationQuantiles: durationState(
 					"quantilesTDigestMergeState(0.5, 0.95, 0.99)(DurationQuantiles)",
-					DURATION_STATE,
 				),
-				bSatisfiedCount: CH.sum($.ApdexSatisfiedCount),
-				bToleratingCount: CH.sum($.ApdexToleratingCount),
+				bSatisfiedCount: needs.has("apdex") ? CH.sum($.ApdexSatisfiedCount) : CH.lit(0),
+				bToleratingCount: needs.has("apdex") ? CH.sum($.ApdexToleratingCount) : CH.lit(0),
 			}))
 			.where(($) => [
 				...rollupWhere($),
@@ -595,14 +606,13 @@ export function tracesTimeseriesQuery(
 				groupName: buildOverviewRollupGroupNameExpr($, opts.groupBy),
 				bCount: CH.sum($.SpanCount),
 				bEstimatedSpanCount: CH.sum($.EstimatedSpanCount),
-				bErrorCount: CH.sum($.ErrorCount),
-				bDurationSum: CH.sum($.DurationSum),
-				bDurationQuantiles: CH.rawExpr(
+				bErrorCount: needs.has("error_rate") ? CH.sum($.ErrorCount) : CH.lit(0),
+				bDurationSum: needs.has("avg_duration") ? CH.sum($.DurationSum) : CH.lit(0),
+				bDurationQuantiles: durationState(
 					"quantilesTDigestMergeState(0.5, 0.95, 0.99)(DurationQuantiles)",
-					DURATION_STATE,
 				),
-				bSatisfiedCount: CH.sum($.ApdexSatisfiedCount),
-				bToleratingCount: CH.sum($.ApdexToleratingCount),
+				bSatisfiedCount: needs.has("apdex") ? CH.sum($.ApdexSatisfiedCount) : CH.lit(0),
+				bToleratingCount: needs.has("apdex") ? CH.sum($.ApdexToleratingCount) : CH.lit(0),
 			}))
 			.where(($) => [...rollupWhere($), ...interiorConditions($.Hour)])
 			.groupBy("bucket", "groupName")
@@ -629,35 +639,44 @@ export function tracesTimeseriesQuery(
 					"if(sum(bEstimatedSpanCount) > 0, sum(bEstimatedSpanCount), toFloat64(sum(bCount)))",
 					T.float64,
 				)
-				const satisfied = CH.sum($.bSatisfiedCount)
-				const tolerating = CH.sum($.bToleratingCount)
+				const satisfied = needs.has("apdex") ? CH.sum($.bSatisfiedCount) : CH.lit(0)
+				const tolerating = needs.has("apdex") ? CH.sum($.bToleratingCount) : CH.lit(0)
 				const quantiles = "quantilesTDigestMerge(0.5, 0.95, 0.99)(bDurationQuantiles)"
 				return {
 					bucket: $.bucket,
 					groupName: $.groupName,
 					count: weightedTotal,
 					spanCount: rawTotal,
-					avgDuration: CH.rawExpr(
-						"if(sum(bCount) > 0, sum(bDurationSum) / sum(bCount) / 1000000, 0)",
-						T.float64,
-					),
-					p50Duration: CH.rawExpr(`arrayElement(${quantiles}, 1) / 1000000`, T.float64),
-					p95Duration: CH.rawExpr(`arrayElement(${quantiles}, 2) / 1000000`, T.float64),
-					p99Duration: CH.rawExpr(`arrayElement(${quantiles}, 3) / 1000000`, T.float64),
+					avgDuration: needs.has("avg_duration")
+						? CH.rawExpr(
+								"if(sum(bCount) > 0, sum(bDurationSum) / sum(bCount) / 1000000, 0)",
+								T.float64,
+							)
+						: CH.lit(0),
+					p50Duration: wantsQuantiles
+						? CH.rawExpr(`arrayElement(${quantiles}, 1) / 1000000`, T.float64)
+						: CH.lit(0),
+					p95Duration: wantsQuantiles
+						? CH.rawExpr(`arrayElement(${quantiles}, 2) / 1000000`, T.float64)
+						: CH.lit(0),
+					p99Duration: wantsQuantiles
+						? CH.rawExpr(`arrayElement(${quantiles}, 3) / 1000000`, T.float64)
+						: CH.lit(0),
 					// Raw ratio: `service_overview_hourly` stores no weighted error count.
 					// Unbiased as long as errored and non-errored spans share a sampling
 					// rate, which head sampling (trace-level) guarantees.
-					errorRate: CH.rawExpr(
-						"if(sum(bCount) > 0, sum(bErrorCount) / sum(bCount), 0)",
-						T.float64,
-					),
+					errorRate: needs.has("error_rate")
+						? CH.rawExpr("if(sum(bCount) > 0, sum(bErrorCount) / sum(bCount), 0)", T.float64)
+						: CH.lit(0),
 					satisfiedCount: satisfied,
 					toleratingCount: tolerating,
-					apdexScore: CH.if_(
-						rawTotal.gt(0),
-						CH.round_(satisfied.div(rawTotal).add(tolerating.mul(0.5).div(rawTotal)), 4),
-						CH.lit(0),
-					),
+					apdexScore: needs.has("apdex")
+						? CH.if_(
+								rawTotal.gt(0),
+								CH.round_(satisfied.div(rawTotal).add(tolerating.mul(0.5).div(rawTotal)), 4),
+								CH.lit(0),
+							)
+						: CH.lit(0),
 					estimatedSpanCount: weightedTotal,
 				}
 			})
@@ -1240,9 +1259,11 @@ export interface TracesRootListOutput {
 	readonly durationMicros: number
 	readonly spanCount: number
 	readonly services: readonly string[]
+	readonly rootSpanId: string
 	readonly rootSpanName: string
 	readonly rootSpanKind: string
 	readonly rootSpanStatusCode: string
+	readonly rootSpanStatusMessage: string
 	readonly rootHttpMethod: string
 	readonly rootHttpRoute: string
 	readonly rootHttpStatusCode: string
@@ -1324,10 +1345,11 @@ export function traceSummariesQuery(opts: TraceSummariesOpts) {
 	const hasSpanFilters = Object.entries(spanFilters).some(([, value]) =>
 		Array.isArray(value) ? value.length > 0 : value !== undefined,
 	)
+	// Match modes only shape the filters above, so they never force the semi-join on their own.
 	const matchingTraceIds = hasSpanFilters
 		? from(Traces)
 				.select(($) => ({ traceId: $.TraceId }))
-				.where(($) => tracesBaseWhereConditions($, spanFilters))
+				.where(($) => tracesBaseWhereConditions($, { ...spanFilters, matchModes: opts.matchModes }))
 				.groupBy("traceId")
 		: undefined
 
@@ -1352,6 +1374,10 @@ export function traceSummariesQuery(opts: TraceSummariesOpts) {
 			$.Timestamp.gte(param.dateTimeSeconds("startTime")),
 			$.Timestamp.lte(param.dateTimeSeconds("endTime")),
 			matchingTraceIds ? subqueryCond(matchingTraceIds, (sql) => `TraceId IN (${sql})`) : undefined,
+			// "Hide health checks" applies to the root rows read here, not to the span
+			// semi-join above (which leaves it out): a probe trace is one whose *root*
+			// is the probe, and a span filter would keep it whenever a child matched.
+			nameExclusionCondition(opts.excludeNamePatterns, $.SpanName, $.HttpRoute),
 			opts.cursor
 				? $.Timestamp.lt(opts.cursor.timestamp).or(
 						$.Timestamp.eq(opts.cursor.timestamp).and($.TraceId.lt(opts.cursor.traceId)),
@@ -1428,12 +1454,14 @@ export function tracesRootListQuery(opts: TracesRootListOpts) {
 			durationMicros: CH.intDiv($.Duration, 1000),
 			spanCount: CH.toUInt64(CH.lit(1)),
 			services: CH.arrayOf($.ServiceName),
+			rootSpanId: $.SpanId,
 			rootSpanName: $.SpanName,
 			rootSpanKind: $.SpanKind,
 			rootSpanStatusCode: $.StatusCode,
-			rootHttpMethod: $.SpanAttributes.get("http.method"),
+			rootSpanStatusMessage: $.StatusMessage,
+			rootHttpMethod: httpRequestMethodExpr($.SpanAttributes),
 			rootHttpRoute: $.SpanAttributes.get("http.route"),
-			rootHttpStatusCode: $.SpanAttributes.get("http.status_code"),
+			rootHttpStatusCode: httpResponseStatusCodeExpr($.SpanAttributes),
 			rootSpanAttributes: CH.toJSONString(buildProjectedMapExpr(ROOT_SPAN_ATTR_KEYS, "SpanAttributes")),
 			hasError: CH.if_($.StatusCode.eq("Error"), CH.lit(1), CH.lit(0)),
 		}))
@@ -1476,6 +1504,8 @@ export interface TraceListOutput {
 	readonly traceId: string
 	/** Root span timestamp — the keyset cursor field, paired with `traceId`. */
 	readonly startTime: string
+	/** `startTime` truncated to the second: the page order on the `trace_list_mv` path. */
+	readonly startSecond: string
 	/** When the last span finished, so `endTime - startTime` is the duration below. */
 	readonly endTime: string
 	/** Wall-clock extent of the whole trace, not the root span's own duration. */
@@ -1537,6 +1567,7 @@ export function canUseTraceListMvStage1(opts: TraceListOpts): boolean {
 	if (opts.resourceAttributeFilters?.length) return false
 	if (opts.commitShas?.length) return false
 	for (const af of opts.attributeFilters ?? []) {
+		if (af.or?.length) return false
 		if (!TRACE_LIST_MV_ATTR_COLUMNS.has(af.key)) return false
 		const expressible =
 			(af.mode === "equals" && af.value !== undefined) || (af.mode === "in" && !!af.values?.length)
@@ -1657,7 +1688,8 @@ export function traceListQuery(opts: TraceListOpts) {
 	// An IIFE per arm rather than a `let` widened to `CHQuery<any, any, any>`:
 	// the two stage-1 pages read different tables but the same three columns, and
 	// inferring their union keeps the splice below typed.
-	const pageQuery = canUseTraceListMvStage1(opts)
+	const pagesOverMv = canUseTraceListMvStage1(opts)
+	const pageQuery = pagesOverMv
 		? (() => {
 				// `trace_list_mv` is sorted `(OrgId, Timestamp, TraceId)`, so this pages
 				// read-in-order instead of scanning the window. Its Timestamp is
@@ -1719,9 +1751,11 @@ export function traceListQuery(opts: TraceListOpts) {
 			const rootServiceName = argMin($.ServiceName, rootOrder)
 			const startNanos = CH.toUnixTimestamp64Nano($.Timestamp)
 			const endNanos = CH.max_(startNanos.add(CH.toInt64($.Duration)))
+			const startTime = argMin($.Timestamp, rootOrder)
 			return {
 				traceId: $.TraceId,
-				startTime: argMin($.Timestamp, rootOrder),
+				startTime,
+				startSecond: CH.toDateTime(startTime),
 				endTime: fromUnixTimestamp64Nano(endNanos),
 				durationMicros: CH.intDiv(endNanos.sub(CH.min_(startNanos)), 1000),
 				// Stage 1's duration sort key, re-derived so stage 2 can return the
@@ -1735,9 +1769,9 @@ export function traceListQuery(opts: TraceListOpts) {
 				rootSpanName: argMin($.SpanName, rootOrder),
 				rootSpanKind: argMin($.SpanKind, rootOrder),
 				rootSpanStatusCode: argMin($.StatusCode, rootOrder),
-				rootHttpMethod: argMin($.SpanAttributes.get("http.method"), rootOrder),
+				rootHttpMethod: argMin(httpRequestMethodExpr($.SpanAttributes), rootOrder),
 				rootHttpRoute: argMin($.SpanAttributes.get("http.route"), rootOrder),
-				rootHttpStatusCode: argMin($.SpanAttributes.get("http.status_code"), rootOrder),
+				rootHttpStatusCode: argMin(httpResponseStatusCodeExpr($.SpanAttributes), rootOrder),
 				rootSpanAttributes: argMin(
 					CH.toJSONString(buildProjectedMapExpr(ROOT_SPAN_ATTR_KEYS, "SpanAttributes")),
 					rootOrder,
@@ -1761,10 +1795,14 @@ export function traceListQuery(opts: TraceListOpts) {
 		])
 		.groupBy("traceId")
 
+	// The page must come back in stage 1's order, or its last row is not the
+	// stage-1 cut and the next cursor repeats traces. The MV pages whole seconds
+	// by TraceId, so within a second this orders by TraceId, not nanoseconds.
+	const startKey = pagesOverMv ? "startSecond" : "startTime"
 	return (
 		sortBy === "durationMs"
-			? aggregated.orderBy(["rootDurationMicros", sortDir], ["startTime", sortDir], ["traceId", "desc"])
-			: aggregated.orderBy(["startTime", sortDir], ["traceId", "desc"])
+			? aggregated.orderBy(["rootDurationMicros", sortDir], [startKey, sortDir], ["traceId", "desc"])
+			: aggregated.orderBy([startKey, sortDir], ["traceId", "desc"])
 	)
 		.limit(limit)
 		.format("JSON")
@@ -1870,5 +1908,49 @@ export function resourceNamespacesQuery(opts: ResourceNamespacesOpts = {}) {
 		.groupBy("namespace")
 		.orderBy(["spanCount", "desc"], ["namespace", "asc"])
 		.limit(opts.limit ?? 100)
+		.format("JSON")
+}
+
+// Trace-list span stats
+
+export interface TraceSpanStatsByTraceIdsOpts {
+	readonly traceIds: readonly string[]
+}
+
+export interface TraceSpanStatsByTraceIdsOutput {
+	readonly traceId: string
+	/** Every span in the trace, as `traceListQuery` counts them. */
+	readonly spanCount: number
+	/** True root first when present, then the remaining services sorted. */
+	readonly services: readonly string[]
+}
+
+/**
+ * Span count and services for one already-paged set of traces, for lists whose
+ * page query reads the roots-only `trace_list_mv` and so cannot count spans.
+ * `trace_detail_spans` is keyed `(OrgId, TraceId, SpanId)`, so the page's ids
+ * are primary-key seeks; the window is padded ±1h as in `traceListQuery`.
+ */
+export function traceSpanStatsByTraceIdsQuery(opts: TraceSpanStatsByTraceIdsOpts) {
+	return from(TraceDetailSpans)
+		.select(($) => {
+			const rootOrder = CH.untypedExpr("(if(ParentSpanId = '', 0, 1), Timestamp)")
+			const rootServiceName = argMin($.ServiceName, rootOrder)
+			return {
+				traceId: $.TraceId,
+				spanCount: CH.count(),
+				services: CH.arrayDistinct(
+					CH.arrayPushFront(CH.arraySort(CH.groupUniqArray($.ServiceName)), rootServiceName),
+				),
+			}
+		})
+		.where(($) => [
+			$.OrgId.eq(param.string("orgId")),
+			$.TraceId.in_(...opts.traceIds),
+			$.Timestamp.gte(subtractHours(CH.toDateTime(param.dateTimeString("startTime")), CH.lit(1))),
+			$.Timestamp.lte(addHours(CH.toDateTime(param.dateTimeString("endTime")), CH.lit(1))),
+		])
+		.groupBy("traceId")
+		.limit(opts.traceIds.length)
 		.format("JSON")
 }

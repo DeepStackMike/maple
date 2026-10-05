@@ -1,31 +1,35 @@
+import { makeWarehouseServiceStub } from "@maple/backend/testing/warehouse-test-support"
+export { makeWarehouseServiceStub } from "@maple/backend/testing/warehouse-test-support"
 import { Effect, Layer } from "effect"
 import { EdgeCacheService, MemoryCacheBackendLive } from "@maple/cache"
-import { AlertsService } from "@/services/alerts/AlertsService"
-import { AlertDestinationsService } from "@/services/alerts/AlertDestinationsService"
-import { AlertReadModelsService } from "@/services/alerts/AlertReadModelsService"
-import { AlertRulesService } from "@/services/alerts/AlertRulesService"
-import { AnomalyDetectionService } from "@/services/alerts/AnomalyDetectionService"
-import { ErrorsService } from "@/services/errors/ErrorsService"
-import { ErrorIssueReadModelsService } from "@/services/errors/ErrorIssueReadModelsService"
-import { IngestAttributeMappingService } from "@/services/org/IngestAttributeMappingService"
-import { InvestigationService } from "@/services/errors/InvestigationService"
-import { OrganizationService } from "@/services/org/OrganizationService"
-import { LiveActivitiesService } from "@/services/push/LiveActivitiesService"
-import { MobileDevicesService } from "@/services/push/MobileDevicesService"
-import { OrgIngestKeysService } from "@/services/org/OrgIngestKeysService"
-import { RecommendationIssueService } from "@/services/errors/RecommendationIssueService"
-import { PlanetScaleConnectionService } from "@/services/integrations/PlanetScaleConnectionService"
-import { PlanetScaleOAuthService } from "@/services/auth/PlanetScaleOAuthService"
-import { PlanetScaleService } from "@/services/integrations/PlanetScaleService"
-import { ScrapeTargetsService } from "@/services/integrations/ScrapeTargetsService"
-import { SlackIntegrationService } from "@/services/integrations/SlackIntegrationService"
-import { SetupAuditService } from "@/services/org/SetupAuditService"
-import { ApiV2RateLimiter } from "@/services/auth/ApiV2RateLimiter"
-import {
-	WarehouseQueryService,
-	type WarehouseQueryServiceApi,
-} from "@/services/warehouse/WarehouseQueryService"
-import { QueryEngineService } from "@/services/warehouse/QueryEngineService"
+import { AlertsService } from "@maple/backend/services/alerts/AlertsService"
+import { AlertDestinationsService } from "@maple/backend/services/alerts/AlertDestinationsService"
+import { AlertReadModelsService } from "@maple/backend/services/alerts/AlertReadModelsService"
+import { AlertRulesService } from "@maple/backend/services/alerts/AlertRulesService"
+import { AnomalyDetectionService } from "@maple/backend/services/alerts/AnomalyDetectionService"
+import { ErrorsService } from "@maple/backend/services/errors/ErrorsService"
+import { ErrorActorsService } from "@maple/backend/services/errors/ErrorActorsService"
+import { ErrorIssueReadModelsService } from "@maple/backend/services/errors/ErrorIssueReadModelsService"
+import { IngestAttributeMappingService } from "@maple/backend/services/org/IngestAttributeMappingService"
+import { InvestigationService } from "@maple/backend/services/errors/InvestigationService"
+import { OrganizationService } from "@maple/backend/services/org/OrganizationService"
+import { LiveActivitiesService } from "@maple/backend/services/push/LiveActivitiesService"
+import { MobileDevicesService } from "@maple/backend/services/push/MobileDevicesService"
+import { AgentFeedbackService } from "@maple/backend/services/feedback/AgentFeedbackService"
+import { OrgIngestKeysService } from "@maple/backend/services/org/OrgIngestKeysService"
+import { RecommendationIssueService } from "@maple/backend/services/errors/RecommendationIssueService"
+import { PlanetScaleConnectionService } from "@maple/backend/services/integrations/PlanetScaleConnectionService"
+import { PlanetScaleOAuthService } from "@maple/backend/services/auth/PlanetScaleOAuthService"
+import { PlanetScaleService } from "@maple/backend/services/integrations/PlanetScaleService"
+import { ScrapeTargetsService } from "@maple/backend/services/integrations/ScrapeTargetsService"
+import { ChatWorkspaceService } from "@maple/backend/services/integrations/ChatWorkspaceService"
+import { OnboardingChecklistService } from "@maple/backend/services/org/OnboardingChecklistService"
+import { SupportChannelService } from "@maple/backend/services/support/SupportChannelService"
+import { SetupAuditService } from "@maple/backend/services/org/SetupAuditService"
+import { SignalPresenceService } from "@maple/backend/services/org/SignalPresenceService"
+import { ApiV2RateLimiter } from "@maple/backend/services/auth/ApiV2RateLimiter"
+import { WarehouseQueryService } from "@maple/backend/services/warehouse/WarehouseQueryService"
+import { QueryEngineService } from "@maple/backend/services/warehouse/QueryEngineService"
 import { HttpV2AlertDeliveriesLive } from "./alert-deliveries.http"
 import { HttpV2AlertDestinationsLive } from "./alert-destinations.http"
 import { HttpV2AlertIncidentsLive } from "./alert-incidents.http"
@@ -34,18 +38,26 @@ import { HttpV2ApiKeysLive } from "./api-keys.http"
 import { HttpV2AttributeMappingsLive } from "./attribute-mappings.http"
 import { HttpV2DashboardsLive } from "./dashboards.http"
 import { HttpV2IngestKeysLive } from "./ingest-keys.http"
-import { HttpV2PlanetScaleIntegrationsLive, HttpV2SlackIntegrationsLive } from "./integrations.http"
+import { HttpV2ChatIntegrationsLive } from "./integrations-chat.http"
+import { HttpV2PlanetScaleIntegrationsLive } from "./integrations.http"
 import { HttpV2ErrorIssuesLive } from "./error-issues.http"
 import { HttpV2AnomaliesLive } from "./anomalies.http"
 import { HttpV2InvestigationsLive } from "./investigations.http"
 import { HttpV2MobileDevicesLive } from "./mobile-devices.http"
+import { HttpV2AgentFeedbackLive } from "./agent-feedback.http"
+import { HttpV2OnboardingChecklistLive } from "./onboarding-checklist.http"
+import { HttpV2SupportChannelLive } from "./support-channel.http"
 import { HttpV2OrganizationLive } from "./organization.http"
 import { HttpV2InstrumentationRecommendationsLive } from "./recommendations.http"
+import { HttpV2AuditLogLive } from "./audit-log.http"
+import { AuditLogService } from "@maple/backend/services/audit/AuditLogService"
+import { OrgMembersService } from "@maple/backend/services/org/OrgMembersService"
 import { HttpV2ScrapeTargetsLive } from "./scrape-targets.http"
 import { HttpV2SessionReplaysLive } from "./session-replays.http"
 import { HttpV2InstrumentationAuditLive } from "./setup-audit.http"
+import { HttpV2TelemetrySignalsLive } from "./telemetry-signals.http"
 import { HttpV2SharePublicLive } from "./share.http"
-import { DashboardWidgetDataService } from "@/services/dashboards/DashboardWidgetDataService"
+import { DashboardWidgetDataService } from "@maple/backend/services/dashboards/DashboardWidgetDataService"
 import {
 	HttpV2EnvironmentsLive,
 	HttpV2LogsLive,
@@ -64,67 +76,155 @@ import { HttpV2WidgetCredentialsLive } from "./widget-credentials.http"
  * the groups it does not exercise.
  */
 
-export const AllV2GroupLayersLive = Layer.mergeAll(
-	HttpV2ApiKeysLive,
-	HttpV2SlackIntegrationsLive,
-	HttpV2PlanetScaleIntegrationsLive,
-	HttpV2DashboardsLive,
-	HttpV2AlertDeliveriesLive,
-	HttpV2AlertRulesLive,
-	HttpV2AlertDestinationsLive,
-	HttpV2AlertIncidentsLive,
-	HttpV2IngestKeysLive,
-	HttpV2ErrorIssuesLive,
-	HttpV2AttributeMappingsLive,
-	HttpV2ScrapeTargetsLive,
-	HttpV2InstrumentationRecommendationsLive,
-	HttpV2InstrumentationAuditLive,
-	HttpV2InvestigationsLive,
-	HttpV2AnomaliesLive,
-	HttpV2OrganizationLive,
-	// Real services, no stubs: they need only the Database every harness already
-	// provides, and their own route tests are the only places that call them.
-	HttpV2MobileDevicesLive.pipe(
-		Layer.provide(Layer.mergeAll(MobileDevicesService.layer, LiveActivitiesService.layer)),
-	),
-	HttpV2SessionReplaysLive,
-	HttpV2TracesLive,
-	HttpV2LogsLive,
-	HttpV2MetricsLive,
-	HttpV2ServicesLive,
-	HttpV2ServiceMapLive,
-	HttpV2EnvironmentsLive,
-	HttpV2WidgetSummaryLive,
-	HttpV2WidgetCredentialsLive,
-	// The share group's own dependencies are satisfied here rather than by every
-	// harness: most v2 route tests never touch the share endpoints, and threading
-	// inert services through two dozen call sites to register a group they never
-	// call is churn with no assertion behind it.
-	HttpV2SharePublicLive.pipe(
-		Layer.provide(
-			Layer.succeed(DashboardWidgetDataService, {
-				variableOptions: () => Effect.succeed({}),
-				resolve: () => Effect.die("share widget data is not exercised by v2 route harnesses"),
-			}),
-		),
-		Layer.provide(
-			// A directory with nobody in it, which is the self-hosted shape: the
-			// preview card carries no byline and everything else about it still
-			// renders. The share tests assert exactly that.
-			Layer.succeed(OrganizationService, {
-				retrieve: (orgId) =>
-					Effect.succeed({ id: orgId, name: null, slug: null, imageUrl: null, createdAtMs: null }),
-				delete: () => Effect.die("organization deletion is not exercised by v2 route harnesses"),
-			}),
-		),
-	),
+/**
+ * An empty workspace directory: the audit log falls back to rendering ids,
+ * which is the same shape a self-hosted deployment without Clerk sees.
+ */
+export const OrgMembersServiceStubLayer = Layer.succeed(OrgMembersService, {
+	listMembers: () => Effect.succeed([]),
+	resolveMembers: () => Effect.succeed([]),
+})
+
+/** The checklist fans out to nine services; only its own route test builds the real one. */
+export const OnboardingChecklistServiceStubLayer = Layer.succeed(OnboardingChecklistService, {
+	read: () => Effect.die("onboarding checklist is not exercised by this harness"),
+	claim: () => Effect.die("onboarding checklist is not exercised by this harness"),
+})
+
+const die = () => Effect.die(new Error("This service is not available in this test harness"))
+
+/** Inert ChatWorkspaceService — see the chat group's entry in the bundle below. */
+const ChatWorkspaceServiceStubLayer = Layer.succeed(
+	ChatWorkspaceService,
+	ChatWorkspaceService.of({
+		list: die,
+		beginInstall: die,
+		completeInstall: die,
+		beginLink: die,
+		completeLink: die,
+		unlink: die,
+		updateSettings: die,
+		uninstall: die,
+		listDestinations: die,
+		resolve: die,
+	}),
 )
+
+/**
+ * Every v2 group except the onboarding checklist, which its own route test
+ * supplies with a recording service. Everything else builds on the full
+ * bundle below.
+ *
+ * The chat group's service is a parameter: the inert stub is provided here
+ * rather than by every harness, because nothing but the chat route test calls
+ * those endpoints and a group left unimplemented would stop the whole API layer
+ * from building.
+ */
+const v2GroupLayersExceptOnboardingChecklist = (chatWorkspace: Layer.Layer<ChatWorkspaceService>) =>
+	Layer.mergeAll(
+		HttpV2ApiKeysLive,
+		HttpV2ChatIntegrationsLive.pipe(Layer.provide(chatWorkspace)),
+		HttpV2PlanetScaleIntegrationsLive,
+		HttpV2DashboardsLive,
+		HttpV2AlertDeliveriesLive,
+		HttpV2AlertRulesLive,
+		HttpV2AlertDestinationsLive,
+		HttpV2AlertIncidentsLive,
+		HttpV2IngestKeysLive,
+		HttpV2ErrorIssuesLive,
+		HttpV2AttributeMappingsLive,
+		// Real service, no stub: it needs only the Database every harness already
+		// provides. The member directory IS stubbed — the route asks it for display
+		// names, and every harness would otherwise reach for Clerk.
+		HttpV2AuditLogLive.pipe(
+			Layer.provide(Layer.merge(AuditLogService.layerMemory, OrgMembersServiceStubLayer)),
+		),
+		HttpV2ScrapeTargetsLive,
+		HttpV2InstrumentationRecommendationsLive,
+		HttpV2InstrumentationAuditLive,
+		HttpV2TelemetrySignalsLive,
+		HttpV2InvestigationsLive,
+		HttpV2AnomaliesLive,
+		HttpV2OrganizationLive,
+		// Real services, no stubs: they need only the Database every harness already
+		// provides, and their own route tests are the only places that call them.
+		HttpV2MobileDevicesLive.pipe(
+			Layer.provide(Layer.mergeAll(MobileDevicesService.layer, LiveActivitiesService.layer)),
+		),
+		HttpV2AgentFeedbackLive.pipe(Layer.provide(AgentFeedbackService.layer)),
+		HttpV2SessionReplaysLive,
+		HttpV2TracesLive,
+		HttpV2LogsLive,
+		HttpV2MetricsLive,
+		HttpV2ServicesLive,
+		HttpV2ServiceMapLive,
+		HttpV2EnvironmentsLive,
+		HttpV2WidgetSummaryLive,
+		HttpV2WidgetCredentialsLive,
+		// Talks to Slack; only its own service test exercises it.
+		HttpV2SupportChannelLive.pipe(
+			Layer.provide(
+				Layer.succeed(SupportChannelService, {
+					retrieve: () => Effect.succeed({ status: "unavailable" }),
+					ensureForCaller: () =>
+						Effect.die("support channels are not exercised by v2 route harnesses"),
+					sendInvite: () => Effect.die("support channels are not exercised by v2 route harnesses"),
+				}),
+			),
+		),
+		// The share group's own dependencies are satisfied here rather than by every
+		// harness: most v2 route tests never touch the share endpoints, and threading
+		// inert services through two dozen call sites to register a group they never
+		// call is churn with no assertion behind it.
+		HttpV2SharePublicLive.pipe(
+			Layer.provide(
+				Layer.succeed(DashboardWidgetDataService, {
+					variableOptions: () => Effect.succeed({}),
+					resolve: () => Effect.die("share widget data is not exercised by v2 route harnesses"),
+				}),
+			),
+			Layer.provide(
+				// A directory with nobody in it, which is the self-hosted shape: the
+				// preview card carries no byline and everything else about it still
+				// renders. The share tests assert exactly that.
+				Layer.succeed(OrganizationService, {
+					retrieve: (orgId) =>
+						Effect.succeed({
+							id: orgId,
+							name: null,
+							slug: null,
+							imageUrl: null,
+							createdAtMs: null,
+						}),
+					create: () => Effect.die("organization creation is not exercised by v2 route harnesses"),
+					chooseRegion: () =>
+						Effect.die("organization regions are not exercised by v2 route harnesses"),
+					delete: () => Effect.die("organization deletion is not exercised by v2 route harnesses"),
+				}),
+			),
+		),
+	)
+
+export const V2GroupLayersExceptOnboardingChecklist = v2GroupLayersExceptOnboardingChecklist(
+	ChatWorkspaceServiceStubLayer,
+)
+
+/** Every v2 group, with the chat group served by the given service. */
+export const allV2GroupLayersWithChat = (chatWorkspace: Layer.Layer<ChatWorkspaceService>) =>
+	Layer.mergeAll(
+		v2GroupLayersExceptOnboardingChecklist(chatWorkspace),
+		HttpV2OnboardingChecklistLive.pipe(Layer.provide(OnboardingChecklistServiceStubLayer)),
+	).pipe(
+		// Mutation handlers across the groups record audit entries; the real service
+		// needs only the Database every harness already provides.
+		Layer.provide(AuditLogService.layerMemory),
+	)
+
+export const AllV2GroupLayersLive = allV2GroupLayersWithChat(ChatWorkspaceServiceStubLayer)
 
 export const ApiV2RateLimiterAllowAllLayer = Layer.succeed(ApiV2RateLimiter, {
 	check: () => Effect.succeed("allowed" as const),
 })
-
-const die = () => Effect.die(new Error("This service is not available in this test harness"))
 
 /** Synchronous stub for non-Effect-returning service methods (e.g. `asExecutor`). */
 const dieSync = (): never => {
@@ -146,6 +246,8 @@ export const Phase1ResourceStubsLayer = Layer.mergeAll(
 		restartInvestigation: die,
 		updateStatus: die,
 		submitDiagnosis: die,
+		recordProgress: die,
+		failInvestigation: die,
 	}),
 	Layer.succeed(AnomalyDetectionService, {
 		runTick: die,
@@ -166,58 +268,30 @@ export const Phase1ResourceStubsLayer = Layer.mergeAll(
 		listOpenIncidents: die,
 	}),
 	Layer.succeed(ErrorsService, {
-		listIssues: die,
-		countOpenIssuesByService: die,
-		getIssue: die,
 		transitionIssue: die,
 		claimIssue: die,
-		heartbeatIssue: die,
-		releaseIssue: die,
-		assignIssue: die,
-		setSeverity: die,
-		commentOnIssue: die,
 		proposeFix: die,
-		listIssueEvents: die,
+		recordAnomalyLinkEvent: die,
+		runTick: die,
+	}),
+	Layer.succeed(ErrorActorsService, {
 		registerAgent: die,
 		listAgents: die,
 		lookupActor: die,
 		ensureUserActor: die,
-		recordAnomalyLinkEvent: die,
-		listIssueIncidents: die,
-		listOpenIncidents: die,
-		getNotificationPolicy: die,
-		upsertNotificationPolicy: die,
-		getEscalationPolicy: die,
-		upsertEscalationPolicy: die,
-		evaluateEscalationPolicy: die,
-		listIssueEscalations: die,
-		listRecentEscalations: die,
-		runTick: die,
+		actorExists: die,
+		ensureSystemActor: die,
+		ensureAgentActor: die,
+		touchActor: die,
+		collectActorDocs: die,
 	}),
 	Layer.succeed(OrganizationService, {
+		create: die,
+		chooseRegion: die,
 		retrieve: die,
 		delete: die,
 	}),
 )
-
-/** Inert WarehouseQueryService for harnesses that never touch warehouse-backed groups. */
-export const makeWarehouseServiceStub = (
-	overrides: Partial<WarehouseQueryServiceApi> = {},
-): WarehouseQueryServiceApi => ({
-	query: die,
-	crossOrgQuery: die,
-	rawSqlQuery: die,
-	compiledQuery: die,
-	compiledQueryBounded: die,
-	compiledQueryWithCapabilities: die,
-	compiledQueryFirst: die,
-	// Not `die`: warming is best-effort and silent by contract, so a stub that
-	// throws would fail a path that only tried to warm up.
-	warmRoute: () => Effect.void,
-	ingest: die,
-	asExecutor: dieSync,
-	...overrides,
-})
 
 export const WarehouseServiceStubLayer = Layer.succeed(WarehouseQueryService, makeWarehouseServiceStub())
 
@@ -237,6 +311,11 @@ export const TelemetryServiceStubsLayer = Layer.mergeAll(
  */
 export const SetupAuditServiceStubLayer = Layer.succeed(SetupAuditService, {
 	run: die,
+})
+
+/** Inert SignalPresenceService, paired with the audit stub for the same reason. */
+export const SignalPresenceServiceStubLayer = Layer.succeed(SignalPresenceService, {
+	read: die,
 })
 
 /** Inert config-resource services for harnesses that never touch those groups. */
@@ -259,6 +338,7 @@ export const ConfigResourceServiceStubsLayer = Layer.mergeAll(
 		reopen: die,
 	}),
 	SetupAuditServiceStubLayer,
+	SignalPresenceServiceStubLayer,
 	Layer.succeed(ScrapeTargetsService, {
 		list: die,
 		get: die,
@@ -309,22 +389,6 @@ export const PlanetScaleServiceStubsLayer = Layer.mergeAll(
 	// A real edge cache over the in-memory backend: `getOrCompute` must actually
 	// round-trip so the cached wire shape is exercised, and nothing here needs KV.
 	EdgeCacheService.layer.pipe(Layer.provide(MemoryCacheBackendLive)),
-)
-
-/** Inert SlackIntegrationService for harnesses that never touch the slack integration group. */
-export const SlackIntegrationServiceStubLayer = Layer.succeed(
-	SlackIntegrationService,
-	SlackIntegrationService.of({
-		startInstall: die,
-		completeInstall: die,
-		getStatus: die,
-		uninstall: die,
-		listChannels: die,
-		resolveForBot: die,
-		orgIdForTeam: die,
-		revokeByTeamId: die,
-		reconcileWorkspaces: die,
-	}),
 )
 
 const alertDestinationStubs = {

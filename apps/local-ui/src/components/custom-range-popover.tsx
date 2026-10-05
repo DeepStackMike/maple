@@ -16,7 +16,7 @@ import {
 	fromDateTimeLocalInput,
 	parseCustomRange,
 	toDateTimeLocalInput,
-	resolveRange,
+	resolveRangeWindow,
 } from "../lib/time"
 
 /**
@@ -29,7 +29,7 @@ function seedInputs(currentRange: string | undefined): { from: string; to: strin
 	if (custom) {
 		return { from: toDateTimeLocalInput(custom.fromMs), to: toDateTimeLocalInput(custom.toMs) }
 	}
-	const resolved = resolveRange(currentRange)
+	const resolved = resolveRangeWindow(currentRange)
 	return { from: toDateTimeLocalInput(resolved.startMs), to: toDateTimeLocalInput(resolved.endMs) }
 }
 

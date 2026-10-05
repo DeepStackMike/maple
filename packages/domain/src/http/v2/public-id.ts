@@ -28,6 +28,7 @@ export const PublicIdPrefixes = {
 	alertDestination: "dest",
 	alertIncident: "inc",
 	actor: "actor",
+	auditLogEntry: "alog",
 	errorIssue: "iss",
 	errorIncident: "einc",
 	investigation: "inv",
@@ -38,6 +39,8 @@ export const PublicIdPrefixes = {
 	attributeMapping: "amap",
 	sessionReplay: "srep",
 	mobileDevice: "mdev",
+	chatWorkspace: "chatw",
+	agentFeedback: "afb",
 	/** Synthetic identity for logs, which have no native OTel record id. */
 	log: "log",
 	/** Reserved for the future events/webhooks system. */
@@ -180,7 +183,7 @@ export const PublicId = <S extends Schema.Codec<any, string>>(prefix: PublicIdPr
 		})
 			.pipe(
 				Schema.decodeTo(Schema.String, {
-					decode: SchemaGetter.transformOrFail((publicId: string) => {
+					decode: SchemaGetter.transformEffect((publicId: string) => {
 						const internalId = decodePublicId(prefix, publicId)
 						return internalId === null
 							? Effect.fail(

@@ -13,11 +13,12 @@
 // so the two adapters are not duplicates.
 
 import type { TracesMetric, AttributeFilter, MetricType } from "@maple/domain/query-engine"
+import { DEFAULT_ERROR_NAMESPACE_PREFIX, UNEXPECTED_IDENTITY_MARKERS } from "./queries/errors"
 import type { OrgId } from "@maple/domain"
-import { compile, compileUnion, type CompiledQuery } from "@maple-dev/clickhouse-builder"
+import { compile, compileUnion, type CompiledQuery } from "@maple-dev/effect-clickhouse"
 import { rawCompiledQuery } from "./raw-sql"
 import { Array as A, Effect, Match, Result, Schema } from "effect"
-import type { QueryBuilderError } from "@maple-dev/clickhouse-builder"
+import type { QueryBuilderError } from "@maple-dev/effect-clickhouse"
 import {
 	attributeIndexMode,
 	baselineWarehouseCapabilities,
@@ -124,6 +125,9 @@ export function compilePipeQuery(
 		return params[key] != null ? Number(params[key]) : def
 	}
 	const bool = (key: string) => params[key] === true || params[key] === "1" || params[key] === "true"
+	// `has_error` feeds a tri-state filter where `false` means "exclude errors";
+	// the pipe flag only ever asks for errors, so absent or falsy means no filter.
+	const hasError = errorsOnlyParam(str("has_error"))
 
 	/** A single-valued param as the one-element list the query filters take. */
 	const strList = (key: string): string[] | undefined => {
@@ -211,7 +215,7 @@ export function compilePipeQuery(
 							cursor: str("cursor"),
 							serviceName: str("service"),
 							spanName: str("span_name"),
-							errorsOnly: bool("has_error"),
+							errorsOnly: hasError,
 							minDurationMs: int("min_duration_ms"),
 							maxDurationMs: int("max_duration_ms"),
 							environments: strList("deployment_env"),
@@ -253,9 +257,11 @@ export function compilePipeQuery(
 				eraseType(
 					compile(
 						tracesDurationStatsQuery({
+							// The pipe surface has no missing-table retry, so it keeps the raw read.
+							rawOnly: true,
 							serviceName: str("service"),
 							spanName: str("span_name"),
-							hasError: bool("has_error"),
+							hasError,
 							minDurationMs: int("min_duration_ms"),
 							maxDurationMs: int("max_duration_ms"),
 							httpMethod: str("http_method"),
@@ -277,9 +283,11 @@ export function compilePipeQuery(
 				eraseType(
 					compileUnion(
 						tracesFacetsQuery({
+							// The pipe surface has no missing-table retry, so it keeps the raw read.
+							rawOnly: true,
 							serviceName: str("service"),
 							spanName: str("span_name"),
-							hasError: bool("has_error"),
+							hasError,
 							minDurationMs: int("min_duration_ms"),
 							maxDurationMs: int("max_duration_ms"),
 							httpMethod: str("http_method"),
@@ -475,6 +483,14 @@ export function compilePipeQuery(
 							services: str("services")?.split(",").filter(Boolean),
 							deploymentEnvs: str("deployment_envs")?.split(",").filter(Boolean),
 							fingerprintHashes: str("fingerprint_hashes")?.split(",").filter(Boolean),
+							unexpectedIdentity:
+								str("identity") === "unexpected"
+									? {
+											namespacePrefix:
+												str("namespace_prefix") ?? DEFAULT_ERROR_NAMESPACE_PREFIX,
+											markerLabels: UNEXPECTED_IDENTITY_MARKERS,
+										}
+									: undefined,
 							limit: int("limit", 50),
 						}),
 						{ orgId, startTime, endTime },
@@ -752,7 +768,7 @@ export function compilePipeQuery(
 								str("span_name_match_mode") === "contains"
 									? { spanName: "contains" }
 									: undefined,
-							errorsOnly: bool("has_error"),
+							errorsOnly: hasError,
 							minDurationMs: int("min_duration_ms"),
 							maxDurationMs: int("max_duration_ms"),
 							attributeFilters,

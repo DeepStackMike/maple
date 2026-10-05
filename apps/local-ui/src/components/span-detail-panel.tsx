@@ -22,7 +22,8 @@ import type { SpanNode } from "@maple/ui/lib/types"
 import { useLocalSpanDetail } from "../hooks/use-local-span-detail"
 import { useLocalSpanLogs } from "../hooks/use-local-span-logs"
 import { ErrorSection } from "@maple/ui/components/error-section"
-import type { LocalLog } from "../lib/log-shape"
+import { logKey, type LocalLog } from "../lib/log-shape"
+import { formatLocalDateTime, formatLocalTimestamp, formatUtcTitle } from "../lib/time"
 import { LogDetailSheet } from "./log-detail-sheet"
 import { StackTrace } from "./stack-trace"
 import { CodeBlock } from "./code-block"
@@ -30,6 +31,9 @@ import { collectCodeAttributes } from "../lib/code-block"
 
 /** The panel's two tabs, named so a caller can open it on one. */
 export type SpanPanelTab = "details" | "logs"
+
+/** Matches the query limit in `useLocalSpanLogs`; a full page means "at least". */
+const LOG_LIMIT = 100
 
 interface SpanDetailPanelProps {
 	span: SpanNode
@@ -91,10 +95,10 @@ export function SpanDetailPanel({ span, onClose, tab, onTabChange }: SpanDetailP
 	const statusStyle = getSpanStatusBadgeClass(span.statusCode)
 	const kindLabel = getSpanKindLabel(span.spanKind)
 
-	const logs = useLocalSpanLogs(span.traceId, span.spanId)
+	const logs = useLocalSpanLogs(span.traceId, span.spanId, span.startTime, span.durationMs)
 	const logCount = logs.data?.length ?? null
 
-	// Full attribute maps load lazily — the hierarchy query only returns the
+	// Full attribute maps load lazily: the hierarchy query only returns the
 	// trimmed keys the tree renders. Missing (placeholder) spans have no row to
 	// look up, so we fall back to whatever the tree carried.
 	const detail = useLocalSpanDetail(
@@ -125,7 +129,7 @@ export function SpanDetailPanel({ span, onClose, tab, onTabChange }: SpanDetailP
 	])
 
 	return (
-		<aside className="flex h-full w-[28rem] shrink-0 flex-col overflow-hidden border-l bg-background">
+		<aside className="flex h-full w-full shrink-0 flex-col overflow-hidden border-l bg-background sm:w-[28rem]">
 			{/* Header */}
 			<div className="flex shrink-0 items-center justify-between border-b px-3 py-2">
 				<div className="mr-2 min-w-0 flex-1 overflow-hidden">
@@ -150,69 +154,75 @@ export function SpanDetailPanel({ span, onClose, tab, onTabChange }: SpanDetailP
 						<span className="text-[10px] text-muted-foreground">{kindLabel}</span>
 					</div>
 				</div>
-				<Button variant="ghost" size="icon" onClick={onClose} className="shrink-0">
+				<Button
+					variant="ghost"
+					size="icon"
+					aria-label="Close span details"
+					onClick={onClose}
+					className="shrink-0"
+				>
 					<XmarkIcon size={16} />
 				</Button>
 			</div>
 
-			{/* Summary stats */}
-			<div className="flex shrink-0 items-center gap-4 border-b px-3 py-1.5 text-xs">
-				<div className="flex items-center gap-1.5">
-					<ClockIcon size={12} className="text-muted-foreground" />
-					<span className="font-mono">
-						<CopyableValue value={formatDuration(span.durationMs)}>
-							{formatDuration(span.durationMs)}
-						</CopyableValue>
-					</span>
-				</div>
-				{cacheInfo?.result ? (
-					<Badge
-						variant="outline"
-						className={cn("text-[10px] font-medium", cacheResultStyles[cacheInfo.result])}
-					>
-						{cacheInfo.result === "hit" ? "HIT" : "MISS"}
-					</Badge>
-				) : (
+			{/* Everything under the title scrolls as one, so a tall error card never squeezes the
+			    tab body into a scroll box of its own. */}
+			<ScrollArea className="min-h-0 flex-1">
+				{/* Summary stats */}
+				<div className="flex shrink-0 items-center gap-4 border-b px-3 py-1.5 text-xs">
+					<div className="flex items-center gap-1.5">
+						<ClockIcon size={12} className="text-muted-foreground" />
+						<span className="font-mono">
+							<CopyableValue value={formatDuration(span.durationMs)}>
+								{formatDuration(span.durationMs)}
+							</CopyableValue>
+						</span>
+					</div>
 					<Badge variant="outline" className={cn("text-[10px] font-medium", statusStyle)}>
 						{span.statusCode || "Unset"}
 					</Badge>
+					{cacheInfo?.result && (
+						<Badge
+							variant="outline"
+							className={cn("text-[10px] font-medium", cacheResultStyles[cacheInfo.result])}
+						>
+							{cacheInfo.result === "hit" ? "HIT" : "MISS"}
+						</Badge>
+					)}
+				</div>
+
+				{/* Error section */}
+				{span.statusCode === "Error" && span.statusMessage && (
+					<ErrorSection
+						message={span.statusMessage}
+						prompt={{
+							serviceName: span.serviceName,
+							operation: span.spanName,
+							attributes: detail.data?.spanAttributes ?? span.spanAttributes,
+						}}
+					/>
 				)}
-			</div>
 
-			{/* Error section */}
-			{span.statusCode === "Error" && span.statusMessage && (
-				<ErrorSection
-					message={span.statusMessage}
-					prompt={{
-						serviceName: span.serviceName,
-						operation: span.spanName,
-						attributes: detail.data?.spanAttributes ?? span.spanAttributes,
-					}}
-				/>
-			)}
+				{/* Tabs */}
+				<Tabs value={tab} onValueChange={(next) => onTabChange(next as SpanPanelTab)}>
+					<TabsList
+						variant="underline"
+						className="sticky top-0 z-10 w-full justify-start bg-background px-4 *:data-[slot=tabs-tab]:grow-0"
+					>
+						<TabsTrigger value="details">
+							<CircleInfoIcon size={14} /> Details
+						</TabsTrigger>
+						<TabsTrigger value="logs">
+							<CodeIcon size={14} /> Logs
+							{logCount !== null && logCount > 0 && (
+								<Badge variant="secondary" className="ml-1 px-1.5 py-0 text-[10px]">
+									{logCount >= LOG_LIMIT ? `${LOG_LIMIT}+` : logCount}
+								</Badge>
+							)}
+						</TabsTrigger>
+					</TabsList>
 
-			{/* Tabs */}
-			<Tabs
-				value={tab}
-				onValueChange={(next) => onTabChange(next as SpanPanelTab)}
-				className="flex min-h-0 flex-1 flex-col"
-			>
-				<TabsList variant="underline" className="shrink-0 px-4">
-					<TabsTrigger value="details">
-						<CircleInfoIcon size={14} /> Details
-					</TabsTrigger>
-					<TabsTrigger value="logs">
-						<CodeIcon size={14} /> Logs
-						{logCount !== null && logCount > 0 && (
-							<Badge variant="secondary" className="ml-1 px-1.5 py-0 text-[10px]">
-								{logCount}
-							</Badge>
-						)}
-					</TabsTrigger>
-				</TabsList>
-
-				<TabsContent value="details" className="mt-0 min-h-0 flex-1">
-					<ScrollArea className="h-full">
+					<TabsContent value="details" className="mt-0">
 						<div className="space-y-3 p-3">
 							{/* Above Timing: on an errored span this is the whole reason the
 							    panel is open, and it is the only block whose height depends on
@@ -233,17 +243,9 @@ export function SpanDetailPanel({ span, onClose, tab, onTabChange }: SpanDetailP
 								<div className="space-y-1 rounded-md border p-2 text-xs">
 									<div className="flex justify-between">
 										<span className="text-muted-foreground">Start Time</span>
-										<span className="font-mono">
+										<span className="font-mono" title={formatUtcTitle(span.startTime)}>
 											<CopyableValue value={span.startTime}>
-												{span.startTime}
-											</CopyableValue>
-										</span>
-									</div>
-									<div className="flex justify-between">
-										<span className="text-muted-foreground">Duration</span>
-										<span className="font-mono">
-											<CopyableValue value={formatDuration(span.durationMs)}>
-												{formatDuration(span.durationMs)}
+												{formatLocalDateTime(span.startTime)}
 											</CopyableValue>
 										</span>
 									</div>
@@ -311,6 +313,12 @@ export function SpanDetailPanel({ span, onClose, tab, onTabChange }: SpanDetailP
 								</div>
 							) : (
 								<>
+									{detail.isError && (
+										<p className="rounded-md border border-dashed px-2 py-1.5 text-[11px] text-muted-foreground">
+											Couldn't load all attributes. Showing the ones loaded with the
+											trace.
+										</p>
+									)}
 									<AttributesSection
 										attributes={tableAttributes}
 										title="Span Attributes"
@@ -325,15 +333,13 @@ export function SpanDetailPanel({ span, onClose, tab, onTabChange }: SpanDetailP
 								</>
 							)}
 						</div>
-					</ScrollArea>
-				</TabsContent>
+					</TabsContent>
 
-				<TabsContent value="logs" className="mt-0 min-h-0 flex-1">
-					<ScrollArea className="h-full">
+					<TabsContent value="logs" className="mt-0">
 						<SpanLogs logs={logs.data ?? []} isPending={logs.isPending} isError={logs.isError} />
-					</ScrollArea>
-				</TabsContent>
-			</Tabs>
+					</TabsContent>
+				</Tabs>
+			</ScrollArea>
 		</aside>
 	)
 }
@@ -376,18 +382,20 @@ function SpanLogs({
 	return (
 		<>
 			<div className="divide-y">
-				{logs.map((log, i) => (
+				{logs.map((log) => (
 					<button
-						key={`${log.timestamp}-${i}`}
+						key={logKey(log)}
 						type="button"
-						className="flex w-full cursor-pointer flex-col gap-1 p-2 text-left last:border-b-0 hover:bg-muted/30"
+						className="flex w-full cursor-pointer flex-col gap-1 p-2 text-left hover:bg-muted/30"
 						onClick={() => {
 							setSelectedLog(log)
 							setSheetOpen(true)
 						}}
 					>
 						<div className="flex items-center gap-2 text-[10px] text-muted-foreground">
-							<span className="font-mono">{log.timestamp}</span>
+							<span className="font-mono" title={formatUtcTitle(log.timestamp)}>
+								{formatLocalTimestamp(log.timestamp)}
+							</span>
 							<SeverityBadge severity={log.severityText} className="shrink-0" />
 						</div>
 						<p className="line-clamp-3 whitespace-pre-wrap break-all font-mono text-xs">

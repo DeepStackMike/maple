@@ -7,7 +7,7 @@ import { Button } from "@maple/ui/components/ui/button"
 import { Skeleton } from "@maple/ui/components/ui/skeleton"
 import { Result, useAtomValue } from "@/lib/effect-atom"
 import { billingInvoicesAtom } from "@/lib/services/atoms/billing-atoms"
-import { formatCurrency } from "@/lib/billing/currency"
+import { formatCurrency } from "@maple/domain/format"
 
 // Stripe invoice statuses → badge treatment. Unknown statuses fall through to a
 // plain secondary badge with the raw status text, never a crash.
@@ -112,7 +112,11 @@ export function InvoicesSection({ onManageBilling }: { onManageBilling: () => vo
 	}
 
 	if (invoices.length === 0) {
-		return <p className="text-muted-foreground text-sm">No invoices yet.</p>
+		return (
+			<p className="text-muted-foreground text-sm">
+				Your first invoice appears after your first billing cycle closes.
+			</p>
+		)
 	}
 
 	return (

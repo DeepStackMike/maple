@@ -17,7 +17,6 @@ import { ServiceUsageCards } from "@/components/dashboard/service-usage-cards"
 import { ServiceHealthOverview, ServiceHealthList } from "@/components/dashboard/service-health-section"
 import { MetricsGrid } from "@/components/dashboard/metrics-grid"
 import { SetupChecklist } from "@/components/dashboard/setup-checklist"
-import { FirstActionHint } from "@/components/dashboard/first-action-hint"
 import type { ChartLegendMode, ChartTooltipMode } from "@maple/ui/components/charts/_shared/chart-types"
 import {
 	getCustomChartTimeSeriesResultAtom,
@@ -29,6 +28,7 @@ import { mergeExactThroughput, type CustomChartTimeSeriesResponse } from "@/api/
 import type { ServiceDetailTimeSeriesPoint, ServicesFacetsResponse } from "@/api/warehouse/services"
 import { disabledResultAtom } from "@/lib/services/atoms/disabled-result-atom"
 import { TimeRangeSearchFields, applyTimeRangeSearch } from "@/components/time-range-picker/search"
+import { sessionTimeRangeSearchMiddleware } from "@/components/time-range-picker/session-time-range"
 import { isClerkAuthEnabled } from "@/lib/services/common/auth-mode"
 
 import { formatWarehouseDateTime } from "@maple/query-engine"
@@ -42,6 +42,7 @@ const dashboardSearchSchema = Schema.Struct({
 export const Route = createFileRoute("/")({
 	component: DashboardPage,
 	validateSearch: Schema.toStandardSchemaV1(dashboardSearchSchema),
+	search: { middlewares: [sessionTimeRangeSearchMiddleware()] },
 })
 
 interface OverviewChartConfig {
@@ -440,10 +441,7 @@ function DashboardContent({
 			<DashboardLayout.Body>
 				<DashboardLayout.Content>
 					<DashboardLayout.Sticky>
-						<DashboardLayout.Header
-							title="Dashboard"
-							description="Observability overview for your services."
-						>
+						<DashboardLayout.Header title="Overview">
 							<div className="flex items-center gap-2">
 								<Select
 									items={environmentItems}
@@ -476,7 +474,6 @@ function DashboardContent({
 					<DashboardLayout.Scroll>
 						{isClerkAuthEnabled && (
 							<>
-								<FirstActionHint />
 								<SetupChecklist />
 							</>
 						)}

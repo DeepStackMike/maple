@@ -269,21 +269,28 @@ describe("MapleFlush.make (client)", () => {
 
 	it("stamps session.id from the self-managed session when no sink is published", async () => {
 		const { calls, restore: rf } = setupFetch()
-		// Standalone: no @maple-dev/browser sink, just a browser-like window with
+		// Standalone: no @maple-dev/browser sink, just a browser DOM with
 		// sessionStorage. The bundled @maple/browser-session core must mint a
 		// session and stamp its id on every span.
 		const store = new Map<string, string>()
-		vi.stubGlobal("window", {
-			sessionStorage: {
-				getItem: (k: string) => store.get(k) ?? null,
-				setItem: (k: string, v: string) => void store.set(k, v),
-			},
-		})
+		vi.stubGlobal(
+			"window",
+			Object.assign(new EventTarget(), {
+				sessionStorage: {
+					getItem: (k: string) => store.get(k) ?? null,
+					setItem: (k: string, v: string) => void store.set(k, v),
+				},
+			}),
+		)
+		vi.stubGlobal(
+			"document",
+			Object.assign(new EventTarget(), { cookie: "", visibilityState: "visible" }),
+		)
 		restore = () => {
 			rf()
 			vi.unstubAllGlobals()
 		}
-		const telemetry = make(baseConfig)
+		const telemetry = make({ ...baseConfig, replay: { enabled: false } })
 
 		await Effect.runPromise(
 			Effect.succeed(undefined).pipe(Effect.withSpan("op-a"), Effect.provide(telemetry.layer)),
@@ -309,6 +316,7 @@ describe("MapleFlush.make (client)", () => {
 			const sessionAttr = span.attributes.find((a) => a.key === "session.id")
 			expect(sessionAttr?.value.stringValue).toBe(stored.id)
 		}
+		await telemetry.dispose()
 	})
 
 	it("flushes on pagehide and dispose() removes the unload listeners", async () => {
@@ -378,12 +386,12 @@ describe("MapleFlush.make (client)", () => {
 		expect(calls.filter((call) => call.url.endsWith("/v1/metrics"))).toHaveLength(2)
 	})
 
-	it("runs in no-op mode when no ingest key is configured", async () => {
-		const consoleInfoSpy = vi.spyOn(console, "info").mockImplementation(() => {})
+	it("still exports without Authorization when no ingest key is set, for a proxy to add", async () => {
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
 		const { calls, restore: rf } = setupFetch()
 		restore = () => {
 			rf()
-			consoleInfoSpy.mockRestore()
+			warnSpy.mockRestore()
 		}
 		const telemetry = make({
 			serviceName: "unit-test",
@@ -397,9 +405,11 @@ describe("MapleFlush.make (client)", () => {
 		)
 		await telemetry.flush()
 
-		expect(calls.length).toBe(0)
-		expect(consoleInfoSpy).toHaveBeenCalledTimes(1)
-		expect(consoleInfoSpy.mock.calls[0][0]).toContain("no ingest key configured")
+		const traces = calls.find((call) => call.url.endsWith("/v1/traces"))
+		expect(traces).toBeDefined()
+		expect(traces!.headers).not.toHaveProperty("authorization")
+		// A custom endpoint is a proxy or collector: keyless is legitimate there.
+		expect(warnSpy).not.toHaveBeenCalled()
 	})
 
 	it("flushes on visibilitychange only when the document is hidden", async () => {

@@ -1,10 +1,11 @@
-import { memo, useMemo } from "react"
-import { Link, useRouterState } from "@tanstack/react-router"
+import { memo, useMemo, useState } from "react"
+import { Link, useNavigate, useRouterState } from "@tanstack/react-router"
 import { useUser, useClerk } from "@clerk/clerk-react"
 import {
 	CircleQuestionIcon,
 	DiscordIcon,
 	EnvelopeIcon,
+	SlackIcon,
 	GearIcon,
 	GridSquareCirclePlusIcon,
 	KeyboardIcon,
@@ -25,6 +26,7 @@ import {
 } from "@/components/dashboard/nav-items"
 import { openCommandPalette, showKeyboardShortcuts } from "@/components/command-palette/global-shortcuts"
 import { OrgSwitcher } from "@/components/dashboard/org-switcher"
+import { SupportChannelDialog } from "@/components/support/support-channel-dialog"
 import { UserAvatar, userInitials } from "@/components/dashboard/user-avatar"
 import { ThemeToggle } from "@/components/dashboard/theme-toggle"
 import {
@@ -80,6 +82,14 @@ const GROUP_LABEL = "h-6 text-muted-foreground"
 /** Beyond this the Pinned list stops being a shortcut and becomes a second list. */
 const MAX_PINNED = 5
 
+/**
+ * The collapsed rail forces every menu button to `size-8 p-2`, which leaves a
+ * 16px content box — narrower than the 24px avatar, so `overflow-hidden` sliced
+ * it into a tall sliver. Trimming the padding to 4px fits the avatar whole and
+ * centers it once the name is hidden.
+ */
+const COLLAPSED_AVATAR_ROW = "group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:p-1!"
+
 function UserMenu() {
 	const { user } = useUser()
 	const { signOut } = useClerk()
@@ -94,13 +104,13 @@ function UserMenu() {
 			<DropdownMenuTrigger
 				render={
 					<SidebarMenuButton
-						className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
+						className={`${COLLAPSED_AVATAR_ROW} data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground`}
 						tooltip={name}
 					/>
 				}
 			>
 				<UserAvatar imageUrl={imageUrl} initials={initials} name={name} />
-				<span className="truncate font-medium">{name}</span>
+				<span className="truncate font-medium group-data-[collapsible=icon]:hidden">{name}</span>
 			</DropdownMenuTrigger>
 			<DropdownMenuContent align="start" className="min-w-56" side="top" sideOffset={4}>
 				<DropdownMenuGroup>
@@ -164,13 +174,13 @@ function GuestMenu() {
 			<DropdownMenuTrigger
 				render={
 					<SidebarMenuButton
-						className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
+						className={`${COLLAPSED_AVATAR_ROW} data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground`}
 						tooltip="Root"
 					/>
 				}
 			>
 				<UserAvatar initials="RT" name="Root" />
-				<span className="truncate font-medium">Root</span>
+				<span className="truncate font-medium group-data-[collapsible=icon]:hidden">Root</span>
 			</DropdownMenuTrigger>
 			<DropdownMenuContent align="start" className="min-w-56" side="top" sideOffset={4}>
 				<DropdownMenuGroup>
@@ -293,6 +303,10 @@ function NavRow({
 	// The pruning is about how many rows you scroll past when it's open.
 	const preview = useMemo(() => {
 		if (isOpen || !item.subItems?.every((sub) => sub.icon)) return undefined
+		// Only brand marks earn the slot. Explore's children are generic signal
+		// glyphs — at 12px, in muted ink, five of them were a grey smudge that
+		// said nothing "Explore" didn't, and the real rows appear once it opens.
+		if (!item.subItems.some((sub) => sub.iconColor)) return undefined
 		const seen = new Set<NavSubItem["icon"]>()
 		const unique: NavSubItem[] = []
 		for (const sub of item.subItems) {
@@ -595,48 +609,75 @@ function SettingsRow({ currentPath }: { currentPath: string }) {
 
 /** Support stops scrolling away by leaving SidebarContent entirely. */
 function SupportMenu() {
+	const [slackOpen, setSlackOpen] = useState(false)
+	// `?support=slack_channel` opens the dialog on any page; the onboarding checklist links to it.
+	const slackDeepLinked = useRouterState({
+		select: (s) => new URLSearchParams(s.location.searchStr).get("support") === "slack_channel",
+	})
+	const navigate = useNavigate()
+	const onSlackOpenChange = (open: boolean) => {
+		setSlackOpen(open)
+		if (!open && slackDeepLinked) {
+			const params = new URLSearchParams(window.location.search)
+			params.delete("support")
+			const query = params.toString()
+			void navigate({ href: `${window.location.pathname}${query ? `?${query}` : ""}`, replace: true })
+		}
+	}
 	return (
-		<DropdownMenu>
-			<DropdownMenuTrigger
-				render={
-					<SidebarMenuButton
-						className="size-8 w-8 shrink-0 justify-center p-0 group-data-[collapsible=icon]:w-full"
-						tooltip="Support"
-					/>
-				}
-			>
-				<CircleQuestionIcon size={16} />
-				<span className="sr-only">Support</span>
-			</DropdownMenuTrigger>
-			<DropdownMenuContent align="end" side="top" sideOffset={4}>
-				<DropdownMenuGroup>
-					<DropdownMenuItem
-						render={
-							<a
-								aria-label="Community Discord"
-								href="https://discord.gg/BnXjKuwJqP"
-								rel="noopener noreferrer"
-								target="_blank"
-							/>
-						}
-					>
-						<DiscordIcon size={16} />
-						Community Discord
-					</DropdownMenuItem>
-					<DropdownMenuItem
-						render={<a aria-label="Email Support" href="mailto:support@maple.dev" />}
-					>
-						<EnvelopeIcon size={16} />
-						Email Support
-					</DropdownMenuItem>
-					<DropdownMenuItem onClick={showKeyboardShortcuts}>
-						<KeyboardIcon size={16} />
-						Keyboard shortcuts
-						<DropdownMenuShortcut>?</DropdownMenuShortcut>
-					</DropdownMenuItem>
-				</DropdownMenuGroup>
-			</DropdownMenuContent>
-		</DropdownMenu>
+		<>
+			<DropdownMenu>
+				<DropdownMenuTrigger
+					render={
+						<SidebarMenuButton
+							className="size-8 w-8 shrink-0 justify-center p-0 group-data-[collapsible=icon]:w-full"
+							tooltip="Support"
+						/>
+					}
+				>
+					<CircleQuestionIcon size={16} />
+					<span className="sr-only">Support</span>
+				</DropdownMenuTrigger>
+				<DropdownMenuContent align="end" side="top" sideOffset={4}>
+					<DropdownMenuGroup>
+						{/* The channel is created in Maple's Slack for a Clerk org; self-hosted has neither. */}
+						{isClerkAuthEnabled ? (
+							<DropdownMenuItem onClick={() => setSlackOpen(true)}>
+								<SlackIcon size={16} />
+								Shared Slack channel
+							</DropdownMenuItem>
+						) : null}
+						<DropdownMenuItem
+							render={
+								<a
+									aria-label="Community Discord"
+									href="https://discord.gg/BnXjKuwJqP"
+									rel="noopener noreferrer"
+									target="_blank"
+								/>
+							}
+						>
+							<DiscordIcon size={16} />
+							Community Discord
+						</DropdownMenuItem>
+						<DropdownMenuItem
+							render={<a aria-label="Email Support" href="mailto:support@maple.dev" />}
+						>
+							<EnvelopeIcon size={16} />
+							Email Support
+						</DropdownMenuItem>
+						<DropdownMenuItem onClick={showKeyboardShortcuts}>
+							<KeyboardIcon size={16} />
+							Keyboard shortcuts
+							<DropdownMenuShortcut>?</DropdownMenuShortcut>
+						</DropdownMenuItem>
+					</DropdownMenuGroup>
+				</DropdownMenuContent>
+			</DropdownMenu>
+			{isClerkAuthEnabled ? (
+				<SupportChannelDialog open={slackOpen || slackDeepLinked} onOpenChange={onSlackOpenChange} />
+			) : null}
+		</>
 	)
 }
 

@@ -14,10 +14,11 @@ import {
 	PythonIcon,
 } from "@/components/quick-start/framework-icons"
 import { sdkSnippets, type FrameworkId } from "@/components/quick-start/sdk-snippets"
+import { ONBOARD_SKILL_COMMAND, onboardSkillPrompt } from "@/components/ingest/onboard-skill"
 import { ingestUrl } from "@/lib/services/common/ingest-url"
 import { isClerkAuthEnabled } from "@/lib/services/common/auth-mode"
 import { useQuickStart } from "@/hooks/use-quick-start"
-import type { RoleOption } from "@/atoms/quick-start-atoms"
+import type { OnboardingRole } from "@/lib/onboarding-role"
 import { CopyableField } from "@maple/ui/components/ui/copyable-field"
 
 const frameworkIconMap: Record<FrameworkId, React.ComponentType<{ size?: number; className?: string }>> = {
@@ -29,12 +30,14 @@ const frameworkIconMap: Record<FrameworkId, React.ComponentType<{ size?: number;
 	otel: OpenTelemetryIcon,
 } satisfies Record<FrameworkId, React.ComponentType<{ size?: number; className?: string }>>
 
-const ROLE_DEFAULT_FRAMEWORK: Record<RoleOption, FrameworkId> = {
-	engineer: "nodejs",
+const ROLE_DEFAULT_FRAMEWORK = {
+	backend: "nodejs",
+	frontend: "nextjs",
 	devops_sre: "otel",
 	eng_leader: "nodejs",
 	founder: "nextjs",
-} satisfies Record<RoleOption, FrameworkId>
+	other: "nodejs",
+} satisfies Record<OnboardingRole, FrameworkId>
 
 interface GuidedSetupProps {
 	/** Public ingest key, interpolated into the instrument snippet. */
@@ -208,13 +211,14 @@ export function ConnectInstructions({
 					className={cn("overflow-auto mt-0 space-y-2", contentPadding)}
 				>
 					<p className="text-xs text-muted-foreground">
-						Run this prompt in Claude Code (or Codex / Cursor with the skill installed). The{" "}
+						Install the Maple skills, then run the prompt in Claude Code, Codex, or Cursor. The{" "}
 						<code className="rounded bg-muted px-1">maple-onboard</code> skill walks every service
 						in the repo, installs OpenTelemetry, wires traces / logs / metrics, and verifies the
 						bootstrap end-to-end.
 					</p>
+					<CodeBlock code={ONBOARD_SKILL_COMMAND} language="shell" />
 					<CodeBlock
-						code={`Install Maple in this repo using the maple-onboard skill.\nMy ingest key is ${apiKey || "<your-api-key>"}.`}
+						code={onboardSkillPrompt(ingestUrl, apiKey)}
 						language="shell"
 						className={REPLAY_BLOCK_CLASS}
 					/>

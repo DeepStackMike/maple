@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest"
-import { compileUnsafe } from "@maple-dev/clickhouse-builder"
+import { compileUnsafe } from "@maple-dev/effect-clickhouse"
 import { DEPLOYMENT_ENV_SQL } from "@maple/domain/tinybird/semconv-renames"
 import { serviceCatalogVersionsQuery } from "./service-catalog-versions"
 

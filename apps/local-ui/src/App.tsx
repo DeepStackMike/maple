@@ -26,14 +26,16 @@ import { ServiceMapView } from "./views/service-map-view"
 import { SessionsListView } from "./views/sessions-list-view"
 import { SessionDetailView } from "./views/session-detail-view"
 import { AnalyticsView } from "./views/analytics-view"
-import { navigate, useLocation } from "./lib/router"
+import { canGoBackInApp, decodeSegment, goBack, hrefFor, useLocation } from "./lib/router"
+import { AppErrorBoundary } from "./components/app-error-boundary"
 import { ConnectButton } from "./components/connect-button"
 import { EnvironmentSelect } from "./components/environment-select"
 import { NamespaceSelect } from "./components/namespace-select"
 import { LocalLockup } from "./components/local-lockup"
 import { IngestStatus } from "./components/ingest-status"
-import { DisconnectedState } from "./components/view-states"
+import { DisconnectedState, RejectedState } from "./components/view-states"
 import { useLocalConnection } from "./hooks/use-local-connection"
+import { rangeFromQuery } from "./hooks/use-range"
 import { highlightJson } from "./lib/highlight"
 
 type Route =
@@ -51,22 +53,23 @@ type Route =
 	| { name: "session-detail"; sessionId: string }
 	| { name: "analytics" }
 
-function parseRoute(path: string): Route {
-	// Ahead of the `/services` prefix test below, which this path does not match
-	// today and should not start matching if either name is ever shortened.
-	if (path.startsWith("/service-map")) return { name: "service-map" }
-	const traceDetail = path.match(/^\/traces\/(.+)$/)
-	if (traceDetail) return { name: "trace-detail", traceId: decodeURIComponent(traceDetail[1]) }
-	const metricDetail = path.match(/^\/metrics\/(.+)$/)
-	if (metricDetail) return { name: "metric-detail", metricName: decodeURIComponent(metricDetail[1]) }
-	const serviceDetail = path.match(/^\/services\/(.+)$/)
-	if (serviceDetail) return { name: "service-detail", serviceName: decodeURIComponent(serviceDetail[1]) }
-	const sessionDetail = path.match(/^\/sessions\/(.+)$/)
-	if (sessionDetail) return { name: "session-detail", sessionId: decodeURIComponent(sessionDetail[1]) }
-	if (path.startsWith("/traces")) return { name: "traces" }
+export function parseRoute(path: string): Route {
+	const detail = (prefix: string) => {
+		const match = path.match(new RegExp(`^/${prefix}/(.+)$`))
+		return match ? decodeSegment(match[1]) : null
+	}
+	const traceId = detail("traces")
+	if (traceId !== null) return { name: "trace-detail", traceId }
+	const metricName = detail("metrics")
+	if (metricName !== null) return { name: "metric-detail", metricName }
+	const serviceName = detail("services")
+	if (serviceName !== null) return { name: "service-detail", serviceName }
+	const sessionId = detail("sessions")
+	if (sessionId !== null) return { name: "session-detail", sessionId }
 	if (path.startsWith("/errors")) return { name: "errors" }
 	if (path.startsWith("/logs")) return { name: "logs" }
 	if (path.startsWith("/metrics")) return { name: "metrics" }
+	if (path.startsWith("/service-map")) return { name: "service-map" }
 	if (path.startsWith("/services")) return { name: "services" }
 	if (path.startsWith("/sessions")) return { name: "sessions" }
 	if (path.startsWith("/analytics")) return { name: "analytics" }
@@ -98,131 +101,71 @@ function activeTab(route: Route): Tab {
 	return "home"
 }
 
+const TABS: ReadonlyArray<{ tab: Tab; label: string; icon: ReactNode }> = [
+	{ tab: "home", label: "Home", icon: <GaugeIcon size={14} /> },
+	{ tab: "traces", label: "Traces", icon: <NetworkNodesIcon size={14} /> },
+	{ tab: "logs", label: "Logs", icon: <CodeIcon size={14} /> },
+	{ tab: "metrics", label: "Metrics", icon: <PulseIcon size={14} /> },
+	{ tab: "services", label: "Services", icon: <DatabaseIcon size={14} /> },
+	{ tab: "service-map", label: "Service map", icon: <SitemapIcon size={14} /> },
+	{ tab: "errors", label: "Errors", icon: <CircleWarningIcon size={14} /> },
+	{ tab: "sessions", label: "Sessions", icon: <EyeIcon size={14} /> },
+	{ tab: "analytics", label: "Analytics", icon: <SquareActivityChartIcon size={14} /> },
+]
+
+/** Detail-page params that must not leak back into a list's filters. */
+const DETAIL_ONLY_PARAMS = ["spanId", "view"]
+
 export function App() {
 	const { path, query } = useLocation()
 	const route = parseRoute(path)
 	const tab = activeTab(route)
 
-	// When the local binary is unreachable, swap the views for a "how to connect"
-	// screen instead of leaving an infinite skeleton. `connecting`/`connected`
-	// fall through to the normal views, so the happy path is unchanged.
+	// Only a server that is really gone (or refusing this page) swaps the views
+	// out; connecting, busy and connected all keep them.
 	const connection = useLocalConnection()
 
-	// Carry the current filter context (full query) onto detail pages and back,
-	// so opening an item and returning preserves the list's filters.
-	const carry = () => new URLSearchParams(query)
-
-	// Where a trace was opened from. A trace reached from a session is the one
-	// case where "back" does not mean the list: the reader was watching a
-	// recording, and sending them to /traces loses the session, the playhead and
-	// the row they clicked. `from=session:<id>` rides along on the link and the
-	// trace page's back button honours it; `jump` rides with it so returning
-	// lands on the same event rather than at the top of the transcript.
-	const traceOrigin = query.get("from")
-	const originSessionId = traceOrigin?.startsWith("session:")
-		? traceOrigin.slice("session:".length)
-		: undefined
-	const openTraceFromSession = (sessionId: string, traceId: string) => {
-		const next = carry()
-		next.set("from", `session:${sessionId}`)
-		navigate(`/traces/${encodeURIComponent(traceId)}`, next)
-	}
-	const leaveTraceDetail = () => {
-		const next = carry()
-		next.delete("from")
-		if (originSessionId) {
-			navigate(`/sessions/${encodeURIComponent(originSessionId)}`, next)
-			return
-		}
-		navigate("/traces", next)
+	// Tabs carry the cross-cutting context: the service filter, the range, and
+	// the header's project (`ns`) and environment (`env`). Those two are standing
+	// choices made in the header, not in the view being left, so dropping them
+	// would make switching tabs silently undo a selection still on screen.
+	const tabQuery = new URLSearchParams({ range: rangeFromQuery(query) })
+	for (const key of ["service", "ns", "env"]) {
+		const value = query.get(key)
+		if (value) tabQuery.set(key, value)
 	}
 
-	// Switching top-level tabs keeps the cross-cutting filters (service, range,
-	// project and environment). `ns` and `env` belong here for a stronger reason
-	// than the other two:
-	// it is a standing choice made in the header, not in the view being left, so
-	// dropping it would make switching tabs silently undo a selection that is
-	// still on screen.
-	const switchTab = (target: string) => {
-		const shared = new URLSearchParams()
-		const service = query.get("service")
-		const range = query.get("range")
-		const namespace = query.get("ns")
-		// `env` rides along for the same reason `ns` does — it is a header choice,
-		// not a choice made in the view being left. The five views that also expose
-		// it as a sidebar facet read the very same param, so carrying it keeps one
-		// environment selected across the whole app instead of resetting it each
-		// time a tab is clicked.
-		const environment = query.get("env")
-		if (service) shared.set("service", service)
-		if (range) shared.set("range", range)
-		if (namespace) shared.set("ns", namespace)
-		if (environment) shared.set("env", environment)
-		navigate(target, shared)
+	// Back returns to wherever the detail was opened from (Errors, a session, a
+	// log...); with no in-app history it falls back to the list, filters intact.
+	const back = (listPath: string) => () => {
+		const fallback = new URLSearchParams(query)
+		for (const key of DETAIL_ONLY_PARAMS) fallback.delete(key)
+		goBack(listPath, fallback)
 	}
+	const backLabel = (listLabel: string) => (canGoBackInApp() ? "Back" : listLabel)
 
 	return (
 		<AttributesProvider highlightJson={highlightJson}>
 			<ToastProvider position="bottom-right">
 				<AnchoredToastProvider>
-					<div className="flex h-screen flex-col bg-background text-foreground">
-						<header className="flex shrink-0 items-center gap-1 border-b px-4 py-2">
+					<div className="flex h-dvh flex-col bg-background text-foreground">
+						<header className="flex shrink-0 flex-wrap items-center gap-x-1 gap-y-2 border-b px-4 py-2">
 							<LocalLockup />
-							<NavTab
-								label="Home"
-								icon={<GaugeIcon size={14} />}
-								active={tab === "home"}
-								onClick={() => switchTab("/home")}
-							/>
-							<NavTab
-								label="Traces"
-								icon={<NetworkNodesIcon size={14} />}
-								active={tab === "traces"}
-								onClick={() => switchTab("/traces")}
-							/>
-							<NavTab
-								label="Logs"
-								icon={<CodeIcon size={14} />}
-								active={tab === "logs"}
-								onClick={() => switchTab("/logs")}
-							/>
-							<NavTab
-								label="Metrics"
-								icon={<PulseIcon size={14} />}
-								active={tab === "metrics"}
-								onClick={() => switchTab("/metrics")}
-							/>
-							<NavTab
-								label="Services"
-								icon={<DatabaseIcon size={14} />}
-								active={tab === "services"}
-								onClick={() => switchTab("/services")}
-							/>
-							<NavTab
-								label="Service map"
-								icon={<SitemapIcon size={14} />}
-								active={tab === "service-map"}
-								onClick={() => switchTab("/service-map")}
-							/>
-							<NavTab
-								label="Errors"
-								icon={<CircleWarningIcon size={14} />}
-								active={tab === "errors"}
-								onClick={() => switchTab("/errors")}
-							/>
-							<NavTab
-								label="Sessions"
-								icon={<EyeIcon size={14} />}
-								active={tab === "sessions"}
-								onClick={() => switchTab("/sessions")}
-							/>
-							<NavTab
-								label="Analytics"
-								icon={<SquareActivityChartIcon size={14} />}
-								active={tab === "analytics"}
-								onClick={() => switchTab("/analytics")}
-							/>
-							<div className="ml-auto flex items-center gap-3">
+							<nav
+								aria-label="Sections"
+								className="order-last -mx-1 flex w-full min-w-0 items-center gap-1 overflow-x-auto px-1 md:order-none md:mx-0 md:w-auto md:px-0"
+							>
+								{TABS.map((item) => (
+									<NavTab
+										key={item.tab}
+										label={item.label}
+										icon={item.icon}
+										href={hrefFor(`/${item.tab}`, tabQuery)}
+										active={tab === item.tab}
+									/>
+								))}
+							</nav>
+							<div className="ml-auto flex min-w-0 items-center gap-2">
 								<NamespaceSelect />
 								<EnvironmentSelect />
 								<IngestStatus />
@@ -231,75 +174,58 @@ export function App() {
 						</header>
 
 						<main className="min-h-0 flex-1">
-							{connection.status === "disconnected" ? (
-								<DisconnectedState onRetry={connection.retry} />
-							) : route.name === "trace-detail" ? (
-								<TraceDetailView
-									traceId={route.traceId}
-									onBack={leaveTraceDetail}
-									backLabel={originSessionId ? "Session" : "Traces"}
-								/>
-							) : route.name === "session-detail" ? (
-								<SessionDetailView
-									sessionId={route.sessionId}
-									onBack={() => navigate("/sessions", carry())}
-									onSelectTrace={(traceId) =>
-										openTraceFromSession(route.sessionId, traceId)
-									}
-								/>
-							) : route.name === "metric-detail" ? (
-								<MetricDetailView
-									metricName={route.metricName}
-									onBack={() => navigate("/metrics", carry())}
-								/>
-							) : route.name === "metrics" ? (
-								<MetricsListView
-									onSelectMetric={(metricName) =>
-										navigate(`/metrics/${encodeURIComponent(metricName)}`, carry())
-									}
-								/>
-							) : route.name === "service-detail" ? (
-								<ServiceDetailView
-									serviceName={route.serviceName}
-									onBack={() => navigate("/services", carry())}
-								/>
-							) : route.name === "service-map" ? (
-								<ServiceMapView
-									onSelectService={(serviceName) =>
-										navigate(`/services/${encodeURIComponent(serviceName)}`, carry())
-									}
-								/>
-							) : route.name === "services" ? (
-								<ServicesListView
-									onSelectService={(serviceName) =>
-										navigate(`/services/${encodeURIComponent(serviceName)}`, carry())
-									}
-								/>
-							) : route.name === "errors" ? (
-								<ErrorsView
-									onSelectTrace={(traceId) =>
-										navigate(`/traces/${encodeURIComponent(traceId)}`, carry())
-									}
-								/>
-							) : route.name === "logs" ? (
-								<LogsView />
-							) : route.name === "analytics" ? (
-								<AnalyticsView />
-							) : route.name === "sessions" ? (
-								<SessionsListView
-									onSelectSession={(sessionId) =>
-										navigate(`/sessions/${encodeURIComponent(sessionId)}`, carry())
-									}
-								/>
-							) : route.name === "traces" ? (
-								<TraceListView
-									onSelectTrace={(traceId) =>
-										navigate(`/traces/${encodeURIComponent(traceId)}`, carry())
-									}
-								/>
-							) : (
-								<HomeView />
-							)}
+							<AppErrorBoundary resetKey={path}>
+								{connection.status === "disconnected" ? (
+									<DisconnectedState onRetry={connection.retry} />
+								) : connection.status === "rejected" && connection.rejection ? (
+									<RejectedState
+										rejection={connection.rejection}
+										onRetry={connection.retry}
+									/>
+								) : route.name === "trace-detail" ? (
+									<TraceDetailView
+										traceId={route.traceId}
+										backLabel={backLabel("Traces")}
+										onBack={back("/traces")}
+									/>
+								) : route.name === "session-detail" ? (
+									<SessionDetailView
+										sessionId={route.sessionId}
+										backLabel={backLabel("Sessions")}
+										onBack={back("/sessions")}
+									/>
+								) : route.name === "metric-detail" ? (
+									<MetricDetailView
+										metricName={route.metricName}
+										backLabel={backLabel("Metrics")}
+										onBack={back("/metrics")}
+									/>
+								) : route.name === "metrics" ? (
+									<MetricsListView />
+								) : route.name === "service-detail" ? (
+									<ServiceDetailView
+										serviceName={route.serviceName}
+										backLabel={backLabel("Services")}
+										onBack={back("/services")}
+									/>
+								) : route.name === "services" ? (
+									<ServicesListView />
+								) : route.name === "service-map" ? (
+									<ServiceMapView />
+								) : route.name === "errors" ? (
+									<ErrorsView />
+								) : route.name === "logs" ? (
+									<LogsView />
+								) : route.name === "sessions" ? (
+									<SessionsListView />
+								) : route.name === "analytics" ? (
+									<AnalyticsView />
+								) : route.name === "traces" ? (
+									<TraceListView />
+								) : (
+									<HomeView />
+								)}
+							</AppErrorBoundary>
 						</main>
 					</div>
 				</AnchoredToastProvider>
@@ -311,27 +237,25 @@ export function App() {
 function NavTab({
 	label,
 	icon,
+	href,
 	active,
-	onClick,
 }: {
 	label: string
-	icon?: ReactNode
+	icon: ReactNode
+	href: string
 	active: boolean
-	onClick: () => void
 }) {
 	return (
-		<button
-			type="button"
-			onClick={onClick}
+		<a
+			href={href}
+			aria-current={active ? "page" : undefined}
 			className={cn(
-				"flex items-center gap-1.5 rounded-md px-3 py-1 text-sm transition-colors",
+				"flex shrink-0 items-center gap-1.5 rounded-md px-3 py-1 text-sm transition-colors focus-visible:outline-2 focus-visible:outline-ring",
 				active ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:text-foreground",
 			)}
 		>
-			{icon ? (
-				<span className={active ? "text-foreground" : "text-muted-foreground"}>{icon}</span>
-			) : null}
+			<span className={active ? "text-foreground" : "text-muted-foreground"}>{icon}</span>
 			{label}
-		</button>
+		</a>
 	)
 }

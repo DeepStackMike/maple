@@ -3,7 +3,7 @@ import { SeverityBadge } from "@maple/ui/components/logs/severity-badge"
 import { normalizeTimestampInput } from "@/lib/timezone-format"
 
 interface LogListProps {
-	logs: Array<{
+	logs: ReadonlyArray<{
 		timestamp: string
 		severityText: string
 		serviceName: string
@@ -42,6 +42,8 @@ export function LogList({ props }: RendererComponentProps<LogListProps>) {
 							{log.traceId && (
 								<a
 									href={`/traces/${log.traceId}${log.timestamp ? `?t=${encodeURIComponent(log.timestamp)}` : ""}`}
+									target="_blank"
+									rel="noreferrer"
 									className="shrink-0 text-primary hover:underline"
 									title={log.traceId}
 								>

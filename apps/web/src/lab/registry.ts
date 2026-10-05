@@ -37,6 +37,22 @@ export interface LabEntry {
 
 export const LAB_ENTRIES: ReadonlyArray<LabEntry> = [
 	{
+		path: "/lab/onboarding",
+		title: "Onboarding",
+		description:
+			"Click through onboarding with simulated plan selection and a restart button. No account changes.",
+		kind: "lab",
+		session: "none",
+	},
+	{
+		path: "/lab/loaders",
+		title: "Chat loaders",
+		description:
+			"Every dot-matrix loader in the chat's pool, inline at both sizes it is used at, against real text.",
+		kind: "lab",
+		session: "none",
+	},
+	{
 		path: "/lab/widgets",
 		title: "Widgets",
 		description:
@@ -68,6 +84,14 @@ export const LAB_ENTRIES: ReadonlyArray<LabEntry> = [
 		session: "none",
 	},
 	{
+		path: "/lab/verdict",
+		title: "Investigation verdict",
+		description:
+			"The verdict card and the run-progress feed in every state: diagnosed, headline-less, running, stalled, pre-first-step, inconclusive, failed.",
+		kind: "lab",
+		session: "none",
+	},
+	{
 		path: "/lab/flow",
 		title: "Trace flow",
 		description:
@@ -79,7 +103,39 @@ export const LAB_ENTRIES: ReadonlyArray<LabEntry> = [
 		path: "/lab/service-map-3d",
 		title: "Service map 3D",
 		description:
-			"The service graph as storeys and pipes \u2014 tiers stack vertically, calls flow as packets, WebGL over a fixture.",
+			"Two 3D perspectives over one sample topology: Atlas groups infrastructure by namespace; Cascade follows dependency depth.",
+		kind: "lab",
+		session: "none",
+	},
+	{
+		path: "/lab/agent-sessions",
+		title: "Agent sessions list",
+		description:
+			"The `/agent-sessions` list over rows that break its lanes — a nameless session, an unidentified vendor, ms next to hours, a total with no buckets, no usage at all, both kinds of failure.",
+		kind: "lab",
+		session: "none",
+	},
+	{
+		path: "/lab/replays",
+		title: "Session replays list",
+		description:
+			"The `/replays` list over a day of mostly bots, bounces and idle tabs, with an errored bot and a live bounce that must not fold into a low-signal run.",
+		kind: "lab",
+		session: "none",
+	},
+	{
+		path: "/lab/agent-tools",
+		title: "Agent tools",
+		description:
+			"The `/agent-sessions/tools` page over a synthetic week: a dominant tool that never fails, one that fails half the time, a p95 thirty times its p50, and a tool that regresses through the back half of the window.",
+		kind: "lab",
+		session: "none",
+	},
+	{
+		path: "/lab/chat",
+		title: "Chat transcript",
+		description:
+			"The chat transcript over a fixture thread: a merged tool run, prose carrying every inline reference card, an approval prompt, and two-character turns that expose the vertical rhythm.",
 		kind: "lab",
 		session: "none",
 	},
@@ -88,6 +144,14 @@ export const LAB_ENTRIES: ReadonlyArray<LabEntry> = [
 		title: "Errors list",
 		description:
 			"The `/errors` list over a fixture holding every row state at once — surging critical with an open incident, live and diagnosed investigations, a truncating message, a fingerprint gone quiet, an unset severity.",
+		kind: "lab",
+		session: "none",
+	},
+	{
+		path: "/lab/time-range",
+		title: "Time range picker",
+		description:
+			"The header time range picker over local state, with the timezone selector and a strip of timestamps that re-render in the chosen zone.",
 		kind: "lab",
 		session: "none",
 	},

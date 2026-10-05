@@ -1,11 +1,17 @@
 export * from "./api"
+export * from "./ai-api"
 export * from "./internal-api"
+export * from "./ai-models"
 export * from "./ai-sessions"
 export * from "./ai-triage"
+export * from "./incident-triage"
 export * from "./investigations"
+export * from "./pr-review"
 export * from "./anomalies"
 export * from "./api-keys"
+export * from "./audit-log"
 export * from "./alerts"
+export * from "./agent-feedback"
 export * from "./mobile-devices"
 export * from "./auth"
 export * from "./billing"
@@ -14,7 +20,11 @@ export * as CurrentTenant from "./current-tenant"
 // The tenant-resolution failures themselves, flat: `@maple/auth` raises all
 // three and has no use for the namespace. (`UnauthorizedError` already reaches
 // the barrel through `./warehouse`.)
-export { AuthorizationUnavailableError, OrganizationAccessDeniedError } from "./current-tenant"
+export {
+	AuthorizationUnavailableError,
+	OrganizationAccessDeniedError,
+	OrganizationWrongRegionError,
+} from "./current-tenant"
 export * from "./dashboard-sections"
 export * from "./dashboards"
 export * from "./demo"
@@ -36,7 +46,7 @@ export * from "./scrape-targets"
 export * from "./scraper-internal"
 export * from "./session-replay"
 export * from "./share"
-export * from "./slack-internal"
+export * from "./share-chart"
 export * from "./vcs"
 export * from "./v1-boundary"
 export * from "./warehouse"

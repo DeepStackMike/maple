@@ -1,4 +1,3 @@
-import { v7ToV8AppleCrashFramesModule } from "../src/server/local-store-migrations/v7-to-v8-apple-crash-frames"
 import { describe, expect, it } from "vitest"
 import {
 	CURRENT_LOCAL_SCHEMA,
@@ -18,19 +17,19 @@ import {
 	LOCAL_SCHEMA_V5_MANIFEST,
 	LOCAL_SCHEMA_V7_MANIFEST,
 	LOCAL_SCHEMA_V6,
-	LOCAL_SCHEMA_V7,
-	LOCAL_SCHEMA_V8,
 	LOCAL_SCHEMA_V10,
 	LOCAL_SCHEMA_V10_MANIFEST,
 	LOCAL_SCHEMA_V11,
 	LOCAL_SCHEMA_V11_MANIFEST,
-	LOCAL_SCHEMA_V12,
 	LOCAL_SCHEMA_V12_MANIFEST,
-	LOCAL_SCHEMA_V13,
 	LOCAL_SCHEMA_V13_MANIFEST,
-	LOCAL_SCHEMA_V14,
-	LOCAL_SCHEMA_V15,
-	LOCAL_SCHEMA_V16,
+	LOCAL_SCHEMA_V20,
+	LOCAL_SCHEMA_V21,
+	LOCAL_SCHEMA_V22,
+	LOCAL_SCHEMA_V23,
+	LOCAL_SCHEMA_V24,
+	LOCAL_SCHEMA_V25,
+	LOCAL_SCHEMA_V26,
 	SCHEMA_DIGEST,
 	SCHEMA_FINGERPRINT,
 } from "../src/server/schema-identity"
@@ -39,8 +38,10 @@ import {
 	abandonLocalStoreMigrationPreservingSource,
 	executeMigrationModule,
 	executeMigrationChain,
+	formatMigrationPlan,
 	identityFromMarker,
 	legacyToCurrentModule,
+	localStoreMigrations,
 	migrationJournalPath,
 	migrationHistoryPath,
 	migrationRootPath,
@@ -60,7 +61,13 @@ import {
 	type LocalSchemaManifest,
 	withRawTelemetryRetentionFloor,
 } from "../src/server/schema-manifest"
-import { ensureStoreMarkerDurable, readMarker, storeMarkerPath } from "../src/server/store-version"
+import {
+	ensureStoreMarkerDurable,
+	isStoreDirty,
+	readMarker,
+	storeMarkerPath,
+	storeOpenMarkerPath,
+} from "../src/server/store-version"
 import { durableJson } from "../src/server/durable-files"
 import {
 	__testables as legacyTestables,
@@ -71,23 +78,32 @@ import {
 	type CopyProgress,
 	type RawReplayProgress,
 } from "../src/server/local-store-migrations/legacy-to-current"
-import { v10ToV11ProductEventsModule } from "../src/server/local-store-migrations/v10-to-v11-product-events"
-import { v11ToV12ServiceMapEdgeQuantilesModule } from "../src/server/local-store-migrations/v11-to-v12-service-map-edge-quantiles"
+import { LOCAL_SCHEMA_HISTORY } from "../src/server/local-schema-history"
+import { LOCAL_STORE_STEPS } from "../src/server/local-store-migrations/steps"
+import { stepStatements } from "../src/server/local-store-migrations/step-executor"
 import { mkdir, mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
+// Steps are table rows now; the decoding tests below exercise their compiled modules.
+const [v7ToV8AppleCrashFramesModule] = localStoreMigrations.filter(
+	(migration) => migration.id === "local-0007-to-0008-apple-crash-frames",
+)
+const [v10ToV11ProductEventsModule] = localStoreMigrations.filter(
+	(migration) => migration.id === "local-0010-to-0011-product-events",
+)
+
 describe("current local schema identity", () => {
-	it("matches the generated v16 revision and keeps the issue-297 identity frozen", () => {
-		expect(SCHEMA_FINGERPRINT).toBe("d975e674ce66af41")
-		expect(SCHEMA_DIGEST).toBe("d975e674ce66af417e4398d8ca336d41340c9c1aa7b26082a6c55ecd02effe38")
+	it("matches the generated v26 revision and keeps the issue-297 identity frozen", () => {
+		expect(SCHEMA_FINGERPRINT).toBe("203c87dde2b5aedc")
+		expect(SCHEMA_DIGEST).toBe("203c87dde2b5aedc28de3b2fd72829991b28fdf703bbb40ae72ebd835dbdb67c")
 		expect(ISSUE_297_TARGET_SCHEMA_PROJECT_REVISION).toBe(
 			"506bc745f7a7eca202ec905a6403a6815e86413faf0cd3cbbf73881023edce91",
 		)
 		expect(CURRENT_SCHEMA_PROJECT_REVISION).toMatch(/^[0-9a-f]{64}$/)
 		expect(LOCAL_SCHEMA_MANIFEST.objects.length).toBeGreaterThan(60)
-		expect(CURRENT_LOCAL_SCHEMA.version).toBe(16)
-		expect(CURRENT_LOCAL_SCHEMA).toEqual(LOCAL_SCHEMA_V16)
+		expect(CURRENT_LOCAL_SCHEMA.version).toBe(26)
+		expect(CURRENT_LOCAL_SCHEMA).toEqual(LOCAL_SCHEMA_V26)
 		const logs = LOCAL_SCHEMA_MANIFEST.objects.find((object) => object.name === "logs")
 		expect(logs?.columns.some((column) => column.name.startsWith("idx_"))).toBe(false)
 		expect(logs?.indexes).toContain("idx_lower_body")
@@ -155,7 +171,9 @@ describe("current local schema identity", () => {
 		// bodies, so their object set is identical to v5 and the manifest digest
 		// differs solely through those definitions. v9 removes `error_spans` and
 		// its view; v11 replaces `web_events` with `product_events` and adds
-		// `identity_links`. Asserted as an exact set difference rather than a
+		// `identity_links`; v17 adds `audit_log`, which local mode creates but
+		// never writes; v23 adds `ai_crawler_requests` and its view; v24 adds
+		// `trace_facets_hourly` and its view. Asserted as an exact set difference rather than a
 		// relaxed check, so a future edge still cannot add or drop an object
 		// unnoticed.
 		expect([...v5Names].filter((name) => !currentNames.has(name))).toEqual([
@@ -165,12 +183,18 @@ describe("current local schema identity", () => {
 			"web_events_mv",
 		])
 		expect([...currentNames].filter((name) => !v5Names.has(name))).toEqual([
+			"ai_crawler_requests",
+			"ai_crawler_requests_mv",
 			"ai_trace_index",
 			"ai_trace_index_mv",
+			"audit_log",
 			"identity_links",
 			"identity_links_mv",
 			"product_events",
 			"product_events_mv",
+			"product_events_traces_mv",
+			"trace_facets_hourly",
+			"trace_facets_hourly_mv",
 		])
 		const errorEventsView = LOCAL_SCHEMA_MANIFEST.objects.find(
 			(object) => object.name === "error_events_mv",
@@ -197,7 +221,7 @@ describe("current local schema identity", () => {
 		expect(productEvents?.engine).toBe("MergeTree")
 		expect(productEvents?.orderBy).toBe("(OrgId, Timestamp, VisitorId, SessionId, Seq)")
 		expect(productEvents?.ttl).toContain("365 DAY")
-		expect(productEvents?.indexes).toEqual(["idx_event_name", "idx_user_id"])
+		expect(productEvents?.indexes).toEqual(["idx_event_name", "idx_user_id", "idx_trace_id"])
 		expect(productEvents?.columns.map((column) => column.name)).toEqual([
 			"OrgId",
 			"Timestamp",
@@ -214,6 +238,10 @@ describe("current local schema identity", () => {
 			"Url",
 			"ServiceName",
 			"Attributes",
+			// Appended, not inserted: `ALTER TABLE … ADD COLUMN` puts them last, and
+			// every projection into this table has to match that order.
+			"TraceId",
+			"SpanId",
 		])
 		const productEventsView = LOCAL_SCHEMA_MANIFEST.objects.find(
 			(object) => object.name === "product_events_mv",
@@ -255,7 +283,8 @@ describe("current local schema identity", () => {
 
 		// v12 replaces two view bodies and v13 adds columns to two rollups; neither
 		// adds an object. v14 is exactly the GenAI span index and its view, created
-		// empty and filled forward.
+		// empty and filled forward; v17 adds `audit_log`, created empty and never
+		// written in local mode.
 		const v12Names = new Set(LOCAL_SCHEMA_V12_MANIFEST.objects.map((object) => object.name))
 		const v13Names = new Set(LOCAL_SCHEMA_V13_MANIFEST.objects.map((object) => object.name))
 		const currentSchemaNames = new Set(LOCAL_SCHEMA_MANIFEST.objects.map((object) => object.name))
@@ -263,13 +292,17 @@ describe("current local schema identity", () => {
 		expect([...v13Names].filter((name) => !v12Names.has(name))).toEqual([])
 		expect([...v12Names].filter((name) => !v13Names.has(name))).toEqual([])
 		expect([...currentSchemaNames].filter((name) => !v13Names.has(name))).toEqual([
+			"ai_crawler_requests",
+			"ai_crawler_requests_mv",
 			"ai_trace_index",
 			"ai_trace_index_mv",
+			"audit_log",
+			"product_events_traces_mv",
+			"trace_facets_hourly",
+			"trace_facets_hourly_mv",
 		])
 		expect([...v13Names].filter((name) => !currentSchemaNames.has(name))).toEqual([])
-		const aiTraceIndex = LOCAL_SCHEMA_MANIFEST.objects.find(
-			(object) => object.name === "ai_trace_index",
-		)
+		const aiTraceIndex = LOCAL_SCHEMA_MANIFEST.objects.find((object) => object.name === "ai_trace_index")
 		expect(aiTraceIndex?.engine).toBe("MergeTree")
 		expect(aiTraceIndex?.orderBy).toBe("(OrgId, Timestamp, TraceId)")
 		const aiTraceIndexView = LOCAL_SCHEMA_MANIFEST.objects.find(
@@ -314,6 +347,16 @@ describe("local migration registry", () => {
 			"local-0013-to-0014-ai-trace-index",
 			"local-0014-to-0015-commit-sha-vcs-revision",
 			"local-0015-to-0016-ai-trace-index-filter-columns",
+			"local-0016-to-0017-audit-log",
+			"local-0017-to-0018-product-events-from-traces",
+			"local-0018-to-0019-ai-trace-index-usage-conventions",
+			"local-0019-to-0020-error-events-attribute-fallback",
+			"local-0020-to-0021-ai-trace-index-list-columns",
+			"local-0021-to-0022-ai-trace-index-tool-detail-columns",
+			"local-0022-to-0023-ai-crawler-requests",
+			"local-0023-to-0024-trace-facets-hourly",
+			"local-0024-to-0025-trace-facets-hourly-daily-partition",
+			"local-0025-to-0026-ai-trace-index-gateway-stamps",
 		])
 		expect(chain[0]?.from.fingerprint).toBe(LEGACY_SCHEMA_FINGERPRINT)
 		expect(chain[0]?.to).toEqual(LOCAL_SCHEMA_V1)
@@ -360,7 +403,7 @@ describe("local migration registry", () => {
 				// One past the current tip — bump alongside LOCAL_SCHEMA_VERSION, or this
 				// stops testing the future-store guard and starts testing the
 				// unknown-fingerprint one.
-				{ ...CURRENT_LOCAL_SCHEMA, version: 17, fingerprint: "future", digest: SCHEMA_DIGEST },
+				{ ...CURRENT_LOCAL_SCHEMA, version: 27, fingerprint: "future", digest: SCHEMA_DIGEST },
 				CURRENT_LOCAL_SCHEMA,
 			),
 		).toThrow(/newer than this build/)
@@ -474,6 +517,80 @@ describe("local migration registry", () => {
 			prepareTarget: true,
 		})
 		expect(verifiedEvents).toEqual([])
+	})
+
+	it("walks the step table as the one registered chain, each row bound to its frozen identities", () => {
+		// Pinned in order; local-schema:bump appends the new id after the previous tip.
+		const expected = [
+			"local-0000-to-0001-raw-replay",
+			"local-0001-to-0002-error-rollup",
+			"local-0002-to-0003-service-map-ingest-bridge",
+			"local-0003-to-0004-web-events",
+			"local-0004-to-0005-service-overview-minutely",
+			"local-0005-to-0006-error-events-fingerprint-hygiene",
+			"local-0006-to-0007-error-service-version",
+			"local-0007-to-0008-apple-crash-frames",
+			"local-0008-to-0009-mv-sweep",
+			"local-0009-to-0010-semconv-key-renames",
+			"local-0010-to-0011-product-events",
+			"local-0011-to-0012-service-map-edge-quantiles",
+			"local-0012-to-0013-service-operations-discriminators",
+			"local-0013-to-0014-ai-trace-index",
+			"local-0014-to-0015-commit-sha-vcs-revision",
+			"local-0015-to-0016-ai-trace-index-filter-columns",
+			"local-0016-to-0017-audit-log",
+			"local-0017-to-0018-product-events-from-traces",
+			"local-0018-to-0019-ai-trace-index-usage-conventions",
+			"local-0019-to-0020-error-events-attribute-fallback",
+			"local-0020-to-0021-ai-trace-index-list-columns",
+			"local-0021-to-0022-ai-trace-index-tool-detail-columns",
+			"local-0022-to-0023-ai-crawler-requests",
+			"local-0023-to-0024-trace-facets-hourly",
+			"local-0024-to-0025-trace-facets-hourly-daily-partition",
+			"local-0025-to-0026-ai-trace-index-gateway-stamps",
+		]
+		const versions = (id: string) => {
+			const match = /^local-(\d{4})-to-(\d{4})-[a-z0-9]+(-[a-z0-9]+)*$/.exec(id)
+			return { from: Number(match?.[1]), to: Number(match?.[2]) }
+		}
+		expect(localStoreMigrations.map((migration) => migration.id)).toEqual(expected)
+		expect(LOCAL_STORE_STEPS.map((step) => step.id)).toEqual(expected.slice(1))
+		expect(resolveMigrationChain(LEGACY_LOCAL_SCHEMA, CURRENT_LOCAL_SCHEMA)).toEqual(localStoreMigrations)
+		for (const [index, step] of LOCAL_STORE_STEPS.entries()) {
+			const migration = localStoreMigrations[index + 1]
+			expect({ id: step.id, from: step.from, to: step.to }).toEqual({
+				id: step.id,
+				...versions(step.id),
+			})
+			expect(step.to).toBe(step.from + 1)
+			expect(step.from).toBe(index + 1)
+			expect(migration?.moduleVersion).toBe(1)
+			for (const [identity, version] of [
+				[migration?.from, step.from],
+				[migration?.to, step.to],
+			] as const) {
+				const entry = LOCAL_SCHEMA_HISTORY[version]
+				expect(identity).toMatchObject({
+					version,
+					fingerprint: entry?.fingerprint,
+					digest: entry?.digest,
+					chdb: CURRENT_LOCAL_SCHEMA.chdb,
+				})
+			}
+			const operationIds = migration?.operations.map((operation) => operation.id) ?? []
+			expect(operationIds[0]).toBe(`clone-v${step.from}-store`)
+			expect(operationIds.at(-1)).toBe(`verify-v${step.to}-schema`)
+			expect(migration?.dispositions[0]?.name).toBe("local store")
+			// Every count check compares against a key the source measured.
+			const measured = new Set(step.counts?.measure.map(([key]) => key))
+			for (const check of step.counts?.checks ?? []) expect(measured.has(check.key)).toBe(true)
+			// Every statement is idempotent, so a resumed apply lands where it left off.
+			for (const statement of stepStatements([
+				...(step.beforeBootstrap ?? []),
+				...(step.afterBootstrap ?? []),
+			]))
+				expect(statement).toMatch(/IF (NOT )?EXISTS|^DELETE FROM |^INSERT INTO /)
+		}
 	})
 
 	it("exposes retention-aware dispositions and rollback limits", () => {
@@ -960,6 +1077,75 @@ describe("durable migration recovery", () => {
 			await rm(root, { recursive: true, force: true })
 		}
 	})
+
+	it("sets the migration aside when it died with the source open, leaving the source to start's recovery", async () => {
+		const root = await mkdtemp(join(tmpdir(), "maple-migration-abandon-dirty-source-"))
+		const dataDir = join(root, "data")
+		const migrationId = "fixture-dirty-source-abandon"
+		const targetDataDir = join(migrationRootPath(dataDir, migrationId), "target", "data")
+		const journal: MigrationJournal = {
+			formatVersion: 2,
+			migrationId,
+			phase: "failed",
+			chain: [
+				{
+					id: legacyToCurrentModule.id,
+					moduleVersion: legacyToCurrentModule.moduleVersion,
+					from: LEGACY_LOCAL_SCHEMA,
+					to: LOCAL_SCHEMA_V1,
+					status: "running",
+					state: { module: legacyToCurrentModule.id, version: 1 },
+					progress: { sourceInventory: {}, copied: {} },
+				},
+			],
+			currentStepIndex: 0,
+			sourceDataDir: dataDir,
+			sourceStoreId: "source-id",
+			sourceChdb: CURRENT_LOCAL_SCHEMA.chdb,
+			sourceFingerprint: LEGACY_LOCAL_SCHEMA.fingerprint,
+			sourceDigest: LEGACY_LOCAL_SCHEMA.digest,
+			sourceVersion: LEGACY_LOCAL_SCHEMA.version,
+			targetDataDir,
+			targetStoreId: "target-id",
+			targetChdb: LOCAL_SCHEMA_V1.chdb,
+			targetFingerprint: LOCAL_SCHEMA_V1.fingerprint,
+			targetDigest: LOCAL_SCHEMA_V1.digest,
+			targetVersion: LOCAL_SCHEMA_V1.version,
+			cutoffAt: "2026-01-01T00:00:00.000Z",
+			createdAt: "2026-01-01T00:00:00.000Z",
+		}
+		try {
+			await mkdir(join(dataDir, "store"), { recursive: true })
+			await Bun.write(join(dataDir, "store", "part.bin"), "live")
+			await durableJson(storeMarkerPath(dataDir), {
+				chdb: CURRENT_LOCAL_SCHEMA.chdb,
+				maple: "test",
+				createdAt: journal.createdAt,
+				schema: LEGACY_SCHEMA_FINGERPRINT,
+			})
+			// The sentinel a killed migration leaves on the source it had open.
+			await Bun.write(storeOpenMarkerPath(dataDir), "999\n")
+			await durableJson(migrationJournalPath(dataDir), journal)
+			expect(isStoreDirty(dataDir)).toBe(true)
+
+			const quarantine = await abandonLocalStoreMigrationPreservingSource(dataDir)
+
+			expect(quarantine).not.toBeNull()
+			expect(await Bun.file(migrationJournalPath(dataDir)).exists()).toBe(false)
+			expect(await Bun.file(join(quarantine!, "journal.json")).exists()).toBe(true)
+			// The source is untouched and still dirty, for `maple start` to recover.
+			expect(await Bun.file(join(dataDir, "store", "part.bin")).text()).toBe("live")
+			expect(isStoreDirty(dataDir)).toBe(true)
+		} finally {
+			await rm(root, { recursive: true, force: true })
+		}
+	})
+
+	it("says a store with the current schema is up to date instead of printing an empty plan", () => {
+		expect(formatMigrationPlan(planMigration(CURRENT_LOCAL_SCHEMA))).toBe(
+			`schema is up to date (v${CURRENT_LOCAL_SCHEMA.version})\n`,
+		)
+	})
 })
 
 describe("physical-schema comparison", () => {
@@ -1365,6 +1551,16 @@ describe("v10 -> v11 product events module", () => {
 			"local-0013-to-0014-ai-trace-index",
 			"local-0014-to-0015-commit-sha-vcs-revision",
 			"local-0015-to-0016-ai-trace-index-filter-columns",
+			"local-0016-to-0017-audit-log",
+			"local-0017-to-0018-product-events-from-traces",
+			"local-0018-to-0019-ai-trace-index-usage-conventions",
+			"local-0019-to-0020-error-events-attribute-fallback",
+			"local-0020-to-0021-ai-trace-index-list-columns",
+			"local-0021-to-0022-ai-trace-index-tool-detail-columns",
+			"local-0022-to-0023-ai-crawler-requests",
+			"local-0023-to-0024-trace-facets-hourly",
+			"local-0024-to-0025-trace-facets-hourly-daily-partition",
+			"local-0025-to-0026-ai-trace-index-gateway-stamps",
 		])
 		expect(chain[0]?.to).toEqual(LOCAL_SCHEMA_V11)
 		// The dropped table is declared, and the backfilled ones say what they

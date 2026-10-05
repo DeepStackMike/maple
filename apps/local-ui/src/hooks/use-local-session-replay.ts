@@ -43,10 +43,12 @@ const timestampOf = (event: unknown): number => (hasTimestamp(event) ? event.tim
  * chronological or `getMetaData().totalTime` balloons and seeking misbehaves.
  */
 export function normalizeReplayEvents(events: ReadonlyArray<unknown>): unknown[] {
-	const sorted = events.map((event, index) => ({ event, index })).sort((a, b) => {
-		const delta = timestampOf(a.event) - timestampOf(b.event)
-		return delta !== 0 ? delta : a.index - b.index
-	})
+	const sorted = events
+		.map((event, index) => ({ event, index }))
+		.sort((a, b) => {
+			const delta = timestampOf(a.event) - timestampOf(b.event)
+			return delta !== 0 ? delta : a.index - b.index
+		})
 	const out: unknown[] = []
 	let previous: string | undefined
 	for (const { event } of sorted) {

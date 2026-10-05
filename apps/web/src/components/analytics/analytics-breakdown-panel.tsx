@@ -55,7 +55,7 @@ export interface BreakdownDimension {
 	 * dimension is not being collected" from "no traffic matched", which for a
 	 * dimension like Country is the difference between a config gap and a fact.
 	 */
-	readonly emptyMessage?: string
+	readonly emptyMessage?: ReactNode
 	/** Row-name → display text, for codes whose label differs (country, language). */
 	readonly formatValue?: (name: string) => string
 	/**
@@ -70,6 +70,8 @@ export interface BreakdownDimension {
 	 * the Events dimension ranks by firings and says so.
 	 */
 	readonly viewsLabel?: string
+	/** Column head for `count`. Defaults to "Sessions"; the AI tab's crawled pages count fetches. */
+	readonly countLabel?: string
 }
 
 type SortKey = "name" | "count" | "views"
@@ -267,7 +269,7 @@ export function AnalyticsBreakdownPanel({
 								Ranked by{" "}
 								{hasViews
 									? (dimension.viewsLabel?.toLowerCase() ?? "page views")
-									: "sessions"}{" "}
+									: (dimension.countLabel?.toLowerCase() ?? "sessions")}{" "}
 								over the selected window. Pick a row to filter the page.
 							</DialogDescription>
 						</div>
@@ -442,7 +444,7 @@ function BreakdownTable({
 					/>
 				) : null}
 				<ColumnHead<SortKey>
-					label="Sessions"
+					label={dimension.countLabel ?? "Sessions"}
 					width={ranked ? "w-16 sm:w-24" : hasViews ? "w-20" : "w-24"}
 					align="right"
 					sortKey="count"

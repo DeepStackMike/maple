@@ -32,7 +32,15 @@ import { migration_0023_service_operations_discriminators } from "./0023_service
 import { migration_0024_ai_trace_index } from "./0024_ai_trace_index"
 import { migration_0025_commit_sha_vcs_revision } from "./0025_commit_sha_vcs_revision"
 import { migration_0026_ai_trace_index_filter_columns } from "./0026_ai_trace_index_filter_columns"
-import { migration_0021_product_events } from "./0021_product_events"
+import { migration_0027_audit_log } from "./0027_audit_log"
+import { migration_0028_product_events_from_traces } from "./0028_product_events_from_traces"
+import { migration_0030_error_events_attribute_fallback } from "./0030_error_events_attribute_fallback"
+import { migration_0031_ai_trace_index_list_columns } from "./0031_ai_trace_index_list_columns"
+import { migration_0032_ai_trace_index_tool_detail_columns } from "./0032_ai_trace_index_tool_detail_columns"
+import { migration_0033_ai_crawler_requests } from "./0033_ai_crawler_requests"
+import { migration_0034_trace_facets_hourly, traceFacetsHourlyBackfill } from "./0034_trace_facets_hourly"
+import { migration_0035_ai_trace_index_gateway_stamps } from "./0035_ai_trace_index_gateway_stamps"
+import { latestSnapshotStatements } from "../../generated/clickhouse-schema"
 import { clickHouseSchemaVersion, latestMigrationVersion, migrations } from "./index"
 
 const backfills = migration_0004_service_namespace_projections.statements.filter(
@@ -48,10 +56,11 @@ const renderedSql = migration_0004_service_namespace_projections.statements
 describe("ClickHouse migrations", () => {
 	it("keeps migrations ordered by version", () => {
 		expect(migrations.map((m) => m.version)).toEqual([
-			1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
+			1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
+			28, 29, 30, 31, 32, 33, 34, 35,
 		])
-		expect(migrations.at(-1)).toBe(migration_0026_ai_trace_index_filter_columns)
-		expect(latestMigrationVersion).toBe(26)
+		expect(migrations.at(-1)).toBe(migration_0035_ai_trace_index_gateway_stamps)
+		expect(latestMigrationVersion).toBe(35)
 		// 0010 and 0014-0020 are read-path only and skipped by the ingest-gating
 		// version; 0021 is not — the gateway writes `session_events`' new identity
 		// columns and `product_events` directly, so a BYO-CH org must apply it
@@ -60,7 +69,8 @@ describe("ClickHouse migrations", () => {
 		// 0023 is the same: it only adds counter columns to those MV-populated
 		// service-operations rollups. 0024 is read-path only too: `ai_trace_index`
 		// is MV-populated and the gateway never writes it, and 0025 only rebuilds
-		// the three MV-populated service-overview views.
+		// the three MV-populated service-overview views. 0027 (`audit_log`) is
+		// written by the API worker through Tinybird, never by the gateway.
 		expect(clickHouseSchemaVersion).toBe("21")
 		expect(migration_0010_search_indexes.requiredForIngest).toBe(false)
 		expect(migration_0014_web_events.requiredForIngest).toBe(false)
@@ -76,6 +86,42 @@ describe("ClickHouse migrations", () => {
 		expect(migration_0025_commit_sha_vcs_revision.requiredForIngest).toBe(false)
 		// 0026 widens the same MV-populated ai_trace_index and rebuilds its view.
 		expect(migration_0026_ai_trace_index_filter_columns.requiredForIngest).toBe(false)
+		expect(migration_0027_audit_log.requiredForIngest).toBe(false)
+		expect(migration_0028_product_events_from_traces.requiredForIngest).toBe(false)
+		// 0030 only recreates the error-events MVs.
+		expect(migration_0030_error_events_attribute_fallback.requiredForIngest).toBe(false)
+		// 0031 and 0032 widen the same MV-populated ai_trace_index again.
+		expect(migration_0031_ai_trace_index_list_columns.requiredForIngest).toBe(false)
+		expect(migration_0032_ai_trace_index_tool_detail_columns.requiredForIngest).toBe(false)
+		// 0033 adds the MV-populated ai_crawler_requests.
+		expect(migration_0033_ai_crawler_requests.requiredForIngest).toBe(false)
+		// 0034 adds the MV-populated trace_facets_hourly.
+		expect(migration_0034_trace_facets_hourly.requiredForIngest).toBe(false)
+		// 0035 only recreates the MV-populated ai_trace_index's view.
+		expect(migration_0035_ai_trace_index_gateway_stamps.requiredForIngest).toBe(false)
+	})
+
+	it("recreates both error-events MVs with the span-attribute exception fallback", () => {
+		const statements: ReadonlyArray<string> =
+			migration_0030_error_events_attribute_fallback.statements.filter((stmt) => !isBackfill(stmt))
+		const sql = statements.join("\n")
+
+		// An MV's SELECT is frozen at creation, so both views are dropped before
+		// they are recreated; error_events_by_time_mv shares the projection
+		// byte-for-byte and must never disagree with error_events_mv on a label.
+		for (const view of ["error_events_mv", "error_events_by_time_mv"]) {
+			const dropAt = statements.findIndex((stmt) => stmt === `DROP VIEW IF EXISTS ${view}`)
+			const createAt = statements.findIndex((stmt) =>
+				stmt.startsWith(`CREATE MATERIALIZED VIEW IF NOT EXISTS ${view} `),
+			)
+			expect(dropAt).toBeGreaterThanOrEqual(0)
+			expect(createAt).toBeGreaterThan(dropAt)
+		}
+
+		// Nothing is rewritten: error_events keeps no span attributes to re-derive
+		// from, and recomputing FingerprintHash would re-bucket every issue.
+		expect(sql).not.toContain("ALTER TABLE error_events")
+		expect(migration_0030_error_events_attribute_fallback.statements.some(isBackfill)).toBe(false)
 	})
 
 	it("recreates both error-events MVs with the 4xx guard and the widened frame redaction", () => {
@@ -682,5 +728,232 @@ describe("migration 0026 — ai_trace_index filter columns", () => {
 
 	it("does not backfill", () => {
 		expect(statements.some((stmt) => typeof stmt !== "string" || stmt.includes("INSERT"))).toBe(false)
+	})
+})
+
+describe("migration 0029 — ai_trace_index usage conventions", () => {
+	const migration = migrations.find((entry) => entry.version === 29)!
+
+	it("adds ResponseId and recreates the view with the convention-aware token sum", () => {
+		const [alter, drop, create, ...rest] = migration.statements as ReadonlyArray<string>
+		expect(rest).toEqual([])
+		expect(alter).toBe("ALTER TABLE ai_trace_index ADD COLUMN IF NOT EXISTS ResponseId String")
+		expect(drop).toBe("DROP VIEW IF EXISTS ai_trace_index_mv")
+		expect(create).toContain(
+			"coalesce(nullIf(SpanAttributes['gen_ai.response.id'], ''), SpanAttributes['ai.response.id']) AS ResponseId",
+		)
+		expect(create).toMatch(
+			/^CREATE MATERIALIZED VIEW IF NOT EXISTS ai_trace_index_mv TO ai_trace_index AS/,
+		)
+		// The prompt half nests the cache for the re-summing vendors and the
+		// OpenAI-shaped providers, and adds it beside the prompt for Anthropic.
+		expect(create).toContain(
+			"multiIf(SpanAttributes['maple_ai.vendor.id'] IN ('vercel_ai_sdk', 'maple'), greatest(",
+		)
+		expect(create).toContain(
+			"IN ('anthropic'), toFloat64OrZero(coalesce(nullIf(SpanAttributes['gen_ai.usage.input_tokens']",
+		)
+		// The completion half sets reasoning beside the completion for Gemini alone.
+		expect(create).toContain(
+			"IN ('gcp.gemini', 'gemini', 'gcp.vertex_ai', 'vertex_ai'), toFloat64OrZero(coalesce(nullIf(SpanAttributes['gen_ai.usage.output_tokens']",
+		)
+		expect(create).toContain(") AS Tokens")
+		// Every 0026 column still projected: the view maps to the table by NAME.
+		for (const column of [
+			"DeploymentEnv",
+			"Model",
+			"AgentName",
+			"ToolName",
+			"IsError",
+			"IsLlmCall",
+			"IsToolCall",
+			"Tokens",
+			"Cost",
+			"ResponseId",
+		]) {
+			expect(create).toContain(` AS ${column}`)
+		}
+		expect(create).toMatch(/\bSpanId,\s+ParentSpanId,\s+Duration,/)
+	})
+
+	it("does not backfill and does not gate ingest", () => {
+		expect(migration.requiredForIngest).toBe(false)
+		expect(migration.statements.some(isBackfill)).toBe(false)
+	})
+})
+
+describe("migration 0031 — ai_trace_index list columns", () => {
+	const migration = migrations.find((entry) => entry.version === 31)!
+
+	it("adds the vendor version and the five token buckets, then recreates the view", () => {
+		const statements = migration.statements as ReadonlyArray<string>
+		const alters = statements.slice(0, 6)
+		const [drop, create, ...rest] = statements.slice(6)
+		expect(rest).toEqual([])
+		expect(alters).toEqual([
+			"ALTER TABLE ai_trace_index ADD COLUMN IF NOT EXISTS VendorVersion LowCardinality(String)",
+			"ALTER TABLE ai_trace_index ADD COLUMN IF NOT EXISTS InputTokens Float64",
+			"ALTER TABLE ai_trace_index ADD COLUMN IF NOT EXISTS CacheReadTokens Float64",
+			"ALTER TABLE ai_trace_index ADD COLUMN IF NOT EXISTS CacheWriteTokens Float64",
+			"ALTER TABLE ai_trace_index ADD COLUMN IF NOT EXISTS OutputTokens Float64",
+			"ALTER TABLE ai_trace_index ADD COLUMN IF NOT EXISTS ReasoningTokens Float64",
+		])
+		// An MV's SELECT is frozen at creation, so the 0029 view is dropped
+		// before the widened one is created.
+		expect(drop).toBe("DROP VIEW IF EXISTS ai_trace_index_mv")
+		expect(create).toMatch(
+			/^CREATE MATERIALIZED VIEW IF NOT EXISTS ai_trace_index_mv TO ai_trace_index AS/,
+		)
+		expect(create).toContain("SpanAttributes['maple_ai.vendor.version'] AS VendorVersion")
+		// The buckets are the disjoint split, so the nesting conventions carve
+		// the cache out of the prompt and the reasoning out of the completion.
+		expect(create).toContain(
+			"greatest(0, toFloat64OrZero(coalesce(nullIf(SpanAttributes['gen_ai.usage.input_tokens']",
+		)
+		expect(create).toContain(
+			"greatest(0, toFloat64OrZero(coalesce(nullIf(SpanAttributes['gen_ai.usage.output_tokens']",
+		)
+		// Every column the target holds is still projected: the view maps to the
+		// table by NAME.
+		for (const column of [
+			"Tokens",
+			"Cost",
+			"ResponseId",
+			"VendorVersion",
+			"InputTokens",
+			"CacheReadTokens",
+			"CacheWriteTokens",
+			"OutputTokens",
+			"ReasoningTokens",
+		]) {
+			expect(create).toContain(` AS ${column}`)
+		}
+	})
+
+	it("does not backfill and does not gate ingest", () => {
+		expect(migration.requiredForIngest).toBe(false)
+		expect(migration.statements.some(isBackfill)).toBe(false)
+	})
+})
+
+describe("migration 0034: trace_facets_hourly", () => {
+	it("backfills with the view detached, then attaches it, in the emitter's DDL", () => {
+		const [drop, table, truncate, backfill, view, ...rest] = migration_0034_trace_facets_hourly.statements
+		expect(rest).toEqual([])
+		expect(drop).toBe("DROP VIEW IF EXISTS trace_facets_hourly_mv")
+		expect(truncate).toBe("TRUNCATE TABLE IF EXISTS trace_facets_hourly")
+		expect(backfill).toBe(traceFacetsHourlyBackfill)
+		expect(latestSnapshotStatements).toContain(table)
+		expect(latestSnapshotStatements).toContain(view)
+	})
+})
+
+describe("migration 0033: ai_crawler_requests", () => {
+	it("creates the table before the view that fills it, with no backfill", () => {
+		const [table, view, ...rest] = migration_0033_ai_crawler_requests.statements
+		expect(rest).toEqual([])
+		expect(table).toMatch(/^CREATE TABLE IF NOT EXISTS ai_crawler_requests \(/)
+		expect(view).toMatch(
+			/^CREATE MATERIALIZED VIEW IF NOT EXISTS ai_crawler_requests_mv TO ai_crawler_requests AS/,
+		)
+		// The view maps to the table by name, so every column must be projected.
+		for (const column of ["Crawler", "Host", "Path", "HttpStatus"]) {
+			expect(view).toContain(` AS ${column}`)
+		}
+		expect(view).toContain("WHERE SpanKind = 'Server'")
+	})
+})
+
+describe("migration 0032 — ai_trace_index tool detail columns", () => {
+	const migration = migrations.find((entry) => entry.version === 32)!
+
+	it("adds the failure's type, message, tool call result and fingerprint and the tool description, then recreates the view", () => {
+		const statements = migration.statements as ReadonlyArray<string>
+		const alters = statements.slice(0, 5)
+		const [drop, create, ...rest] = statements.slice(5)
+		expect(rest).toEqual([])
+		expect(alters).toEqual([
+			"ALTER TABLE ai_trace_index ADD COLUMN IF NOT EXISTS ErrorType LowCardinality(String)",
+			"ALTER TABLE ai_trace_index ADD COLUMN IF NOT EXISTS StatusMessage String",
+			"ALTER TABLE ai_trace_index ADD COLUMN IF NOT EXISTS ToolDescription String",
+			"ALTER TABLE ai_trace_index ADD COLUMN IF NOT EXISTS FailedToolCallResult String",
+			"ALTER TABLE ai_trace_index ADD COLUMN IF NOT EXISTS ErrorFingerprint UInt64",
+		])
+		// An MV's SELECT is frozen at creation, so the 0031 view is dropped
+		// before the widened one is created.
+		expect(drop).toBe("DROP VIEW IF EXISTS ai_trace_index_mv")
+		expect(create).toMatch(
+			/^CREATE MATERIALIZED VIEW IF NOT EXISTS ai_trace_index_mv TO ai_trace_index AS/,
+		)
+		// `error.type` is plain semconv, so one key answers for every dialect —
+		// and it is the same lookup `IsError` already tests for emptiness.
+		expect(create).toContain("SpanAttributes['error.type'] AS ErrorType")
+		// Both free-text columns are cut at insert, in CHARACTERS: `left` would
+		// cut mid-codepoint on any message or description holding one.
+		expect(create).toContain("leftUTF8(StatusMessage, 400) AS StatusMessage")
+		expect(create).toContain(
+			"leftUTF8(coalesce(nullIf(SpanAttributes['gen_ai.tool.description'], ''), SpanAttributes['tool.description']), 2000) AS ToolDescription",
+		)
+		// A tool call's result is carried only where the call failed, cut the same
+		// way.
+		expect(create).toContain(
+			"leftUTF8(coalesce(nullIf(SpanAttributes['gen_ai.tool.call.result'], ''), SpanAttributes['ai.toolCall.result']), 1000), '') AS FailedToolCallResult",
+		)
+		// The fingerprint hashes that result, else the index's own status message,
+		// through the redaction chain `error_events` uses — its first pattern
+		// innermost, its last outermost — and is 0 on a span that did not fail.
+		expect(create).toContain("cityHash64(replaceRegexpAll(replaceRegexpAll(")
+		expect(create).toContain("leftUTF8(StatusMessage, 400)), 400), '[a-zA-Z0-9._%+-]+@")
+		expect(create).toContain("'[0-9a-fA-F-]{6,}|[0-9]+', '#')), 0) AS ErrorFingerprint")
+		// Every column the target holds is still projected: the view maps to the
+		// table by NAME.
+		for (const column of [
+			"VendorVersion",
+			"ReasoningTokens",
+			"ErrorType",
+			"StatusMessage",
+			"ToolDescription",
+			"FailedToolCallResult",
+			"ErrorFingerprint",
+		]) {
+			expect(create).toContain(` AS ${column}`)
+		}
+	})
+
+	it("does not backfill and does not gate ingest", () => {
+		expect(migration.requiredForIngest).toBe(false)
+		expect(migration.statements.some(isBackfill)).toBe(false)
+	})
+})
+
+describe("migration 0035 — ai_trace_index_mv projects the gateway's stamps", () => {
+	it("recreates the view over the maple_ai.* stamps, with no dialect key and no convention", () => {
+		const [drop, create, ...rest] = migration_0035_ai_trace_index_gateway_stamps.statements
+		expect(rest).toEqual([])
+		expect(drop).toBe("DROP VIEW IF EXISTS ai_trace_index_mv")
+		expect(create).toBe(latestSnapshotStatements.find((stmt) => stmt.includes("ai_trace_index_mv TO")))
+		for (const projection of [
+			"SpanAttributes['maple_ai.model'] AS Model",
+			"SpanAttributes['maple_ai.agent.name'] AS AgentName",
+			"SpanAttributes['maple_ai.tool.name'] AS ToolName",
+			"toUInt8(SpanAttributes['maple_ai.error'] = '1') AS IsError",
+			"toUInt8(SpanAttributes['maple_ai.llm_call'] = '1') AS IsLlmCall",
+			"toUInt8(SpanAttributes['maple_ai.tool_call'] = '1') AS IsToolCall",
+			"toFloat64OrZero(SpanAttributes['maple_ai.usage.cost']) AS Cost",
+			"SpanAttributes['maple_ai.response.id'] AS ResponseId",
+			"toFloat64OrZero(SpanAttributes['maple_ai.usage.input_tokens']) AS InputTokens",
+			"SpanAttributes['maple_ai.tool.description'] AS ToolDescription",
+			"SpanAttributes['maple_ai.tool.error_result'] AS FailedToolCallResult",
+		]) {
+			expect(create).toContain(projection)
+		}
+		// The only attribute keys read are the gateway's, `error.type`, and the
+		// resource's environment.
+		const keys = [...create.matchAll(/Attributes\['([^']+)'\]/g)].map(([, key]) => key)
+		expect(new Set(keys.filter((key) => !key.startsWith("maple_ai.")))).toEqual(
+			new Set(["deployment.environment.name", "deployment.environment", "error.type"]),
+		)
+		expect(create).not.toContain("multiIf")
+		expect(create).not.toContain("LIKE")
 	})
 })

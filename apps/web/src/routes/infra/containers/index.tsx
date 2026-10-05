@@ -1,4 +1,3 @@
-import { useState } from "react"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import { Schema } from "effect"
 import { Result, useAtomValue } from "@/lib/effect-atom"
@@ -23,8 +22,11 @@ import {
 	ContainerSummaryBandLoading,
 	type ContainerScope,
 } from "@/components/infra/container-summary-band"
-import { ContainersFilterSidebarView, type ContainerFilters } from "@/components/infra/container-filter-sidebar"
-import { InstallHostModal } from "@/components/infra/install-modal"
+import {
+	ContainersFilterSidebarView,
+	type ContainerFilters,
+} from "@/components/infra/container-filter-sidebar"
+import { InfraSetupEmpty } from "@/components/infra/infra-empty-state"
 import { ActiveFilterChips } from "@maple/ui/components/filters/active-filter-chips"
 import { containerFilterChips } from "@/lib/infra/container-filter-chips"
 import {
@@ -34,6 +36,7 @@ import {
 } from "@/lib/services/atoms/warehouse-query-atoms"
 import { useEffectiveTimeRange } from "@/hooks/use-effective-time-range"
 import { TimeRangeSearchFields, applyTimeRangeSearch } from "@/components/time-range-picker/search"
+import { sessionTimeRangeSearchMiddleware } from "@/components/time-range-picker/session-time-range"
 import { PageRefreshProvider } from "@/components/time-range-picker/page-refresh-context"
 import { TimeRangeHeaderControls } from "@/components/time-range-picker/time-range-header-controls"
 import { useDebouncedValue } from "@maple/ui/hooks/use-debounced-value"
@@ -72,6 +75,7 @@ export type ContainersSearchParams = Schema.Schema.Type<typeof containersSearchS
 export const Route = createFileRoute("/infra/containers/")({
 	component: ContainersPage,
 	validateSearch: Schema.toStandardSchemaV1(containersSearchSchema),
+	search: { middlewares: [sessionTimeRangeSearchMiddleware()] },
 })
 
 const SCOPE_LABEL: Record<ContainerScope, string> = {
@@ -83,7 +87,6 @@ const SCOPE_LABEL: Record<ContainerScope, string> = {
 function ContainersPage() {
 	const search = Route.useSearch()
 	const navigate = useNavigate({ from: Route.fullPath })
-	const [installOpen, setInstallOpen] = useState(false)
 
 	const { startTime, endTime } = useEffectiveTimeRange(
 		search.startTime,
@@ -265,22 +268,14 @@ function ContainersPage() {
 
 										if (containers.length === 0 && !hasAnyNarrowing) {
 											return (
-												<Empty className="py-16">
-													<EmptyHeader>
-														<EmptyMedia variant="icon">
-															<DockerIcon size={16} />
-														</EmptyMedia>
-														<EmptyTitle>No containers reporting yet</EmptyTitle>
-														<EmptyDescription>
-															Run the Maple Docker agent next to your containers
-															so the Docker stats receiver can start collecting
-															per-container CPU, memory, network, and block I/O.
-														</EmptyDescription>
-													</EmptyHeader>
-													<Button size="sm" onClick={() => setInstallOpen(true)}>
-														Install the Docker agent
-													</Button>
-												</Empty>
+												<InfraSetupEmpty
+													icon={<DockerIcon size={16} />}
+													title="No containers reporting yet"
+													description="Run the Maple Docker agent next to your containers to collect per-container CPU, memory, network, and block I/O. On Kubernetes, the Helm chart collects container metrics too."
+													installTab="docker"
+													actionLabel="Install the Docker agent"
+													docs="docker"
+												/>
 											)
 										}
 
@@ -337,7 +332,7 @@ function ContainersPage() {
 															</EmptyTitle>
 															<EmptyDescription>
 																{scope
-																	? `Nothing is ${SCOPE_LABEL[scope]} in this window — which is good news.`
+																	? `Nothing is ${SCOPE_LABEL[scope]} in this window, which is good news.`
 																	: "Try a different name, or clear the filters to see the whole fleet."}
 															</EmptyDescription>
 														</EmptyHeader>
@@ -364,11 +359,6 @@ function ContainersPage() {
 									})
 									.render()}
 							</div>
-							<InstallHostModal
-								open={installOpen}
-								onOpenChange={setInstallOpen}
-								defaultTab="docker"
-							/>
 						</DashboardLayout.Scroll>
 					</DashboardLayout.Content>
 				</DashboardLayout.Body>

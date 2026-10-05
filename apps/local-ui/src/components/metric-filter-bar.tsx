@@ -16,10 +16,11 @@ import {
 } from "../hooks/use-local-metric-detail"
 import type { MetricEntry } from "../hooks/use-local-metrics"
 import { GROUP_BY_SERVICE, SERIES_LIMIT_OPTIONS, type MetricFilter } from "../lib/metric-explorer"
+import type { TimeBounds } from "../lib/time"
 
 interface MetricFilterBarProps {
 	entry: MetricEntry | null | undefined
-	range: string
+	bounds: TimeBounds
 	options: MetricExplorerOptions
 	onGroupByChange: (next: string) => void
 	onSeriesLimitChange: (next: number) => void
@@ -28,20 +29,20 @@ interface MetricFilterBarProps {
 
 export function MetricFilterBar({
 	entry,
-	range,
+	bounds,
 	options,
 	onGroupByChange,
 	onSeriesLimitChange,
 	onFiltersChange,
 }: MetricFilterBarProps) {
-	const attributeKeys = useLocalMetricAttributeKeys(entry, range)
+	const attributeKeys = useLocalMetricAttributeKeys(entry, bounds)
 	const keys = attributeKeys.data ?? []
 	// The draft key is unset until the user picks one, so the select falls back
 	// to the first discovered key rather than resetting itself as keys load.
 	const [draftKey, setDraftKey] = useState("")
 	const [draftValue, setDraftValue] = useState("")
 	const activeKey = draftKey || keys[0]?.name || ""
-	const attributeValues = useLocalMetricAttributeValues(entry, range, activeKey || undefined)
+	const attributeValues = useLocalMetricAttributeValues(entry, bounds, activeKey || undefined)
 	// An attribute key is dotted, sometimes spaced — neither belongs in the id a
 	// `list=` attribute has to match.
 	const valueListId = `metric-filter-values-${activeKey.replace(/[^\w-]/g, "-")}`

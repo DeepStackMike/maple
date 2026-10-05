@@ -63,7 +63,10 @@ export interface FlushTransport {
 
 /**
  * Turn a resolved resource into ready-to-POST URLs + headers. Shared by all
- * presets; `userAgent` is the only per-preset difference.
+ * presets. `keyless` is each preset's answer to "no ingest key": the env-driven
+ * server and Cloudflare presets treat it as unconfigured and `"disable"`; the
+ * browser client's key is auth only, so it `"send"`s without `Authorization`
+ * for a proxy in front of the endpoint to complete.
  */
 export const buildResolved = (
 	r: ResourceInput,
@@ -72,10 +75,11 @@ export const buildResolved = (
 		readonly logsPath?: string | undefined
 		readonly metricsPath?: string | undefined
 		readonly userAgent: string
+		readonly keyless: "disable" | "send"
 	},
 ): Resolved => {
 	// `r.endpoint` is always defined in practice (every resolver falls back to
-	// DEFAULT_MAPLE_ENDPOINT, and the client requires it); guard anyway.
+	// the region's public ingest); guard anyway.
 	const base = r.endpoint ?? "https://ingest.maple.dev"
 	const baseUrl = base.endsWith("/") ? base.slice(0, -1) : base
 	const tracesUrl = `${baseUrl}${opts.tracesPath ?? "/v1/traces"}`
@@ -97,7 +101,7 @@ export const buildResolved = (
 		resource: makeOtlpResource(r.resource),
 		scope: { name: r.resource.serviceName },
 		headers,
-		noOp: r.ingestKey === undefined,
+		noOp: r.ingestKey === undefined && opts.keyless === "disable",
 	}
 }
 
@@ -198,16 +202,32 @@ export const guardFlush =
 		if (Result.isFailure(outcome)) console.error(`${logPrefix} flush failed:`, outcome.failure)
 	}
 
-/** Serialize flush calls so concurrent timers/manual hooks cannot drain overlapping batches. */
+/**
+ * Serialize drains. Workers may coalesce queued calls with identical arguments:
+ * every caller waits for that drain, and calls arriving DURING it queue a later
+ * drain so spans completed after the first snapshot cannot be stranded.
+ * Other presets retain one drain per call by default.
+ */
 export const makeSerializedFlush = <Args extends ReadonlyArray<unknown>>(
 	run: (...args: Args) => Promise<void>,
+	options?: { readonly coalesceSameArguments?: boolean },
 ): ((...args: Args) => Promise<void>) => {
 	let tail: Promise<void> = Promise.resolve()
+	let queued: { readonly args: Args; readonly promise: Promise<void> } | undefined
 	return (...args) => {
-		const next = tail.then(
-			() => run(...args),
-			() => run(...args),
+		const waiting = queued
+		if (
+			options?.coalesceSameArguments &&
+			waiting &&
+			args.length === waiting.args.length &&
+			args.every((value, index) => value === waiting.args[index])
 		)
+			return waiting.promise
+		const next: Promise<void> = tail.then(() => {
+			if (queued?.promise === next) queued = undefined
+			return run(...args)
+		})
+		queued = { args, promise: next }
 		tail = next.catch(() => undefined)
 		return next
 	}
@@ -231,7 +251,7 @@ export const runFlush = async (args: {
 	readonly metricsState: SignalState
 	readonly transport: FlushTransport
 	readonly logPrefix: string
-	readonly onNoOp: () => void
+	readonly onNoOp?: (() => void) | undefined
 }): Promise<void> => {
 	const {
 		resolved: r,
@@ -250,7 +270,7 @@ export const runFlush = async (args: {
 		spans.drain()
 		logs.drain()
 		metrics.drain()
-		onNoOp()
+		onNoOp?.()
 		return
 	}
 

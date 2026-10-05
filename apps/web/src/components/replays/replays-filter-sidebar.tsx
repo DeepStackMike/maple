@@ -10,6 +10,15 @@ import {
 import { MagnifierIcon, XmarkIcon } from "@/components/icons"
 import { browserIconFor, deviceIconFor } from "@/components/replays/session-icons"
 import {
+	SESSION_TAG_DESCRIPTIONS,
+	SESSION_TAG_DOTS,
+	SESSION_TAG_LABELS,
+	SESSION_TAG_ORDER,
+	asSessionTag,
+	nextTagSelection,
+	sessionTagsFromSearch,
+} from "@/components/replays/session-tags"
+import {
 	InputGroup,
 	InputGroupAddon,
 	InputGroupButton,
@@ -20,10 +29,10 @@ import { Separator } from "@maple/ui/components/ui/separator"
 import { cn } from "@maple/ui/lib/utils"
 import {
 	RangeFilterSection,
-	formatSeconds,
 	type RangeBucket,
 	type RangePreset,
 } from "@maple/ui/components/filters/range-filter-section"
+import { percentilePresets, toLogBuckets } from "@/components/filters/range-distribution"
 import {
 	FilterSidebarBody,
 	FilterSidebarError,
@@ -47,6 +56,10 @@ interface ReplaysFacets {
 	/** Identified groups (company / team). Empty for orgs that never call
 	 *  `identify()` with a group — the section hides itself then. */
 	readonly groups: ReadonlyArray<ReplaysFacetItem>
+	/** Page paths visited anywhere in a session, by sessions that reached them. */
+	readonly pages: ReadonlyArray<ReplaysFacetItem>
+	/** Sessions per rule-based tag; tags with no sessions are absent. */
+	readonly tags: ReadonlyArray<ReplaysFacetItem>
 	readonly errorCount: number
 	/** Session-length distribution: `name` is the bucket floor in ms. */
 	readonly durationBuckets: ReadonlyArray<ReplaysFacetItem>
@@ -54,73 +67,21 @@ interface ReplaysFacets {
 	readonly durationP95: number
 }
 
-/** Share of sessions the axis must cover before the rest is folded into a single
- *  overflow bar. Real data has abandoned tabs measured in days; on a log axis one
- *  of those stretches the range past 500h and squashes every genuine session into
- *  the first few pixels. */
-const AXIS_COVERAGE = 0.99
-
 // The warehouse buckets session length into half-octaves from 1s and returns only
-// the non-empty ones (see sessionReplaysFacetsQuery). Rebuild the full run, in
-// seconds, so the histogram's axis stays continuous instead of collapsing gaps
-// into neighbouring bars.
+// the non-empty ones, named by their floor in ms (see sessionReplaysFacetsQuery).
 export function toDurationBuckets(raw: ReadonlyArray<ReplaysFacetItem>): RangeBucket[] {
-	const counts = new Map<number, number>()
-	for (const item of raw) {
-		const floorMs = Number(item.name)
-		if (!Number.isFinite(floorMs) || floorMs <= 0) continue
-		counts.set(Math.round(Math.log2(floorMs / 1000) * 2), item.count)
-	}
-	if (counts.size === 0) return []
-
-	const octaves = [...counts.keys()]
-	const buckets: RangeBucket[] = []
-	for (let k = Math.min(...octaves); k <= Math.max(...octaves); k++) {
-		const from = 2 ** (k / 2)
-		buckets.push({ from, to: from * Math.SQRT2, count: counts.get(k) ?? 0 })
-	}
-
-	// Keep the outliers visible as one unbounded bar at the right edge rather than
-	// dropping them — they're real sessions, and folding them into the last kept
-	// bucket would misreport it as a spike.
-	const total = buckets.reduce((sum, b) => sum + b.count, 0)
-	if (total === 0) return buckets
-	let covered = 0
-	for (const [index, bucket] of buckets.entries()) {
-		covered += bucket.count
-		if (covered < total * AXIS_COVERAGE) continue
-		const tail = buckets.slice(index + 1)
-		const tailCount = tail.reduce((sum, b) => sum + b.count, 0)
-		if (tailCount === 0) return buckets.slice(0, index + 1)
-		return [
-			...buckets.slice(0, index + 1),
-			{ from: tail[0]!.from, to: Number.POSITIVE_INFINITY, count: tailCount, unbounded: true },
-		]
-	}
-	return buckets
+	return toLogBuckets(
+		raw.map((item) => ({ floor: Number(item.name) / 1000, count: item.count })),
+		2,
+	)
 }
 
-// "Bounced" is the one shortcut that names an intent rather than a threshold;
-// the percentiles are this audience's own vocabulary and carry their resolved
-// value. Percentiles under a second make a degenerate preset — skip them.
+// "Bounced" is the one shortcut that names an intent rather than a threshold.
 function sessionLengthPresets(p50Ms: number, p95Ms: number): RangePreset[] {
-	const presets: RangePreset[] = [{ key: "bounced", label: "Bounced", value: "<10s", max: 10 }]
-	for (const [key, label, ms] of [
-		["p50", "> p50", p50Ms],
-		["p95", "> p95", p95Ms],
-	] as const) {
-		const seconds = roundThreshold(ms / 1000)
-		if (seconds >= 1) presets.push({ key, label, value: formatSeconds(seconds), min: seconds })
-	}
-	return presets
-}
-
-/** A percentile lands on values like 2647s, which reads as "44m 7s" — precision
- *  no one asked for on a shortcut. Round to the nearest minute above a minute;
- *  the seconds it drops can't change which sessions you care about. */
-function roundThreshold(seconds: number): number {
-	if (seconds < 60) return Math.round(seconds)
-	return Math.round(seconds / 60) * 60
+	return [
+		{ key: "bounced", label: "Bounced", value: "<10s", max: 10 },
+		...percentilePresets(p50Ms / 1000, p95Ms / 1000, "s"),
+	]
 }
 
 // Active time has no distribution behind it — computing one means scanning
@@ -128,7 +89,7 @@ function roundThreshold(seconds: number): number {
 // to avoid. Static thresholds, named for what they mean.
 const ACTIVE_TIME_PRESETS: RangePreset[] = [
 	{ key: "idle", label: "Idle", value: "<5s", max: 5 },
-	{ key: "engaged", label: "Engaged", value: ">30s", min: 30 },
+	{ key: "active", label: "Active", value: ">30s", min: 30 },
 ]
 
 // The facet branches exclude their own dimension server-side, so a selected
@@ -142,6 +103,32 @@ function withSelected(options: ReadonlyArray<ReplaysFacetItem>, selected?: strin
 	return list
 }
 
+// Every tag in a fixed order, counts filled from the facet. Each count is taken
+// under the other selected tags, so it reads as "sessions you would get by ticking it".
+function tagOptions(counts: ReadonlyArray<ReplaysFacetItem>): FilterOption[] {
+	return SESSION_TAG_ORDER.map((tag) => ({
+		name: tag,
+		count: counts.find((item) => item.name === tag)?.count ?? 0,
+	})).filter((option) => option.count > 0)
+}
+
+const tagLabel = (name: string) => {
+	const tag = asSessionTag(name)
+	return tag === undefined ? name : SESSION_TAG_LABELS[tag]
+}
+
+// The same colour the tag's pill has in the list, so the two read as one vocabulary.
+const tagDot = (name: string) => {
+	const tag = asSessionTag(name)
+	if (tag === undefined) return undefined
+	return <span aria-hidden className={cn("size-2 shrink-0 rounded-full", SESSION_TAG_DOTS[tag])} />
+}
+
+const tagDescription = (name: string) => {
+	const tag = asSessionTag(name)
+	return tag === undefined ? undefined : SESSION_TAG_DESCRIPTIONS[tag]
+}
+
 interface ReplaysFilterSidebarProps {
 	facetsResult: Result.Result<ReplaysFacets, unknown>
 }
@@ -152,10 +139,20 @@ export function ReplaysFilterSidebar({ facetsResult }: ReplaysFilterSidebarProps
 
 	// Single-value params: take the last toggled option (switching dimensions
 	// replaces the prior value; unchecking the only one clears it).
-	const setSingle = (key: "service" | "browser" | "country" | "deviceType" | "group", values: string[]) => {
+	const setSingle = (
+		key: "service" | "browser" | "country" | "deviceType" | "group" | "page",
+		values: string[],
+	) => {
 		navigate({
 			search: (prev) => ({ ...prev, [key]: values.at(-1) ?? undefined }),
 		})
+	}
+
+	// Traits combine with a tier; ticking a tier replaces the previous one, since a
+	// session has exactly one and two would match nothing.
+	const setTags = (values: string[]) => {
+		const next = nextTagSelection(sessionTagsFromSearch(search.tags) ?? [], values)
+		navigate({ search: (prev) => ({ ...prev, tags: next.length > 0 ? next : undefined }) })
 	}
 
 	const setUserId = (value: string | undefined) => {
@@ -194,6 +191,8 @@ export function ReplaysFilterSidebar({ facetsResult }: ReplaysFilterSidebarProps
 		!!search.userId ||
 		!!search.user ||
 		!!search.group ||
+		!!search.page ||
+		(search.tags?.length ?? 0) > 0 ||
 		search.hasErrors === true ||
 		search.durationMin != null ||
 		search.durationMax != null ||
@@ -209,6 +208,12 @@ export function ReplaysFilterSidebar({ facetsResult }: ReplaysFilterSidebarProps
 			const countries = withSelected(facets.countries, search.country)
 			const devices = withSelected(facets.devices, search.deviceType)
 			const groups = withSelected(facets.groups, search.group)
+			const pages = withSelected(facets.pages, search.page)
+			const selectedTags = sessionTagsFromSearch(search.tags) ?? []
+			const tags = tagOptions(facets.tags)
+			for (const tag of selectedTags) {
+				if (!tags.some((option) => option.name === tag)) tags.unshift({ name: tag, count: 0 })
+			}
 
 			const hasFacets =
 				services.length > 0 ||
@@ -216,6 +221,8 @@ export function ReplaysFilterSidebar({ facetsResult }: ReplaysFilterSidebarProps
 				countries.length > 0 ||
 				devices.length > 0 ||
 				groups.length > 0 ||
+				pages.length > 0 ||
+				tags.length > 0 ||
 				facets.errorCount > 0
 
 			return (
@@ -233,6 +240,18 @@ export function ReplaysFilterSidebar({ facetsResult }: ReplaysFilterSidebarProps
 						    that exact filter, with the same facet count, as a one-click chip. Two
 						    controls for one boolean in the same viewport is not redundancy, it is a
 						    question about whether they agree. */}
+						{/* The cheapest cut through the noise: "Engaged" alone drops bots,
+						    bounces, idle tabs and glances, usually most of a window. */}
+						<FilterSection
+							title="Session type"
+							options={tags}
+							selected={selectedTags}
+							onChange={setTags}
+							getOptionLabel={tagLabel}
+							getOptionDescription={tagDescription}
+							renderOptionIcon={tagDot}
+						/>
+
 						<RangeFilterSection
 							title="Session length"
 							unit="s"
@@ -251,6 +270,16 @@ export function ReplaysFilterSidebar({ facetsResult }: ReplaysFilterSidebarProps
 							maxValue={search.activeMax}
 							onRangeChange={setActiveRange}
 							presets={ACTIVE_TIME_PRESETS}
+						/>
+
+						{/* Every page a session reached, not just where it landed — the toolbar
+						    search covers the entry URL. Top 200 by sessions; the search box
+						    filters that list. */}
+						<SearchableFilterSection
+							title="Page visited"
+							options={pages}
+							selected={search.page ? [search.page] : []}
+							onChange={(vals) => setSingle("page", vals)}
 						/>
 
 						<SearchableFilterSection

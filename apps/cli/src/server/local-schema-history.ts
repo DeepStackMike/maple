@@ -181,4 +181,156 @@ export const LOCAL_SCHEMA_HISTORY: ReadonlyArray<LocalSchemaHistoryEntry> = Obje
 		manifestDigest: "f7d559f0db216379db02bc78c4e50f180f40588e124adf65665bf7eaaf556735",
 		projectRevision: "ed74788ef292834069e0ea6ee3b22d68fc604fb66cb54d2d551db67ce8d20b3a",
 	}),
+	Object.freeze({
+		// v17: `audit_log` table added (ClickHouse migration 0027). Purely
+		// additive — nothing is rewritten, no row moves, nothing is backfilled.
+		//
+		// projectRevision is carried forward deliberately — it is a hardcoded
+		// constant that no longer tracks the generator's header, and the identity
+		// this gate compares is the fingerprint/digest pair.
+		version: 17,
+		fingerprint: "b3800f55258f0ae3",
+		digest: "b3800f55258f0ae37a52bec6e4fe38be8fa9daebe3c912db2aa6885a4d73fa20",
+		manifestDigest: "f19b88567770ee1b67f77d5734de61adbfd3ba907ce8ae28ce65a4da4e544533",
+		projectRevision: "ed74788ef292834069e0ea6ee3b22d68fc604fb66cb54d2d551db67ce8d20b3a",
+	}),
+	Object.freeze({
+		// v18: `product_events` gains `TraceId`/`SpanId` plus a bloom filter, and
+		// `product_events_traces_mv` projects annotated spans in (ClickHouse
+		// migration 0028). Metadata-only ALTERs plus a view swap — no part is
+		// rewritten and no row moves. The trace half IS backfilled from whatever
+		// `traces` still retains; annotated spans older than that are not.
+		//
+		// projectRevision is carried forward deliberately — it is a hardcoded
+		// constant that no longer tracks the generator's header, and the identity
+		// this gate compares is the fingerprint/digest pair.
+		version: 18,
+		fingerprint: "09ee43045937c44e",
+		digest: "09ee43045937c44e89cf65001569497fb2e2d5b3356a8ddc2d81e0a8551bf1b2",
+		manifestDigest: "2a7d05f4fb19422404264521f06ea9ca2f2106cdce2165899f00433215aca8b0",
+		projectRevision: "ed74788ef292834069e0ea6ee3b22d68fc604fb66cb54d2d551db67ce8d20b3a",
+	}),
+	Object.freeze({
+		// v19: `ai_trace_index` gains `ResponseId`, and `ai_trace_index_mv` is
+		// recreated to fill it and to count `Tokens` under the reporter's usage
+		// convention (ClickHouse migration 0029). Nothing is rewritten and no
+		// row moves; rows materialized under v18 keep their over-counted
+		// `Tokens` and an empty `ResponseId` until raw retention ages them out.
+		//
+		// projectRevision is carried forward deliberately — it is a hardcoded
+		// constant that no longer tracks the generator's header, and the identity
+		// this gate compares is the fingerprint/digest pair.
+		version: 19,
+		fingerprint: "778888eceae9d6b7",
+		digest: "778888eceae9d6b717004bf2b7cf8b0db84fb0d65c81e2cb72d7cb39a9c3bd74",
+		manifestDigest: "7887f63cadd66a33e495dc3277dc55059285799a1d044a1f1d9bb614f38af3bd",
+		projectRevision: "ed74788ef292834069e0ea6ee3b22d68fc604fb66cb54d2d551db67ce8d20b3a",
+	}),
+	Object.freeze({
+		// v20 rebuilds error_events_mv / error_events_by_time_mv so a span with
+		// no `exception` event is labelled from its exception.* / error.* span
+		// attributes (ClickHouse migration 0030). No part is rewritten and no row
+		// moves; rows already materialized keep their 'Unknown Error' label.
+		//
+		// projectRevision is carried forward deliberately — it is a hardcoded
+		// constant that no longer tracks the generator's header, and the identity
+		// this gate compares is the fingerprint/digest pair.
+		version: 20,
+		fingerprint: "ad8e854c9e2bb021",
+		digest: "ad8e854c9e2bb02184ace30e6b6eb483c978626f8a452f54293ee66c358ad1c5",
+		manifestDigest: "caec674c22441b89a3294d9158ca1b4b1d7b3b1b41f9cef3853b9570ad1db7b8",
+		projectRevision: "ed74788ef292834069e0ea6ee3b22d68fc604fb66cb54d2d551db67ce8d20b3a",
+	}),
+	Object.freeze({
+		// v21 adds the vendor version and the five token buckets to
+		// `ai_trace_index` and recreates `ai_trace_index_mv` to fill them
+		// (ClickHouse migration 0031), so the Agent Sessions list renders a row
+		// from the index alone. No part is rewritten and no row moves; rows
+		// materialized under v20 keep '' / 0 in the new columns until raw
+		// retention ages them out.
+		//
+		// projectRevision is carried forward deliberately — it is a hardcoded
+		// constant that no longer tracks the generator's header, and the identity
+		// this gate compares is the fingerprint/digest pair.
+		version: 21,
+		fingerprint: "8710bef778e01cfd",
+		digest: "8710bef778e01cfd7bfc48fea53d8fce0a592ef2cf23feea7f07eb6cf59f42ea",
+		manifestDigest: "78e6c9b0a73120a1d1cca1ccd35932c5af75b0748b64f0c60c6b6199165e4912",
+		projectRevision: "ed74788ef292834069e0ea6ee3b22d68fc604fb66cb54d2d551db67ce8d20b3a",
+	}),
+	Object.freeze({
+		// v22 adds the failure type, the status message, the tool description, a
+		// failed tool call's result and an error fingerprint to `ai_trace_index`
+		// and recreates `ai_trace_index_mv` to fill them (ClickHouse migration
+		// 0032), so the Agent Sessions tool detail page renders from the index
+		// alone. No part is rewritten and no row moves; rows materialized under
+		// v21 keep '' or 0 in the new columns until raw retention ages them out.
+		//
+		// projectRevision is carried forward deliberately — it is a hardcoded
+		// constant that no longer tracks the generator's header, and the identity
+		// this gate compares is the fingerprint/digest pair.
+		version: 22,
+		fingerprint: "ffa6bcb08863f58f",
+		digest: "ffa6bcb08863f58ff44cd3be5be3f8dcee849b7b704dc8dc91d622cf28e06d5a",
+		manifestDigest: "b1f8e56de0f33d42c366a3176b87f1ad17bf8d363008165d4b5ae11b18bb4f05",
+		projectRevision: "ed74788ef292834069e0ea6ee3b22d68fc604fb66cb54d2d551db67ce8d20b3a",
+	}),
+	Object.freeze({
+		// TODO(v23): what changed, whether any part is rewritten or any row
+		// moves, and what this edge does NOT backfill.
+		//
+		// projectRevision is carried forward deliberately: it is a hardcoded
+		// constant that no longer tracks the generator's header, and the identity
+		// this gate compares is the fingerprint/digest pair.
+		version: 23,
+		fingerprint: "03160af2211aeeed",
+		digest: "03160af2211aeeed50bac5750a0ab2148fc32eb18dcf3b500f3e99cfc5752530",
+		manifestDigest: "eac1c292f9f3d9d799d4a76a7a9991c258aaacf344d31479ebb5bf6014a6840a",
+		projectRevision: "ed74788ef292834069e0ea6ee3b22d68fc604fb66cb54d2d551db67ce8d20b3a",
+	}),
+	Object.freeze({
+		// v24 adds trace_facets_hourly and its view off trace_list_mv, backfilled
+		// from the retained root spans. Nothing existing is rewritten.
+		//
+		// projectRevision is carried forward deliberately: it is a hardcoded
+		// constant that no longer tracks the generator's header, and the identity
+		// this gate compares is the fingerprint/digest pair.
+		version: 24,
+		fingerprint: "35f37b2e3c43d610",
+		digest: "35f37b2e3c43d61046bc05f477b4e16c4f0f2ddb2c9100dc5298699014b5a047",
+		manifestDigest: "09eeccdbd568e6d550b739bb05e074dedb399720902b35577d4eb963c48b0a53",
+		projectRevision: "ed74788ef292834069e0ea6ee3b22d68fc604fb66cb54d2d551db67ce8d20b3a",
+	}),
+	Object.freeze({
+		// v25 partitions trace_facets_hourly by day (Tinybird rejects a TTL shorter
+		// than the partition period); the rollup is recreated and rebuilt.
+		//
+		// projectRevision is carried forward deliberately: it is a hardcoded
+		// constant that no longer tracks the generator's header, and the identity
+		// this gate compares is the fingerprint/digest pair.
+		version: 25,
+		fingerprint: "bfaed79bcf2423f5",
+		digest: "bfaed79bcf2423f532b582ab321d4b5f55410853cb381cad1df7041e0663f941",
+		manifestDigest: "005ad815cff50e1c642dfc696cf423d7d9a3c7ee58b8cdcd4ad647bf35ab1297",
+		projectRevision: "ed74788ef292834069e0ea6ee3b22d68fc604fb66cb54d2d551db67ce8d20b3a",
+	}),
+	Object.freeze({
+		// v26 recreates ai_trace_index_mv as a projection of the ingest
+		// gateway's maple_ai.* stamps. No column changes and no row is
+		// rewritten: rows before the edge keep the values the v25 view gave them.
+		//
+		// projectRevision is carried forward deliberately: it is a hardcoded
+		// constant that no longer tracks the generator's header, and the identity
+		// this gate compares is the fingerprint/digest pair.
+		version: 26,
+		fingerprint: "203c87dde2b5aedc",
+		digest: "203c87dde2b5aedc28de3b2fd72829991b28fdf703bbb40ae72ebd835dbdb67c",
+		manifestDigest: "a3f69dea62db6610d63a6b2442f86d9071c91c286b5935e764700efc01fa7d7a",
+		projectRevision: "ed74788ef292834069e0ea6ee3b22d68fc604fb66cb54d2d551db67ce8d20b3a",
+	}),
+] as const)
+
+/** Immutable SQLite control DDL identities, checked by clickhouse:schema:check. */
+export const LOCAL_CONTROL_SCHEMA_HISTORY = Object.freeze([
+	Object.freeze({ version: 1, digest: "9af9047b0e0e4f3562c0ee02bab4c25969960712dab862aee73eb5e8dc16b522" }),
 ] as const)

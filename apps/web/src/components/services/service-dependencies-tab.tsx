@@ -9,6 +9,7 @@ import { formatLatency } from "@maple/ui/lib/format"
 import { normalizeTimestampInput } from "@/lib/timezone-format"
 import { DependencyTable, type DependencyRow } from "./dependency-table"
 import type { DependencyKind } from "./dependency-type-badge"
+import { dependencyDrillWhereClause } from "./dependency-drill"
 
 interface ServiceDependenciesTabProps {
 	serviceName: string
@@ -48,10 +49,6 @@ function formatErrorRate(rate: number): string {
 	if (rate >= 0.01) return `${(rate * 100).toFixed(1)}%`
 	if (rate > 0) return "<1%"
 	return "0%"
-}
-
-function escapeForWhereClause(value: string): string {
-	return value.replace(/'/g, "\\'")
 }
 
 export function ServiceDependenciesTab({
@@ -121,7 +118,7 @@ export function ServiceDependenciesTab({
 				p95DurationMs: Number(edge.p95DurationMs ?? 0),
 				hasSampling: Boolean(edge.hasSampling),
 				samplingWeight: Number(edge.samplingWeight ?? 1),
-				whereClause: `SpanKind = 'Client' AND server.address ILIKE '%${escapeForWhereClause(target)}%'`,
+				whereClause: dependencyDrillWhereClause("service", target, ""),
 			})
 		}
 
@@ -151,7 +148,7 @@ export function ServiceDependenciesTab({
 				p95DurationMs: Number(edge.p95DurationMs ?? 0),
 				hasSampling: Boolean(edge.hasSampling),
 				samplingWeight: Number(edge.samplingWeight ?? 1),
-				whereClause: `SpanKind = 'Client' AND db.system.name = '${escapeForWhereClause(target)}'`,
+				whereClause: dependencyDrillWhereClause("database", target, ""),
 			})
 		}
 
@@ -163,12 +160,7 @@ export function ServiceDependenciesTab({
 			const callCount = Number(edge.callCount ?? 0)
 			const estimated = Number(edge.estimatedCallCount ?? callCount)
 			const system = edge.targetSystem ? String(edge.targetSystem) : ""
-			const whereClause =
-				kind === "messaging"
-					? `SpanKind = 'Producer' AND messaging.destination = '${escapeForWhereClause(target)}'`
-					: kind === "rpc"
-						? `SpanKind = 'Client' AND rpc.service = '${escapeForWhereClause(target)}'`
-						: `SpanKind = 'Client' AND (server.address = '${escapeForWhereClause(target)}' OR http.host = '${escapeForWhereClause(target)}')`
+			const whereClause = dependencyDrillWhereClause(kind, target, system)
 
 			out.push({
 				id: `${kind}:${target}`,

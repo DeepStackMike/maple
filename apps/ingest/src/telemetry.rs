@@ -58,12 +58,6 @@ const WAL_V3_HEADER_LEN: usize = 23;
 pub enum ExportDestination {
     Tinybird,
     ClickHouse,
-    /// A second Tinybird workspace, written in addition to `Tinybird` while a
-    /// workspace migration is in flight (see `TinybirdMirrorConfig`). Strictly
-    /// best-effort: it has its own lane, so it can never back-pressure the
-    /// primary, and `commit_mirror_frames` swallows every failure rather than
-    /// failing a request that the primary already accepted.
-    TinybirdMirror,
 }
 
 impl ExportDestination {
@@ -71,13 +65,12 @@ impl ExportDestination {
     /// shard is `shard * LANES_PER_SHARD + destination.lane_ordinal()`, so the
     /// position in this slice is load-bearing — do not reorder. Appending is
     /// safe (existing ordinals keep their value); inserting is not.
-    pub const ALL: [Self; 3] = [Self::Tinybird, Self::ClickHouse, Self::TinybirdMirror];
+    pub const ALL: [Self; 2] = [Self::Tinybird, Self::ClickHouse];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Tinybird => "tinybird",
             Self::ClickHouse => "clickhouse",
-            Self::TinybirdMirror => "tinybird_mirror",
         }
     }
 
@@ -86,7 +79,6 @@ impl ExportDestination {
         match self {
             Self::Tinybird => 0,
             Self::ClickHouse => 1,
-            Self::TinybirdMirror => 2,
         }
     }
 }
@@ -252,6 +244,9 @@ struct BreakerState {
     consecutive_failures: u32,
     /// When the breaker last tripped open. `None` while closed.
     opened_at: Option<Instant>,
+    /// When the in-flight half-open probe was admitted. `None` when no probe is
+    /// outstanding. Only meaningful while `opened_at` is set.
+    probe_started_at: Option<Instant>,
 }
 
 /// Pure transition: should the next attempt run, given the current state? Kept
@@ -262,14 +257,24 @@ fn breaker_decision(
     cfg: ClickHouseBreakerConfig,
     now: Instant,
 ) -> BreakerDecision {
-    match state.opened_at {
-        // Still within the cooldown window → keep shedding.
-        Some(opened) if now.duration_since(opened) < cfg.cooldown => BreakerDecision::Shed,
-        // Closed, or cooldown elapsed (half-open) → allow. Note half-open is not
-        // single-probe gated: while cooldown is elapsed, every batch that checks
-        // is allowed, so several lane workers can probe a recovering target
-        // concurrently until one records on_success/on_failure. Harmless here —
-        // the extra probes just re-confirm health or re-open the breaker.
+    // Closed → nothing to gate.
+    let Some(opened) = state.opened_at else {
+        return BreakerDecision::Allow;
+    };
+    // Still within the cooldown window → keep shedding.
+    if now.duration_since(opened) < cfg.cooldown {
+        return BreakerDecision::Shed;
+    }
+    // Half-open, and gated to a single probe. Every lane worker checks this
+    // registry, so an ungated half-open let all of them attempt the recovering
+    // target at once the instant cooldown elapsed — a thundering herd against a
+    // target that had just been declared unhealthy, repeated every cooldown.
+    //
+    // A probe that has not reported an outcome within one cooldown is treated as
+    // abandoned and a fresh one is admitted, so a worker that dies mid-probe
+    // cannot wedge the breaker open forever.
+    match state.probe_started_at {
+        Some(started) if now.duration_since(started) < cfg.cooldown => BreakerDecision::Shed,
         _ => BreakerDecision::Allow,
     }
 }
@@ -302,8 +307,9 @@ impl ClickHouseBreakerRegistry {
             .clone()
     }
 
-    /// Decide whether to attempt an export for `org_id`. Read-only: never
-    /// allocates breaker state for an org that has only ever succeeded.
+    /// Decide whether to attempt an export for `org_id`, claiming the half-open
+    /// probe slot when this caller is the one admitted. Never allocates breaker
+    /// state for an org that has only ever succeeded.
     fn decide(&self, org_id: &str, now: Instant) -> BreakerDecision {
         if !self.enabled() {
             return BreakerDecision::Allow;
@@ -311,10 +317,17 @@ impl ClickHouseBreakerRegistry {
         let Some(state) = self.states.get(org_id) else {
             return BreakerDecision::Allow;
         };
-        let guard = state
+        let mut guard = state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        breaker_decision(&guard, self.cfg, now)
+        let decision = breaker_decision(&guard, self.cfg, now);
+        // An `Allow` while open is the half-open probe, and the slot is claimed
+        // under the same lock the decision was read under — otherwise two workers
+        // racing here would both be told to probe.
+        if decision == BreakerDecision::Allow && guard.opened_at.is_some() {
+            guard.probe_started_at = Some(now);
+        }
+        decision
     }
 
     fn on_success(&self, org_id: &str) {
@@ -327,6 +340,7 @@ impl ClickHouseBreakerRegistry {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             guard.consecutive_failures = 0;
             guard.opened_at = None;
+            guard.probe_started_at = None;
         }
     }
 
@@ -339,6 +353,9 @@ impl ClickHouseBreakerRegistry {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.consecutive_failures = guard.consecutive_failures.saturating_add(1);
+        // The probe (if this was one) has reported; release the slot so the next
+        // cooldown can admit a fresh one.
+        guard.probe_started_at = None;
         if guard.consecutive_failures >= self.cfg.failure_threshold {
             // Re-stamped on every failure on purpose: `on_failure` only runs for
             // attempts the breaker *allowed*, so each one is either a pre-open
@@ -434,34 +451,10 @@ impl DatasourceNames {
     }
 }
 
-/// A second Tinybird workspace to mirror writes into, for the duration of a
-/// workspace migration.
-///
-/// Deliberately not modelled as "two equal endpoints": the mirror is the one
-/// that is allowed to lose rows. Its retry budget is smaller than the primary's
-/// so a sick workspace releases its lane worker in seconds rather than holding a
-/// batch through the full budget, and `sample_percent` exists so the mirror can
-/// be canaried on a slice of orgs before it carries the whole fleet.
-#[derive(Clone, Debug)]
-pub struct TinybirdMirrorConfig {
-    pub endpoint: String,
-    pub token: String,
-    /// Retry budget for a mirror batch. Lower than `export_max_attempts`.
-    pub max_attempts: u32,
-    /// Per-attempt timeout. The primary has none; the mirror does, because a
-    /// hanging mirror host must not occupy its lane worker indefinitely.
-    pub export_timeout: Duration,
-    /// Percentage of orgs to mirror, by `hash64(org_id) % 100`. The same org is
-    /// consistently in or out, so a ramp never splits one org's stream.
-    pub sample_percent: u8,
-}
-
 #[derive(Clone, Debug)]
 pub struct TinybirdConfig {
     pub endpoint: String,
     pub token: String,
-    /// `None` disables mirroring entirely — no mirror lane traffic, no clones.
-    pub mirror: Option<TinybirdMirrorConfig>,
     pub queue_dir: PathBuf,
     pub queue_max_bytes: u64,
     pub org_queue_max_bytes: u64,
@@ -473,6 +466,17 @@ pub struct TinybirdConfig {
     pub wal_segment_max_bytes: u64,
     /// How often this task refreshes its owner marker in the durability tier.
     pub wal_store_heartbeat_interval: Duration,
+    /// How long a frame may sit in its lane's channel before the export worker
+    /// sheds it instead of exporting it. `Duration::ZERO` disables the bound.
+    ///
+    /// The byte and slot caps alone do not bound this. A lane holds
+    /// `queue_channel_capacity` frames (100k by default) and the WAL holds
+    /// `queue_max_bytes`, so a stalled downstream target absorbs minutes of
+    /// traffic before either cap is reached — and the accept path queues behind
+    /// it the whole time rather than shedding. Telemetry that old has missed the
+    /// dashboards and alerts it existed for, so exporting it costs the same
+    /// downstream capacity that fresh rows need in order to catch up.
+    pub queue_max_age: Duration,
     pub batch_max_rows: usize,
     pub batch_max_bytes: usize,
     pub batch_max_wait: Duration,
@@ -498,61 +502,22 @@ impl TinybirdConfig {
     }
 
     /// Endpoint, token, retry budget and per-attempt timeout for one Tinybird
-    /// destination. `TinybirdMirror` resolves to the mirror workspace; a missing
-    /// mirror config means the lane is idle, so `None` here is not an error.
+    /// destination.
     pub(crate) fn tinybird_target(
         &self,
         destination: ExportDestination,
-    ) -> Option<(&str, &str, u32, Option<Duration>)> {
+    ) -> Option<(&str, &str, u32)> {
         match destination {
             ExportDestination::Tinybird => Some((
                 self.endpoint.as_str(),
                 self.token.as_str(),
                 self.export_max_attempts,
-                None,
             )),
-            ExportDestination::TinybirdMirror => self.mirror.as_ref().map(|mirror| {
-                (
-                    mirror.endpoint.as_str(),
-                    mirror.token.as_str(),
-                    mirror.max_attempts,
-                    Some(mirror.export_timeout),
-                )
-            }),
             ExportDestination::ClickHouse => None,
         }
     }
 
-    /// Whether `org_id`'s Tinybird-bound frames should also be mirrored.
-    pub(crate) fn mirrors_org(&self, org_id: &str) -> bool {
-        self.mirror.as_ref().is_some_and(|mirror| {
-            mirror.sample_percent >= 100
-                || (mirror.sample_percent > 0
-                    && hash64(org_id) % 100 < u64::from(mirror.sample_percent))
-        })
-    }
-
     pub fn validate_for_pipeline(&self, require_tinybird_credentials: bool) -> Result<(), String> {
-        if let Some(mirror) = &self.mirror {
-            // A half-configured mirror is always a deploy mistake, and it fails
-            // silently otherwise: rows go to a lane whose POSTs 401 forever.
-            if mirror.endpoint.is_empty() {
-                return Err(
-                    "TINYBIRD_MIRROR_HOST is required when TINYBIRD_MIRROR_TOKEN is set".to_owned(),
-                );
-            }
-            if mirror.token.is_empty() {
-                return Err(
-                    "TINYBIRD_MIRROR_TOKEN is required when TINYBIRD_MIRROR_HOST is set".to_owned(),
-                );
-            }
-            if mirror.max_attempts == 0 {
-                return Err("INGEST_TINYBIRD_MIRROR_MAX_ATTEMPTS must be greater than 0".to_owned());
-            }
-            if mirror.sample_percent > 100 {
-                return Err("INGEST_TINYBIRD_MIRROR_SAMPLE_PERCENT must be 0..=100".to_owned());
-            }
-        }
         if self.endpoint.is_empty() && require_tinybird_credentials {
             return Err(
                 "TINYBIRD_HOST is required when INGEST_WRITE_MODE uses tinybird".to_owned(),
@@ -742,16 +707,6 @@ struct PipelineInner {
     /// co-sharded Tinybird lane.
     lane_senders: Vec<mpsc::Sender<QueuedFrame>>,
     org_queue_bytes: Arc<DashMap<String, Arc<AtomicU64>>>,
-    /// Per-org queued bytes for the Tinybird MIRROR lane, deliberately a
-    /// SEPARATE counter from `org_queue_bytes`.
-    ///
-    /// Sharing one counter breaks the isolation the lanes exist to provide.
-    /// Bytes are only released once a frame exports, so a stalled mirror lane
-    /// holds an org's bytes for as long as it is stuck — and once that reaches
-    /// `org_queue_max_bytes`, the org's PRIMARY commits start failing to reserve
-    /// and the org gets 429s even though its primary lane is perfectly healthy.
-    /// A best-effort destination must not be able to do that.
-    mirror_org_queue_bytes: Arc<DashMap<String, Arc<AtomicU64>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -776,6 +731,12 @@ struct QueuedFrame {
     /// WAL frame, because a frame replayed after a restart belongs to a trace
     /// that ended long ago. Replayed frames carry `None`.
     source_span: Option<SpanContext>,
+    /// When this frame entered its lane's channel, for the `queue_max_age`
+    /// bound. In-memory like `source_span`: a replayed frame's original commit
+    /// time did not survive the restart, so replay stamps `Instant::now()` and a
+    /// recovered backlog gets a full max-age window to export in rather than
+    /// being shed on sight for having been written before the restart.
+    enqueued_at: Instant,
 }
 
 #[derive(Debug)]
@@ -871,7 +832,6 @@ impl TelemetryPipeline {
             ));
         }
         let org_queue_bytes = Arc::new(DashMap::new());
-        let mirror_org_queue_bytes = Arc::new(DashMap::new());
         let clickhouse_breakers = Arc::new(ClickHouseBreakerRegistry::new(cfg.clickhouse_breaker));
         let mut lane_senders = Vec::with_capacity(cfg.wal_shards * LANES_PER_SHARD);
 
@@ -889,13 +849,7 @@ impl TelemetryPipeline {
                     destination,
                     cfg: Arc::clone(&cfg),
                     wal: Arc::clone(&wal),
-                    // The worker releases into whichever counter its lane
-                    // reserved from, so the mirror lane gets the mirror map.
-                    org_queue_bytes: if destination == ExportDestination::TinybirdMirror {
-                        Arc::clone(&mirror_org_queue_bytes)
-                    } else {
-                        Arc::clone(&org_queue_bytes)
-                    },
+                    org_queue_bytes: Arc::clone(&org_queue_bytes),
                     clickhouse_breakers: Arc::clone(&clickhouse_breakers),
                     clickhouse_targets: clickhouse_targets.clone(),
                     http: http.clone(),
@@ -912,7 +866,6 @@ impl TelemetryPipeline {
                 wal,
                 lane_senders,
                 org_queue_bytes,
-                mirror_org_queue_bytes,
             }),
         };
         pipeline.replay_committed_frames().await;
@@ -1095,148 +1048,8 @@ impl TelemetryPipeline {
         Ok(stats)
     }
 
-    /// Commit a batch to its destination lane, then — if a Tinybird mirror is
-    /// configured — to the mirror lane.
-    ///
-    /// Order matters. The primary commits first and is fail-closed: its errors
-    /// are what a client sees. The mirror runs second, is fail-open, and shares
-    /// the per-org byte budget, so the primary always wins the race for the last
-    /// reservable bytes.
-    async fn commit_frames(
-        &self,
-        frames: Vec<EncodedFrame>,
-        destination: ExportDestination,
-    ) -> Result<(), PipelineError> {
-        // Cloned before the primary consumes `frames`, which means a mirrored
-        // batch is held twice in memory for the length of the primary commit.
-        // Bounded by the request body, and only paid while mirroring is on.
-        let mirrored = self.clone_frames_for_mirror(&frames, destination);
-        self.commit_frames_to_lane(frames, destination).await?;
-        if !mirrored.is_empty() {
-            self.commit_mirror_frames(mirrored).await;
-        }
-        Ok(())
-    }
-
-    /// The mirror copy of a batch, or empty when mirroring is off, the batch is
-    /// not Tinybird-bound, or the org is outside the sampling ramp.
-    ///
-    /// ClickHouse-bound frames are never mirrored: a BYO-ClickHouse org's rows
-    /// never reached the workspace being migrated, and must not start reaching
-    /// its replacement.
-    fn clone_frames_for_mirror(
-        &self,
-        frames: &[EncodedFrame],
-        destination: ExportDestination,
-    ) -> Vec<EncodedFrame> {
-        if destination != ExportDestination::Tinybird || self.inner.cfg.mirror.is_none() {
-            return Vec::new();
-        }
-        frames
-            .iter()
-            .filter(|frame| self.inner.cfg.mirrors_org(&frame.org_id))
-            .map(|frame| EncodedFrame {
-                routing_key: frame.routing_key,
-                org_id: frame.org_id.clone(),
-                signal: frame.signal,
-                destination: ExportDestination::TinybirdMirror,
-                datasource: frame.datasource.clone(),
-                row_count: frame.row_count,
-                payload: frame.payload.clone(),
-            })
-            .collect()
-    }
-
-    /// Best-effort commit to the mirror lane.
-    ///
-    /// Every failure mode — a full lane, an exhausted org byte budget, a WAL
-    /// write error — is metered and dropped. Nothing here can return an error,
-    /// by design: the request was already accepted on the strength of the
-    /// primary commit, and the mirror is a migration aid, not a durability
-    /// guarantee. Gaps it leaves are repaired by the same backfill that carries
-    /// pre-mirror history.
-    ///
-    /// `record_failing_frame` is deliberately not called: that annotates the
-    /// 429 diagnosis path, and a mirror shed never produces a 429.
-    async fn commit_mirror_frames(&self, frames: Vec<EncodedFrame>) {
-        let span = wal_commit_internal_span(ExportDestination::TinybirdMirror.as_str());
-        let frame_count = frames.len();
-        let mut committed_bytes = 0u64;
-        let mut frames_committed = 0usize;
-        let source_span = tracing::Span::current()
-            .context()
-            .span()
-            .span_context()
-            .clone();
-        let source_span = source_span.is_sampled().then_some(source_span);
-
-        async {
-            for mut frame in frames {
-                frame.destination = ExportDestination::TinybirdMirror;
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "routing_key is a hash; a truncated hash still spreads uniformly across shards"
-                )]
-                let shard = (frame.routing_key as usize) % self.inner.cfg.wal_shards;
-                let lane = lane_index(shard, ExportDestination::TinybirdMirror);
-                let sender = self.inner.lane_senders[lane].clone();
-                let Ok(permit) = sender.try_reserve_owned() else {
-                    metrics::tinybird_mirror_dropped(&frame.datasource, "lane_full", frame.row_count as u64);
-                    continue;
-                };
-                let queued_bytes = frame.payload.len() as u64;
-                if self
-                    .reserve_org_bytes_in(
-                        &self.inner.mirror_org_queue_bytes,
-                        &frame.org_id,
-                        queued_bytes,
-                    )
-                    .is_err()
-                {
-                    metrics::tinybird_mirror_dropped(&frame.datasource, "org_quota", frame.row_count as u64);
-                    continue;
-                }
-                let (segment, start, end) = match self.inner.wal.append(lane, &frame).await {
-                    Ok(offsets) => offsets,
-                    Err(error) => {
-                        release_org_queue_bytes(
-                            &self.inner.mirror_org_queue_bytes,
-                            &frame.org_id,
-                            queued_bytes,
-                        );
-                        metrics::tinybird_mirror_dropped(&frame.datasource, "wal_error", frame.row_count as u64);
-                        warn!(error = %error, "Dropping mirror frame after WAL append failure");
-                        continue;
-                    }
-                };
-                committed_bytes += queued_bytes;
-                frames_committed += 1;
-                permit.send(QueuedFrame {
-                    shard,
-                    segment,
-                    start,
-                    end,
-                    org_id: frame.org_id,
-                    queued_bytes,
-                    signal: frame.signal,
-                    destination: frame.destination,
-                    datasource: frame.datasource,
-                    row_count: frame.row_count,
-                    payload: frame.payload,
-                    source_span: source_span.clone(),
-                });
-            }
-        }
-        .instrument(span.clone())
-        .await;
-
-        span.record("maple.ingest.frame_count", frame_count);
-        span.record("maple.ingest.frames_committed", frames_committed);
-        span.record("maple.ingest.queued_bytes", committed_bytes);
-    }
-
     #[hotpath::measure]
-    async fn commit_frames_to_lane(
+    async fn commit_frames(
         &self,
         frames: Vec<EncodedFrame>,
         destination: ExportDestination,
@@ -1287,11 +1100,25 @@ impl TelemetryPipeline {
                 let queued_bytes = frame.payload.len() as u64;
                 self.reserve_org_queue_bytes(&frame.org_id, queued_bytes)
                     .inspect_err(|_| record_failing_frame(shard, lane, &frame.datasource))?;
-                let (segment, start, end) = self.inner.wal.append(lane, &frame).await.map_err(|error| {
-                    self.release_org_queue_bytes(&frame.org_id, queued_bytes);
-                    record_failing_frame(shard, lane, &frame.datasource);
-                    PipelineError::QueueUnavailable(error)
-                })?;
+                // Every exit from here to `commit()` — the error below, an early
+                // return above it, or this future being dropped mid-append —
+                // releases the reservation.
+                let reservation = OrgBytesReservation {
+                    counters: &self.inner.org_queue_bytes,
+                    org_id: &frame.org_id,
+                    bytes: queued_bytes,
+                    committed: false,
+                };
+                let (segment, start, end) = match self.inner.wal.append(lane, &frame).await {
+                    Ok(position) => {
+                        reservation.commit();
+                        position
+                    }
+                    Err(error) => {
+                        record_failing_frame(shard, lane, &frame.datasource);
+                        return Err(PipelineError::QueueUnavailable(error));
+                    }
+                };
                 committed_bytes += queued_bytes;
                 frames_committed += 1;
                 permit.send(QueuedFrame {
@@ -1307,6 +1134,7 @@ impl TelemetryPipeline {
                     row_count: frame.row_count,
                     payload: frame.payload,
                     source_span: source_span.clone(),
+                    enqueued_at: Instant::now(),
                 });
             }
 
@@ -1377,10 +1205,6 @@ impl TelemetryPipeline {
                 return Ok(());
             }
         }
-    }
-
-    fn release_org_queue_bytes(&self, org_id: &str, bytes: u64) {
-        release_org_queue_bytes(&self.inner.org_queue_bytes, org_id, bytes);
     }
 
     #[hotpath::measure]
@@ -1647,10 +1471,14 @@ impl WalLane {
         enforce_cap: bool,
     ) -> Result<(u64, u64, u64), String> {
         let added = encoded.len() as u64;
+        let append_started = Instant::now();
         let mut state = self
             .append
             .lock()
             .map_err(|_| "WAL lane mutex poisoned".to_owned())?;
+        // Everything before this point was queueing behind other appenders on
+        // this lane; everything after is this append's own work.
+        let lock_wait = append_started.elapsed();
         if enforce_cap
             && self
                 .live_bytes
@@ -1665,10 +1493,12 @@ impl WalLane {
             .file
             .write_all(encoded)
             .map_err(|error| format!("write WAL: {error}"))?;
+        let fsync_started = Instant::now();
         state
             .file
             .sync_data()
             .map_err(|error| format!("sync WAL: {error}"))?;
+        let fsync = fsync_started.elapsed();
         let seq = state.seq;
         let start = state.len;
         let end = start + added;
@@ -1684,6 +1514,15 @@ impl WalLane {
 
         metrics::wal_commit_bytes(self.shard, self.destination.as_str(), added);
         metrics::wal_shard_bytes(self.shard, self.destination.as_str(), live);
+        // Recorded after the lock is released: the append is done, and holding it
+        // to emit metrics would make the very contention this measures worse.
+        metrics::wal_append_durations(
+            self.shard,
+            self.destination.as_str(),
+            lock_wait.as_secs_f64(),
+            fsync.as_secs_f64(),
+            append_started.elapsed().as_secs_f64(),
+        );
         Ok((seq, start, end))
     }
 
@@ -2169,15 +2008,9 @@ impl ShardedWal {
             .map_err(|error| format!("join WAL append: {error}"))?
     }
 
-    /// Bytes committed but not yet exported across the primary lanes. Mirror
-    /// lanes are best-effort and excluded, so a stalled mirror cannot hold a
-    /// shutdown drain open.
+    /// Bytes committed but not yet exported across every lane.
     fn backlog_bytes(&self) -> u64 {
-        self.lanes
-            .iter()
-            .filter(|lane| lane.destination != ExportDestination::TinybirdMirror)
-            .map(|lane| lane.backlog_bytes())
-            .sum()
+        self.lanes.iter().map(|lane| lane.backlog_bytes()).sum()
     }
 
     async fn replay(&self, lane: usize) -> Result<Vec<QueuedFrame>, String> {
@@ -2361,6 +2194,10 @@ fn replay_lane(lane: usize, lane_ref: &WalLane) -> Result<Vec<QueuedFrame>, Stri
                 payload: frame.payload,
                 // Replayed from disk after a restart: the originating trace is gone.
                 source_span: None,
+                // Stamped now, not at the original commit, which did not survive
+                // the restart: a recovered backlog gets a full `queue_max_age`
+                // window to export in instead of being shed on sight.
+                enqueued_at: Instant::now(),
             });
         }
     }
@@ -2612,14 +2449,14 @@ fn signal_from_tag(tag: u8) -> Option<TelemetrySignal> {
 }
 
 /// Wire tags are permanent: a WAL file written by one binary is replayed by the
-/// next one, so a tag may be added but never reassigned. Tag 3 stays reserved
-/// for the Tinybird mirror even after the mirror is removed — a rollback that
-/// meets a mirror frame must decode it, not fail the shard.
+/// next one, so a tag may be added but never reassigned. Tag 3 is burned — it
+/// was the Tinybird mirror, and frames carrying it may still sit in
+/// `shard-NNN-tinybird_mirror` lane files that this binary no longer opens.
+/// Never hand it to a new destination.
 fn destination_tag(destination: ExportDestination) -> u8 {
     match destination {
         ExportDestination::Tinybird => 1,
         ExportDestination::ClickHouse => 2,
-        ExportDestination::TinybirdMirror => 3,
     }
 }
 
@@ -2627,7 +2464,6 @@ fn destination_from_tag(tag: u8) -> Option<ExportDestination> {
     match tag {
         1 => Some(ExportDestination::Tinybird),
         2 => Some(ExportDestination::ClickHouse),
-        3 => Some(ExportDestination::TinybirdMirror),
         _ => None,
     }
 }
@@ -2642,6 +2478,40 @@ fn add_org_queue_bytes(counters: &Arc<DashMap<String, Arc<AtomicU64>>>, org_id: 
         .clone();
     let current = counter.fetch_add(bytes, Ordering::AcqRel) + bytes;
     metrics::org_queue_bytes(org_id, current);
+}
+
+/// Holds an org's reserved queue bytes until the frame reaches its lane.
+///
+/// The reservation deliberately outlives the request — `commit_frames` reserves
+/// before the WAL append and the export worker releases after the export — but
+/// only once the frame is actually in the channel. Between the two sits the
+/// `wal.append` await, and an await is a cancellation point: axum drops the
+/// handler future when the client disconnects, and now also when the request
+/// timeout fires. Dropped there, nobody released the bytes and nobody ever
+/// would, so the org's counter drifted up permanently until it was throttled by
+/// a queue that did not exist.
+struct OrgBytesReservation<'a> {
+    counters: &'a Arc<DashMap<String, Arc<AtomicU64>>>,
+    org_id: &'a str,
+    bytes: u64,
+    committed: bool,
+}
+
+impl OrgBytesReservation<'_> {
+    /// The frame is on its way to the lane; the export worker owns the release
+    /// from here. Consumes the guard so the borrow ends and the frame's fields
+    /// can be moved into the `QueuedFrame`.
+    fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for OrgBytesReservation<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            release_org_queue_bytes(self.counters, self.org_id, self.bytes);
+        }
+    }
 }
 
 fn release_org_queue_bytes(
@@ -2732,6 +2602,8 @@ impl ExportWorker {
                     u64::try_from(batch_wait.as_millis()).unwrap_or(u64::MAX),
                 "maple.ingest.linked_traces" = links.len(),
                 "maple.ingest.source_trace_count" = source_trace_count,
+                "maple.ingest.shed_frames" = tracing::field::Empty,
+                "maple.ingest.shed_rows" = tracing::field::Empty,
             );
             for link in links {
                 span.add_link(link);
@@ -2748,6 +2620,13 @@ impl ExportWorker {
     }
 
     #[hotpath::measure]
+    #[expect(
+        clippy::too_many_lines,
+        clippy::cognitive_complexity,
+        reason = "one linear batch pass: age-shed, group by target, export, then advance the \
+                  cursor — splitting it would thread the frame slice and the shed counters \
+                  through helpers that have no meaning apart from it"
+    )]
     async fn export_and_mark(&self, frames: Vec<QueuedFrame>) -> Result<(), String> {
         if frames.is_empty() {
             return Ok(());
@@ -2762,14 +2641,44 @@ impl ExportWorker {
             "lane {} received a frame for the wrong destination",
             self.lane
         );
+        // Oldest frame first: one sample per batch rather than per frame, and the
+        // oldest is the number that says how far behind this lane is.
+        let now = Instant::now();
+        if let Some(oldest) = frames.iter().map(|frame| frame.enqueued_at).min() {
+            metrics::queue_age(
+                self.destination.as_str(),
+                frames[0].signal.as_str(),
+                now.duration_since(oldest).as_secs_f64(),
+            );
+        }
+        let max_age = self.cfg.queue_max_age;
+        // Shed, not drop-and-forget: a shed frame still advances the cursor and
+        // releases its org bytes below, because leaving it in the WAL would keep
+        // the very backlog this is cutting.
+        let is_stale = |frame: &QueuedFrame| {
+            !max_age.is_zero() && now.duration_since(frame.enqueued_at) > max_age
+        };
+        let mut shed_frames = 0usize;
+        let mut shed_rows = 0usize;
+
         let mut by_tinybird: BTreeMap<String, Vec<&QueuedFrame>> = BTreeMap::new();
         let mut by_clickhouse: BTreeMap<(String, String), Vec<&QueuedFrame>> = BTreeMap::new();
         for frame in &frames {
+            if is_stale(frame) {
+                shed_frames += 1;
+                shed_rows += frame.row_count;
+                metrics::queue_age_shed(
+                    &frame.org_id,
+                    frame.destination.as_str(),
+                    &frame.datasource,
+                    frame.row_count as u64,
+                );
+                continue;
+            }
             match frame.destination {
-                // Both Tinybird destinations group by datasource alone; which
-                // workspace the batch goes to is the lane's property, not the
-                // frame's, and a lane only ever carries one destination.
-                ExportDestination::Tinybird | ExportDestination::TinybirdMirror => {
+                // Tinybird groups by datasource alone; the workspace is the
+                // lane's property, not the frame's.
+                ExportDestination::Tinybird => {
                     by_tinybird
                         .entry(frame.datasource.clone())
                         .or_default()
@@ -2782,6 +2691,21 @@ impl ExportWorker {
                         .push(frame);
                 }
             }
+        }
+
+        if shed_frames > 0 {
+            let span = tracing::Span::current();
+            span.record("maple.ingest.shed_frames", shed_frames);
+            span.record("maple.ingest.shed_rows", shed_rows);
+            warn!(
+                shard = self.shard,
+                lane = self.lane,
+                destination = self.destination.as_str(),
+                frames = shed_frames,
+                rows = shed_rows,
+                max_age_secs = max_age.as_secs(),
+                "Shedding ingest frames that exceeded the lane's max queue age"
+            );
         }
 
         let start = Instant::now();
@@ -2849,15 +2773,12 @@ impl ExportWorker {
         body: Vec<u8>,
         rows: usize,
     ) -> Result<(), String> {
-        // Credentials come from the lane's destination, not unconditionally from
-        // the primary config, so the mirror lane posts to the mirror workspace.
-        let Some((endpoint, token, max_attempts, timeout)) =
-            self.cfg.tinybird_target(self.destination)
+        // Credentials come from the lane's destination, so a lane that is not a
+        // Tinybird lane has nowhere to post and is dropped rather than sent to
+        // the wrong workspace. Unreachable in practice: only the Tinybird lane
+        // worker calls this.
+        let Some((endpoint, token, max_attempts)) = self.cfg.tinybird_target(self.destination)
         else {
-            // Only reachable if a mirror lane drained frames after the mirror
-            // config was removed (a WAL replay across a config change). Dropping
-            // is right: the workspace those rows were meant for is gone.
-            metrics::tinybird_mirror_dropped(datasource, "no_target", rows as u64);
             warn!(
                 datasource,
                 rows,
@@ -2915,13 +2836,6 @@ impl ExportWorker {
                 .header(reqwest::header::CONTENT_TYPE, "application/x-ndjson")
                 .header(reqwest::header::CONTENT_ENCODING, "gzip")
                 .body(compressed.clone());
-            // Only the mirror sets one: a hanging mirror host must release its
-            // lane worker, whereas the primary is fail-closed and would rather
-            // wait than lose rows.
-            let request = match timeout {
-                Some(timeout) => request.timeout(timeout),
-                None => request,
-            };
             let response = request.send().instrument(span).await;
 
             let last_status: String;
@@ -4096,22 +4010,53 @@ fn attr_map(attributes: &[KeyValue]) -> Map<String, Value> {
     out
 }
 
-fn any_value_string(value: &AnyValue) -> String {
+pub(crate) fn any_value_string(value: &AnyValue) -> String {
     match value.value.as_ref() {
         Some(any_value::Value::StringValue(value)) => value.clone(),
         Some(any_value::Value::BoolValue(value)) => value.to_string(),
         Some(any_value::Value::IntValue(value)) => value.to_string(),
         Some(any_value::Value::DoubleValue(value)) => value.to_string(),
-        Some(any_value::Value::BytesValue(value)) => bytes_hex(value),
-        Some(any_value::Value::ArrayValue(value)) => {
-            let values: Vec<String> = value.values.iter().map(any_value_string).collect();
-            serde_json::to_string(&values).unwrap_or_default()
+        // Text sent as bytes (LangSmith's prompt and completion) stays
+        // readable. Binary is hex, including binary that happens to be valid
+        // UTF-8: a control character other than whitespace marks it.
+        Some(any_value::Value::BytesValue(value)) => match std::str::from_utf8(value) {
+            Ok(text)
+                if !text
+                    .chars()
+                    .any(|c| c.is_control() && !matches!(c, '\t' | '\n' | '\r')) =>
+            {
+                text.to_owned()
+            }
+            _ => bytes_hex(value),
+        },
+        Some(any_value::Value::ArrayValue(_) | any_value::Value::KvlistValue(_)) => {
+            serde_json::to_string(&any_value_json(value)).unwrap_or_default()
         }
-        Some(any_value::Value::KvlistValue(value)) => {
-            let attrs = attr_map(&value.values);
-            serde_json::to_string(&attrs).unwrap_or_default()
+        // String-table references (OTLP 1.9 experimental encoding) cannot be resolved
+        // without the sender's dictionary, which the gateway does not accept yet.
+        Some(any_value::Value::StringValueStrindex(_)) | None => String::new(),
+    }
+}
+
+/// An array or map as JSON. Scalars keep their string form, as flat arrays and
+/// maps always have, but a nested array or map stays JSON instead of becoming
+/// a string of escaped JSON (structured `gen_ai.input.messages`).
+fn any_value_json(value: &AnyValue) -> Value {
+    match value.value.as_ref() {
+        Some(any_value::Value::ArrayValue(array)) => {
+            Value::Array(array.values.iter().map(any_value_json).collect())
         }
-        None => String::new(),
+        Some(any_value::Value::KvlistValue(kvlist)) => Value::Object(
+            kvlist
+                .values
+                .iter()
+                .map(|kv| {
+                    let value = kv.value.as_ref().map_or(Value::from(""), any_value_json);
+                    (kv.key.clone(), value)
+                })
+                .collect(),
+        ),
+        _ => Value::String(any_value_string(value)),
     }
 }
 
@@ -4209,7 +4154,7 @@ mod tests {
     use axum::routing::post;
     use axum::Router;
     use flate2::read::GzDecoder;
-    use opentelemetry_proto::tonic::common::v1::InstrumentationScope;
+    use opentelemetry_proto::tonic::common::v1::{ArrayValue, InstrumentationScope, KeyValueList};
     use opentelemetry_proto::tonic::metrics::v1::{
         exponential_histogram_data_point, metric, AggregationTemporality, ExponentialHistogram,
         ExponentialHistogramDataPoint, Gauge, Histogram, HistogramDataPoint, Metric, Sum,
@@ -4242,6 +4187,7 @@ mod tests {
             row_count: 0,
             payload: Vec::new(),
             source_span,
+            enqueued_at: Instant::now(),
         }
     }
 
@@ -4313,7 +4259,6 @@ mod tests {
         TinybirdConfig {
             endpoint: "http://tinybird.test".to_owned(),
             token: "token".to_owned(),
-            mirror: None,
             queue_dir: std::env::temp_dir(),
             queue_max_bytes: 1024 * 1024,
             org_queue_max_bytes: 1024 * 1024,
@@ -4323,6 +4268,7 @@ mod tests {
             wal_store_heartbeat_interval: crate::wal_store::DEFAULT_HEARTBEAT_INTERVAL,
             batch_max_rows: 100,
             batch_max_bytes: 1024 * 1024,
+            queue_max_age: Duration::ZERO,
             batch_max_wait: Duration::from_millis(10),
             export_concurrency_per_shard: 1,
             export_max_attempts: 20,
@@ -4479,6 +4425,7 @@ mod tests {
     fn string_kv(key: &str, value: &str) -> KeyValue {
         KeyValue {
             key: key.to_owned(),
+            key_strindex: 0,
             value: Some(AnyValue {
                 value: Some(any_value::Value::StringValue(value.to_owned())),
             }),
@@ -4488,6 +4435,7 @@ mod tests {
     fn bool_kv(key: &str, value: bool) -> KeyValue {
         KeyValue {
             key: key.to_owned(),
+            key_strindex: 0,
             value: Some(AnyValue {
                 value: Some(any_value::Value::BoolValue(value)),
             }),
@@ -4511,6 +4459,73 @@ mod tests {
         assert_eq!(bytes_hex(&[]), "");
         assert_eq!(bytes_hex(&[0; 8]), "");
         assert_eq!(bytes_hex(&[0xab, 0xcd]), "abcd");
+    }
+
+    #[test]
+    fn bytes_attributes_decode_as_text_when_valid_utf8() {
+        let bytes = |value: &[u8]| AnyValue {
+            value: Some(any_value::Value::BytesValue(value.to_vec())),
+        };
+        // docs_langchain_ls: LangSmith sends `gen_ai.prompt` as UTF-8 JSON bytes.
+        assert_eq!(
+            any_value_string(&bytes(br#"{"messages":[{"content":"Hi"}]}"#)),
+            r#"{"messages":[{"content":"Hi"}]}"#
+        );
+        assert_eq!(any_value_string(&bytes(&[0xff, 0xfe, 0x01])), "fffe01");
+        // Valid UTF-8 that is really binary stays hex (all zero stays "").
+        assert_eq!(any_value_string(&bytes(&[0x01, 0x02, 0x7f])), "01027f");
+        assert_eq!(any_value_string(&bytes(&[0; 4])), "");
+        assert_eq!(any_value_string(&bytes(b"a\tb\r\nc")), "a\tb\r\nc");
+        // A leading BOM is kept, as the local-mode port keeps it.
+        assert_eq!(any_value_string(&bytes(b"\xef\xbb\xbfa")), "\u{feff}a");
+    }
+
+    #[test]
+    fn structured_attributes_stay_json_when_nested() {
+        let any = |value: any_value::Value| AnyValue { value: Some(value) };
+        let text = |value: &str| any(any_value::Value::StringValue(value.to_owned()));
+        let array =
+            |values: Vec<AnyValue>| any(any_value::Value::ArrayValue(ArrayValue { values }));
+        let map = |pairs: Vec<(&str, AnyValue)>| {
+            any(any_value::Value::KvlistValue(KeyValueList {
+                values: pairs
+                    .into_iter()
+                    .map(|(key, value)| KeyValue {
+                        key: key.to_owned(),
+                        key_strindex: 0,
+                        value: Some(value),
+                    })
+                    .collect(),
+            }))
+        };
+        // Flat arrays and maps are unchanged: scalars as strings.
+        assert_eq!(
+            any_value_string(&array(vec![
+                text("stop"),
+                any(any_value::Value::IntValue(1))
+            ])),
+            r#"["stop","1"]"#
+        );
+        assert_eq!(
+            any_value_string(&map(vec![("n", any(any_value::Value::BoolValue(true)))])),
+            r#"{"n":"true"}"#
+        );
+        // Structured messages decode as the JSON a reader expects, not as an
+        // array of escaped JSON strings.
+        let messages = array(vec![map(vec![
+            ("role", text("user")),
+            (
+                "parts",
+                array(vec![map(vec![
+                    ("type", text("text")),
+                    ("content", text("hi")),
+                ])]),
+            ),
+        ])]);
+        assert_eq!(
+            any_value_string(&messages),
+            r#"[{"parts":[{"content":"hi","type":"text"}],"role":"user"}]"#
+        );
     }
 
     #[test]
@@ -5448,8 +5463,8 @@ mod tests {
     #[test]
     fn destination_tag_round_trips_all_variants() {
         // WAL on-disk format. A frame written by one binary is replayed by the
-        // next, so every destination — the mirror included — must survive the
-        // tag encode/decode or the whole lane fails to replay.
+        // next, so every destination must survive the tag encode/decode or the
+        // whole lane fails to replay.
         for destination in ExportDestination::ALL {
             assert_eq!(
                 destination_from_tag(destination_tag(destination)),
@@ -5459,108 +5474,30 @@ mod tests {
     }
 
     #[test]
-    fn mirror_lane_ordinals_stay_stable_when_a_destination_is_appended() {
+    fn lane_ordinals_are_stable_across_destination_changes() {
         // `lane_index` is `shard * LANES_PER_SHARD + lane_ordinal`, and WAL files
-        // are named by destination. Appending TinybirdMirror must leave the two
-        // existing ordinals alone, or a rolling deploy renumbers lanes out from
-        // under frames already committed.
+        // are named by destination, not by lane index — which is what made
+        // dropping the Tinybird mirror lane safe on disk. These two ordinals are
+        // load-bearing: renumbering them moves live frames between lanes on a
+        // rolling deploy. Tag 3 is burned; see `destination_tag`.
         assert_eq!(lane_index(0, ExportDestination::Tinybird), 0);
         assert_eq!(lane_index(0, ExportDestination::ClickHouse), 1);
-        assert_eq!(lane_index(0, ExportDestination::TinybirdMirror), 2);
         assert_eq!(lane_index(1, ExportDestination::Tinybird), LANES_PER_SHARD);
-    }
-
-    fn test_mirror_cfg(endpoint: &str, sample_percent: u8) -> TinybirdMirrorConfig {
-        TinybirdMirrorConfig {
-            endpoint: endpoint.to_owned(),
-            token: "mirror-token".to_owned(),
-            max_attempts: 2,
-            export_timeout: Duration::from_millis(500),
-            sample_percent,
-        }
-    }
-
-    #[test]
-    fn mirror_sampling_is_all_or_nothing_per_org() {
-        // The ramp knob picks orgs by hash, so an org is consistently in or out.
-        // A percentage that split one org's stream would leave that org's rows
-        // half-mirrored, which no backfill boundary can describe.
-        let mut cfg = test_cfg();
-        cfg.mirror = Some(test_mirror_cfg("http://mirror.test", 0));
-        assert!(!cfg.mirrors_org("org_a"), "0% must mirror nothing");
-
-        cfg.mirror = Some(test_mirror_cfg("http://mirror.test", 100));
-        assert!(cfg.mirrors_org("org_a"));
-        assert!(cfg.mirrors_org("org_b"), "100% must mirror every org");
-
-        cfg.mirror = None;
-        assert!(!cfg.mirrors_org("org_a"), "no mirror config, no mirroring");
-
-        // Same org, same answer, every time — a ramp never flips mid-stream.
-        cfg.mirror = Some(test_mirror_cfg("http://mirror.test", 50));
-        let first = cfg.mirrors_org("org_ramp");
-        assert!((0..64).all(|_| cfg.mirrors_org("org_ramp") == first));
-    }
-
-    #[test]
-    fn mirror_config_rejects_half_configuration() {
-        // Host without token (or the reverse) is always a deploy mistake, and it
-        // fails silently otherwise: the lane POSTs and 401s forever.
-        let mut cfg = test_cfg();
-        cfg.mirror = Some(TinybirdMirrorConfig {
-            token: String::new(),
-            ..test_mirror_cfg("http://mirror.test", 100)
-        });
-        assert!(cfg
-            .validate()
-            .unwrap_err()
-            .contains("TINYBIRD_MIRROR_TOKEN"));
-
-        cfg.mirror = Some(test_mirror_cfg("", 100));
-        assert!(cfg.validate().unwrap_err().contains("TINYBIRD_MIRROR_HOST"));
-
-        cfg.mirror = Some(TinybirdMirrorConfig {
-            sample_percent: 101,
-            ..test_mirror_cfg("http://mirror.test", 100)
-        });
-        assert!(cfg.validate().unwrap_err().contains("SAMPLE_PERCENT"));
-
-        // A well-formed mirror is accepted even in ClickHouse-only mode, where
-        // the primary Tinybird credentials are absent by design.
-        cfg.endpoint = String::new();
-        cfg.token = String::new();
-        cfg.mirror = Some(test_mirror_cfg("http://mirror.test", 100));
-        assert!(cfg.validate_for_pipeline(false).is_ok());
+        assert_eq!(destination_from_tag(3), None, "tag 3 must stay retired");
     }
 
     #[test]
     fn tinybird_target_resolves_per_destination() {
-        let mut cfg = test_cfg();
-        cfg.mirror = Some(test_mirror_cfg("http://mirror.test", 100));
+        let cfg = test_cfg();
 
-        let (endpoint, token, attempts, timeout) = cfg
+        let (endpoint, token, attempts) = cfg
             .tinybird_target(ExportDestination::Tinybird)
             .expect("primary target");
         assert_eq!(endpoint, "http://tinybird.test");
         assert_eq!(token, "token");
         assert_eq!(attempts, cfg.export_max_attempts);
-        assert!(timeout.is_none(), "the primary waits rather than lose rows");
-
-        let (endpoint, token, attempts, timeout) = cfg
-            .tinybird_target(ExportDestination::TinybirdMirror)
-            .expect("mirror target");
-        assert_eq!(endpoint, "http://mirror.test");
-        assert_eq!(token, "mirror-token");
-        assert_eq!(attempts, 2);
-        assert_eq!(timeout, Some(Duration::from_millis(500)));
 
         assert!(cfg.tinybird_target(ExportDestination::ClickHouse).is_none());
-        // A mirror lane draining replayed frames after the mirror config was
-        // removed has nowhere to send them, and says so rather than panicking.
-        cfg.mirror = None;
-        assert!(cfg
-            .tinybird_target(ExportDestination::TinybirdMirror)
-            .is_none());
     }
 
     /// A fake Tinybird that reports every import it receives.
@@ -5577,58 +5514,6 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
         (format!("http://{addr}"), rx)
-    }
-
-    #[tokio::test]
-    async fn mirror_lane_receives_the_same_rows_as_the_primary() {
-        // The whole premise of the dual-emit window: both workspaces see an
-        // identical body, each authenticated with its own token.
-        let (primary_url, mut primary_rx) = spawn_fake_tinybird().await;
-        let (mirror_url, mut mirror_rx) = spawn_fake_tinybird().await;
-
-        let queue_dir = unique_test_dir("mirror-parity");
-        let mut cfg = test_cfg();
-        cfg.endpoint = primary_url;
-        cfg.mirror = Some(test_mirror_cfg(&mirror_url, 100));
-        cfg.queue_dir = queue_dir.clone();
-        cfg.wal_shards = 1;
-        cfg.batch_max_wait = Duration::from_millis(1);
-
-        let pipeline = TelemetryPipeline::new(
-            cfg,
-            Client::builder()
-                .timeout(Duration::from_secs(5))
-                .build()
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-        pipeline
-            .accept_logs("org_mirror", &populated_log_request())
-            .await
-            .unwrap();
-
-        let primary = tokio::time::timeout(Duration::from_secs(2), primary_rx.recv())
-            .await
-            .expect("primary should receive an import")
-            .unwrap();
-        let mirror = tokio::time::timeout(Duration::from_secs(2), mirror_rx.recv())
-            .await
-            .expect("mirror should receive the same import")
-            .unwrap();
-
-        assert_eq!(primary.datasource, mirror.datasource);
-        assert_eq!(primary.body, mirror.body);
-        assert_eq!(primary.content_encoding, "gzip");
-        assert_eq!(mirror.content_encoding, "gzip");
-        assert_eq!(primary.authorization, "Bearer token");
-        assert_eq!(
-            mirror.authorization, "Bearer mirror-token",
-            "the mirror lane must authenticate against the mirror workspace"
-        );
-
-        drop(std::fs::remove_dir_all(queue_dir));
     }
 
     #[tokio::test]
@@ -5668,6 +5553,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn frames_older_than_the_max_queue_age_are_shed_and_still_drain_the_wal() {
+        // The byte and slot caps do not bound how long a frame waits: a lane
+        // holds 100k frames and the WAL 20 GiB, so a stalled target absorbs
+        // minutes of traffic while the accept path queues behind it. Past
+        // `queue_max_age` the frame has outlived the dashboards and alerts it was
+        // collected for, so it is shed — and shedding has to release the WAL too,
+        // or the backlog it is meant to cut survives it.
+        let (primary_url, mut primary_rx) = spawn_fake_tinybird().await;
+
+        let queue_dir = unique_test_dir("queue-age-shed");
+        let mut cfg = test_cfg();
+        cfg.endpoint = primary_url;
+        cfg.queue_dir = queue_dir.clone();
+        cfg.wal_shards = 1;
+        cfg.batch_max_wait = Duration::from_millis(1);
+        // Any frame that survives a channel hop is already older than this.
+        cfg.queue_max_age = Duration::from_nanos(1);
+
+        let pipeline = TelemetryPipeline::new(
+            cfg,
+            Client::builder()
+                .timeout(Duration::from_secs(5))
+                .build()
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        pipeline
+            .accept_logs("org_stale", &populated_log_request())
+            .await
+            .unwrap();
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), primary_rx.recv())
+                .await
+                .is_err(),
+            "a frame past the max queue age must not be exported"
+        );
+        assert_eq!(
+            pipeline.drain_wal(Duration::from_secs(5)).await,
+            0,
+            "a shed frame must still advance the lane cursor, or it keeps the \
+             backlog it was shed to cut"
+        );
+
+        drop(std::fs::remove_dir_all(queue_dir));
+    }
+
+    #[tokio::test]
     async fn drain_wal_reports_the_backlog_when_the_destination_is_unreachable() {
         let queue_dir = unique_test_dir("drain-stuck");
         let mut cfg = test_cfg();
@@ -5700,170 +5635,6 @@ mod tests {
             remaining > 0,
             "the drain deadline must hand back the bytes it could not export"
         );
-
-        drop(std::fs::remove_dir_all(queue_dir));
-    }
-
-    #[tokio::test]
-    async fn clickhouse_bound_rows_are_never_mirrored() {
-        // A BYO-ClickHouse org's rows never reached the workspace being
-        // migrated, so they must not start reaching its replacement.
-        let (mirror_url, mut mirror_rx) = spawn_fake_tinybird().await;
-
-        let queue_dir = unique_test_dir("mirror-skips-clickhouse");
-        let mut cfg = test_cfg();
-        cfg.mirror = Some(test_mirror_cfg(&mirror_url, 100));
-        cfg.queue_dir = queue_dir.clone();
-        cfg.wal_shards = 1;
-        cfg.batch_max_wait = Duration::from_millis(1);
-
-        let provider = Arc::new(StaticClickHouseTargetProvider {
-            target: ClickHouseTarget {
-                endpoint: "http://127.0.0.1:1".to_owned(),
-                user: "ingest".to_owned(),
-                password: String::new(),
-                database: "maple".to_owned(),
-            },
-        });
-        let pipeline = TelemetryPipeline::new_with_clickhouse(
-            cfg,
-            Client::builder()
-                .timeout(Duration::from_millis(200))
-                .build()
-                .unwrap(),
-            Some(provider),
-        )
-        .await
-        .unwrap();
-
-        pipeline
-            .accept_logs_to(
-                "org_byo",
-                &populated_log_request(),
-                ExportDestination::ClickHouse,
-            )
-            .await
-            .unwrap();
-
-        sleep(Duration::from_millis(300)).await;
-        assert!(
-            mirror_rx.try_recv().is_err(),
-            "ClickHouse-routed rows must never reach the Tinybird mirror"
-        );
-        // The mirror lane's WAL should not even exist as a non-empty file.
-        let mirror_wal = queue_dir.join("shard-000-tinybird_mirror.wal");
-        let mirror_bytes = std::fs::metadata(&mirror_wal).map_or(0, |meta| meta.len());
-        assert_eq!(
-            mirror_bytes, 0,
-            "nothing should have been committed to the mirror lane"
-        );
-
-        drop(std::fs::remove_dir_all(queue_dir));
-    }
-
-    #[tokio::test]
-    async fn a_stalled_mirror_cannot_exhaust_the_org_byte_budget() {
-        // Regression: the mirror used to share `org_queue_bytes` with the primary.
-        // Bytes are only released once a frame exports, so a stalled mirror lane
-        // held an org's bytes indefinitely, and once they reached
-        // `org_queue_max_bytes` the org's PRIMARY commits failed to reserve —
-        // 429s for an org whose primary lane was perfectly healthy. Separate
-        // counters are what make the lane isolation actually hold.
-        let (primary_url, mut primary_rx) = spawn_fake_tinybird().await;
-
-        let queue_dir = unique_test_dir("mirror-org-budget");
-        let mut cfg = test_cfg();
-        cfg.endpoint = primary_url;
-        cfg.mirror = Some(test_mirror_cfg("http://127.0.0.1:1", 100));
-        cfg.queue_dir = queue_dir.clone();
-        cfg.wal_shards = 1;
-        cfg.batch_max_wait = Duration::from_millis(1);
-        // Sized against the frame this request encodes to: a handful of stuck
-        // mirror frames must exceed the budget, while the primary — which
-        // exports and releases within milliseconds — never holds more than one.
-        cfg.org_queue_max_bytes = 4_096;
-        // Room for the mirror lane to accumulate rather than shedding at the
-        // channel before it ever reserves any bytes.
-        cfg.queue_channel_capacity = 64;
-
-        let pipeline = TelemetryPipeline::new(
-            cfg,
-            Client::builder()
-                .timeout(Duration::from_millis(100))
-                .build()
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-        for _ in 0..40u32 {
-            pipeline
-                .accept_logs("org_budget", &populated_log_request())
-                .await
-                .expect("mirror bytes must never consume the primary's org budget");
-            sleep(Duration::from_millis(10)).await;
-        }
-
-        // The primary kept exporting throughout, which is what proves its
-        // reservations were never starved by the stuck mirror lane.
-        let primary = tokio::time::timeout(Duration::from_secs(2), primary_rx.recv())
-            .await
-            .expect("primary should keep exporting while the mirror lane is stuck")
-            .unwrap();
-        assert_eq!(primary.datasource, "logs");
-
-        drop(std::fs::remove_dir_all(queue_dir));
-    }
-
-    #[tokio::test]
-    async fn a_stalled_mirror_never_fails_the_accept_path() {
-        // The load-bearing guarantee of the whole design. The mirror host here
-        // refuses every connection, so its lane worker sits in the retry budget
-        // and its bounded channel fills. Accept must keep returning Ok and the
-        // primary must keep receiving every row — the mirror is allowed to lose
-        // rows, never to cost a request.
-        let (primary_url, mut primary_rx) = spawn_fake_tinybird().await;
-
-        let queue_dir = unique_test_dir("mirror-stalled");
-        let mut cfg = test_cfg();
-        cfg.endpoint = primary_url;
-        // Port 1 is reserved and unbound: every mirror POST fails to connect.
-        cfg.mirror = Some(test_mirror_cfg("http://127.0.0.1:1", 100));
-        cfg.queue_dir = queue_dir.clone();
-        cfg.wal_shards = 1;
-        cfg.batch_max_wait = Duration::from_millis(1);
-        // Small enough that the mirror channel fills while its worker is stuck
-        // in the retry budget, but not so small that the primary — which drains
-        // every batch in milliseconds — sheds too. The primary is fail-closed by
-        // design, so a shed there is a real 429, not a mirror concern.
-        cfg.queue_channel_capacity = 8;
-
-        let pipeline = TelemetryPipeline::new(
-            cfg,
-            Client::builder()
-                .timeout(Duration::from_millis(100))
-                .build()
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-        // Paced so the primary lane keeps up; the mirror worker is held ~500ms
-        // per batch by its backoff, so its channel fills partway through.
-        for _ in 0..20u32 {
-            pipeline
-                .accept_logs("org_stalled", &populated_log_request())
-                .await
-                .expect("a stalled mirror must never fail the accept path");
-            sleep(Duration::from_millis(25)).await;
-        }
-
-        // And the primary still got the rows.
-        let primary = tokio::time::timeout(Duration::from_secs(2), primary_rx.recv())
-            .await
-            .expect("primary should still receive imports while the mirror is down")
-            .unwrap();
-        assert_eq!(primary.datasource, "logs");
 
         drop(std::fs::remove_dir_all(queue_dir));
     }
@@ -5923,6 +5694,55 @@ mod tests {
         registry.on_failure("org", recovered);
         registry.on_failure("org", recovered);
         assert_eq!(registry.decide("org", recovered), BreakerDecision::Allow);
+    }
+
+    #[test]
+    fn clickhouse_breaker_half_open_admits_one_probe_at_a_time() {
+        // Every lane worker consults this registry, so an ungated half-open let
+        // all of them hit the recovering target the instant cooldown elapsed —
+        // a thundering herd against a target that had just been declared
+        // unhealthy, repeated every cooldown for as long as it stayed down.
+        let cooldown = Duration::from_secs(30);
+        let registry = ClickHouseBreakerRegistry::new(ClickHouseBreakerConfig {
+            failure_threshold: 1,
+            cooldown,
+        });
+        let t0 = Instant::now();
+        registry.on_failure("org", t0);
+        assert_eq!(registry.decide("org", t0), BreakerDecision::Shed);
+
+        let half_open = t0 + cooldown + Duration::from_secs(1);
+        assert_eq!(registry.decide("org", half_open), BreakerDecision::Allow);
+        // Every other worker arriving in the same window is shed, not admitted.
+        for _ in 0..10 {
+            assert_eq!(registry.decide("org", half_open), BreakerDecision::Shed);
+        }
+
+        // The probe succeeding closes the breaker for everyone.
+        registry.on_success("org");
+        assert_eq!(registry.decide("org", half_open), BreakerDecision::Allow);
+    }
+
+    #[test]
+    fn clickhouse_breaker_readmits_a_probe_that_never_reported() {
+        // A worker that dies between being admitted and recording an outcome
+        // must not wedge the breaker open forever: the claim expires after one
+        // cooldown and the next caller probes.
+        let cooldown = Duration::from_secs(30);
+        let registry = ClickHouseBreakerRegistry::new(ClickHouseBreakerConfig {
+            failure_threshold: 1,
+            cooldown,
+        });
+        let t0 = Instant::now();
+        registry.on_failure("org", t0);
+
+        let half_open = t0 + cooldown + Duration::from_secs(1);
+        assert_eq!(registry.decide("org", half_open), BreakerDecision::Allow);
+        assert_eq!(registry.decide("org", half_open), BreakerDecision::Shed);
+
+        // No on_success/on_failure ever arrived for that probe.
+        let abandoned = half_open + cooldown + Duration::from_secs(1);
+        assert_eq!(registry.decide("org", abandoned), BreakerDecision::Allow);
     }
 
     #[test]
@@ -7262,6 +7082,11 @@ mod tests {
             let mut objects = state.objects.lock().unwrap();
             match method {
                 axum::http::Method::PUT => {
+                    // Real S3 refuses a PUT without Content-Length (411
+                    // MissingContentLength); accepting one hid the heartbeat bug.
+                    if !headers.contains_key("content-length") {
+                        return (StatusCode::LENGTH_REQUIRED, Vec::new());
+                    }
                     if headers.contains_key("if-none-match") && objects.contains_key(&key) {
                         return (StatusCode::PRECONDITION_FAILED, Vec::new());
                     }
@@ -7485,6 +7310,27 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_heartbeat_lands_and_makes_its_owner_claimable_once_stale() {
+        // The heartbeat is an EMPTY PUT, the one request shape the fake used to
+        // accept and S3 refused. Without it no owner object exists, so a dead
+        // task is never seen as stale and nothing it shipped is ever recovered.
+        let (endpoint, bucket) = fake_s3::spawn("maple-wal-test").await;
+        let store = test_wal_store(&endpoint);
+        store.heartbeat().await.expect("heartbeat PUT succeeds");
+
+        let owner_key = format!("wal/v1/owners/{}", store.owner());
+        assert!(bucket.get(&owner_key).is_some(), "heartbeat object exists");
+
+        let successor = test_wal_store(&endpoint);
+        let later = Utc::now() + chrono::Duration::hours(1);
+        assert_eq!(
+            successor.stale_owners(later).await.unwrap(),
+            vec![store.owner().to_owned()],
+            "a heartbeat that stops refreshing is found as a stale owner"
+        );
+    }
+
     /// Cross-language contract with the Prometheus scraper (apps/scraper).
     ///
     /// The scraper converts scraped exposition text into OTLP/JSON
@@ -7536,6 +7382,7 @@ mod tests {
                     .get_or_insert_with(Resource::default);
                 resource.attributes.push(KeyValue {
                     key: "maple_org_id".to_owned(),
+                    key_strindex: 0,
                     value: Some(AnyValue {
                         value: Some(any_value::Value::StringValue("org_scraper".to_owned())),
                     }),

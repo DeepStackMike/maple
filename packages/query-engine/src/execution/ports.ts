@@ -1,5 +1,5 @@
 import type { Effect, Option } from "effect"
-import type { ClickHouseStatement } from "@maple-dev/clickhouse-builder/sql"
+import type { ClickHouseStatement } from "@maple-dev/effect-clickhouse/sql"
 import type { OrgId, UserId } from "@maple/domain"
 import type {
 	RawSqlValidationError,
@@ -17,6 +17,7 @@ import type { WarehouseCapabilities } from "../capabilities"
 import type { WarehouseExecutorApi } from "../observability"
 import type { SqlQueryOptions } from "../profiles"
 import type { WarehouseClassifiedError, WarehouseCompiledQueryError, WarehouseExecutionError } from "./errors"
+import type { WarehouseDriverError } from "./driver-error"
 import type { WarehouseResponseLimitError, WarehouseResponseLimits } from "./response-limits"
 
 /** The minimal tenant surface the executor reads (org scope + identity for spans). */
@@ -39,7 +40,8 @@ export type CompiledQueryError<Routing extends string | undefined> = Routing ext
 	: WarehouseCompiledQueryError
 
 /**
- * Minimal client interface — statement execution plus row inserts.
+ * Lazy, interruptible driver effects — statement execution plus row inserts.
+ * Adapters own Promise conversion and forward interruption to their transport.
  *
  * The executor hands over a parsed `ClickHouseStatement` with its terminal
  * clauses already settled for this backend's dialect: `SETTINGS` applied, and
@@ -54,8 +56,14 @@ export interface WarehouseSqlClient {
 		options?: {
 			readonly responseLimits?: WarehouseResponseLimits
 		},
-	) => Promise<{ data: ReadonlyArray<Record<string, unknown>> }>
-	readonly insert: (datasource: string, rows: ReadonlyArray<unknown>) => Promise<void>
+	) => Effect.Effect<
+		{ data: ReadonlyArray<Record<string, unknown>> },
+		WarehouseDriverError | WarehouseResponseLimitError
+	>
+	readonly insert: (
+		datasource: string,
+		rows: ReadonlyArray<unknown>,
+	) => Effect.Effect<void, WarehouseDriverError>
 }
 
 /**
@@ -122,7 +130,14 @@ export interface WarehouseRouteResolver {
  * client cache, OrgId scoping, span instrumentation — lives in this package.
  */
 export interface WarehouseExecutorDeps {
-	readonly createClient: (config: ResolvedWarehouseConfig) => WarehouseSqlClient
+	/**
+	 * Build a driver for a resolved backend. Construction is an Effect: a driver
+	 * validates its endpoint and captures its HTTP client, and a refusal surfaces
+	 * as a `config`-reason driver error rather than a per-query surprise.
+	 */
+	readonly createClient: (
+		config: ResolvedWarehouseConfig,
+	) => Effect.Effect<WarehouseSqlClient, WarehouseDriverError>
 	readonly resolveRoute: WarehouseRouteResolver
 	/**
 	 * Drop whatever the host caches to answer `resolveRoute` for this tenant, and
@@ -144,6 +159,13 @@ export interface WarehouseExecutorDeps {
 	 * Optional: hosts without per-org routing omit it and get no retry.
 	 */
 	readonly invalidateRoute?: (tenant: ExecutionTenant) => Effect.Effect<boolean>
+	/**
+	 * Let concurrent cold capability lookups for one route share a single probe.
+	 * Only for hosts where one executor serves one I/O context (the CLI): in a
+	 * Worker isolate a follower request must never await a probe another request
+	 * owns, so the default keeps every probe request-local.
+	 */
+	readonly coalesceCapabilityProbes?: boolean
 }
 
 /**

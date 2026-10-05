@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react"
+import { Link } from "@tanstack/react-router"
 
 import { parsePullRequestUrl, VCS_PULL_REQUESTS_DEFAULT_LIMIT } from "@maple/domain/http"
 import type { PullRequestSummary } from "@maple/domain/http"
@@ -25,6 +26,7 @@ import { Label } from "@maple/ui/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@maple/ui/components/ui/select"
 import { cn } from "@maple/ui/lib/utils"
 
+import { DocsLink } from "@/components/common/docs-link"
 import { Result, useAtomValue } from "@/lib/effect-atom"
 import { retainedQuery } from "@/lib/services/common/atom-client"
 
@@ -47,10 +49,7 @@ export const PULL_REQUEST_STATE_TONE = {
 } satisfies Record<PullRequestSummary["state"], string>
 
 /** `#123`, `123`, or a full PR URL — the three things a person actually types. */
-const resolveTypedReference = (
-	input: string,
-	repository: string | null,
-): string | null => {
+const resolveTypedReference = (input: string, repository: string | null): string | null => {
 	const trimmed = input.trim()
 	if (trimmed.length === 0) return null
 
@@ -157,8 +156,8 @@ export function AttachPullRequestDialog({
 				<DialogHeader>
 					<DialogTitle>Attach a pull request</DialogTitle>
 					<DialogDescription>
-						Once it merges, Maple checks whether this error actually stopped before closing
-						the issue.
+						Once it merges, Maple checks whether this error actually stopped before closing the
+						issue.
 					</DialogDescription>
 				</DialogHeader>
 
@@ -175,11 +174,16 @@ export function AttachPullRequestDialog({
 								}}
 							/>
 							<p className="text-xs text-muted-foreground">
-								<a href="/settings/integrations" className="underline hover:no-underline">
+								<Link
+									to="/integrations"
+									search={{ integration: "github" }}
+									className="underline hover:no-underline"
+								>
 									Connect GitHub
-								</a>{" "}
+								</Link>{" "}
 								to pick from your repositories instead of pasting a link.
 							</p>
+							<DocsLink page="github">GitHub integration docs</DocsLink>
 						</div>
 					) : (
 						<>
@@ -264,9 +268,7 @@ export function AttachPullRequestDialog({
 															</div>
 															<span className="truncate text-[11px] text-muted-foreground">
 																{pr.headRef}
-																{pr.authorLogin
-																	? ` · ${pr.authorLogin}`
-																	: ""}
+																{pr.authorLogin ? ` · ${pr.authorLogin}` : ""}
 															</span>
 														</div>
 													</ComboboxItem>

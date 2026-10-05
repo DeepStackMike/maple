@@ -2,13 +2,14 @@
 //
 // DSL-based query definitions for logs timeseries and breakdown.
 
-import { compileFnCall, subqueryExpr } from "@maple-dev/clickhouse-builder"
-import * as CH from "@maple-dev/clickhouse-builder/expr"
-import { param } from "@maple-dev/clickhouse-builder"
-import { from, fromUnion, type CHQuery, type ColumnAccessor } from "@maple-dev/clickhouse-builder"
-import type { ColumnDefs } from "@maple-dev/clickhouse-builder/types"
-import * as T from "@maple-dev/clickhouse-builder/types"
-import { unionAll, type CHUnionQuery } from "@maple-dev/clickhouse-builder"
+import { finiteOrZero } from "./format"
+import { compileFnCall, subqueryExpr } from "@maple-dev/effect-clickhouse"
+import * as CH from "@maple-dev/effect-clickhouse/expr"
+import { param } from "@maple-dev/effect-clickhouse"
+import { from, fromUnion, type CHQuery, type ColumnAccessor } from "@maple-dev/effect-clickhouse"
+import type { ColumnDefs } from "@maple-dev/effect-clickhouse/types"
+import * as T from "@maple-dev/effect-clickhouse/types"
+import { unionAll, type CHUnionQuery } from "@maple-dev/effect-clickhouse"
 import { Logs, LogsAggregatesHourly } from "../tables"
 import { finalizeTimeseries } from "./series-cap"
 import type { AttributeFilter } from "@maple/domain/query-engine"
@@ -16,7 +17,7 @@ import { envLabel, resourceEnvLabel } from "./environment"
 import { buildAttrFilterCondition } from "../../traces-shared"
 import type { AttributeIndexMode, LogBodySearchMode } from "../../capabilities"
 import { edgeCondition, interiorConditions } from "./rollup-splice"
-import { inclusionCondition, inclusionValues, soleValue } from "./query-helpers"
+import { inclusionCondition, inclusionValues, severitySpellings, soleValue } from "./query-helpers"
 
 // Shared options
 
@@ -62,9 +63,10 @@ function logAttributeConditions(opts: LogsQueryOpts): CH.Condition[] {
 
 /**
  * Adds an index-readable necessary condition ahead of the exact historical
- * `ILIKE` predicate. The confirmation predicate preserves substring semantics;
- * single-token searches stay scan-only because token indexes cannot safely
- * accelerate partial-word matches without introducing false negatives.
+ * `ILIKE` predicate. The confirmation predicate preserves substring semantics.
+ * Only interior words are indexed: the first and last word of a search can be
+ * part of a longer word in the body (`connection timeout` inside
+ * `Reconnection timeouts`), so a whole-token check on them drops real matches.
  */
 function logBodySearchCondition(body: CH.Expr<string>, opts: LogsQueryOpts): CH.Condition | undefined {
 	const search = opts.search
@@ -73,13 +75,8 @@ function logBodySearchCondition(body: CH.Expr<string>, opts: LogsQueryOpts): CH.
 	const exact = body.ilike(`%${search}%`)
 	if ((opts.bodySearchMode ?? "scan") === "scan") return exact
 
-	// Matches ClickHouse HasTokenImpl: split on ASCII punctuation/whitespace,
-	// while keeping non-ASCII letters intact.
-	const tokens = search
-		.toLowerCase()
-		.split(/[ -/:-@[-`{-~\t\n\r]+/)
-		.filter((token) => token.length > 0)
-	if (tokens.length < 2) return exact
+	const tokens = interiorSearchTokens(search)
+	if (tokens.length === 0) return exact
 
 	const normalizedBody = CH.lower_(body)
 	if (opts.bodySearchMode === "text") {
@@ -96,6 +93,20 @@ function logBodySearchCondition(body: CH.Expr<string>, opts: LogsQueryOpts): CH.
 		.reduce((condition, next) => condition.and(next))
 		.and(exact)
 }
+
+/**
+ * Words bounded by a literal separator on both sides, split like ClickHouse
+ * HasTokenImpl (ASCII punctuation/whitespace). `%`, `_` and `\` are LIKE
+ * metacharacters in the unescaped `ILIKE`, not literal boundaries, so a word
+ * touching one is skipped. Words must be ASCII alphanumeric before lowercasing:
+ * ClickHouse `lower()` folds ASCII only, while JS maps e.g. the Kelvin sign to `k`.
+ */
+const interiorSearchTokens = (search: string): ReadonlyArray<string> =>
+	search
+		.split(/[\t\n\r !"#$&'()*+,\-./:;<=>?@[\]^`{|}~]+/)
+		.slice(1, -1)
+		.filter((token) => /^[A-Za-z0-9]+$/.test(token))
+		.map((token) => token.toLowerCase())
 
 /** Stable identity for log records that do not carry a native OTel record ID. */
 const logRecordIdentity = ($: ColumnAccessor<typeof Logs.columns>): CH.Expr<string> => {
@@ -151,7 +162,13 @@ function serviceSeverityConditions(
 	opts: LogsQueryOpts,
 ): Array<CH.Condition | undefined> {
 	const services = inclusionValues(opts.serviceName, opts.serviceNames)
-	const severities = inclusionValues(opts.severity, opts.severities)
+	// The scalar is a level ("ERROR") and matches every spelling; the array holds exact facet
+	// values the caller read back from the data, so it stays exact.
+	const severities = opts.severities?.length
+		? opts.severities
+		: opts.severity
+			? severitySpellings(opts.severity)
+			: undefined
 	return [
 		services ? inclusionCondition($.ServiceName, services) : undefined,
 		severities ? inclusionCondition($.SeverityText, severities) : undefined,
@@ -834,7 +851,7 @@ export function errorRateByServiceQuery() {
 			serviceName: $.serviceName,
 			totalLogs: CH.sum($.bucketTotalLogs),
 			errorLogs: CH.sum($.bucketErrorLogs),
-			errorRate: CH.round_(CH.sum($.bucketErrorLogs).div(CH.sum($.bucketTotalLogs)), 6),
+			errorRate: finiteOrZero(CH.round_(CH.sum($.bucketErrorLogs).div(CH.sum($.bucketTotalLogs)), 6)),
 		}))
 		.groupBy("serviceName")
 		.orderBy(["errorRate", "desc"])
@@ -881,7 +898,7 @@ function logsFacetsQueryFromMv(
 		$.Hour.gte(param.dateTimeSeconds("startTime")),
 		$.Hour.lte(param.dateTimeSeconds("endTime")),
 		CH.when(opts.serviceName, (v: string) => $.ServiceName.eq(v)),
-		CH.when(opts.severity, (v: string) => $.SeverityText.eq(v)),
+		CH.when(opts.severity, (v: string) => inclusionCondition($.SeverityText, severitySpellings(v))),
 		opts.environments?.length ? CH.inList(envLabel($.DeploymentEnv), opts.environments) : undefined,
 		mvNamespaceCondition($, opts),
 	]
@@ -958,7 +975,7 @@ function logsFacetsQueryFromRaw(
 		$.Timestamp.gte(param.dateTimeString("startTime")),
 		$.Timestamp.lte(param.dateTimeString("endTime")),
 		CH.when(opts.serviceName, (v: string) => $.ServiceName.eq(v)),
-		CH.when(opts.severity, (v: string) => $.SeverityText.eq(v)),
+		CH.when(opts.severity, (v: string) => inclusionCondition($.SeverityText, severitySpellings(v))),
 		environmentCondition($, opts),
 		namespaceCondition($, opts),
 	]

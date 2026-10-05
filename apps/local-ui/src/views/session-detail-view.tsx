@@ -42,7 +42,7 @@ import {
 } from "../hooks/use-local-session-detail"
 import { parseAttributes } from "@maple/ui/lib/span-tree"
 import { formatLocation, type FormattedLocation } from "../lib/geo"
-import { formatRelativeTime, toClickHouseDateTime } from "../lib/time"
+import { formatLocalDateTime, formatRelativeTime, formatUtcTitle, toClickHouseDateTime } from "../lib/time"
 import { formatSessionDuration, gradientFor, hostFromUrl, isMobileDevice } from "@maple/ui/lib/replay-format"
 import { ErrorState } from "../components/view-states"
 import { RefreshButton } from "../components/toolbar"
@@ -57,7 +57,7 @@ import {
 } from "../components/session-replay-player"
 import { useLocalSessionReplay } from "../hooks/use-local-session-replay"
 import { StackTrace } from "../components/stack-trace"
-import { useLocation } from "../lib/router"
+import { hrefFor, useLocation } from "../lib/router"
 import {
 	computeActivity,
 	currentIndexAt,
@@ -81,15 +81,16 @@ import {
 
 interface SessionDetailViewProps {
 	sessionId: string
+	backLabel: string
 	onBack: () => void
-	onSelectTrace: (traceId: string) => void
 }
 
 /** How far before an error the player lands, so the lead-up is visible. */
 const ERROR_LEAD_MS = 3000
 
-export function SessionDetailView({ sessionId, onBack, onSelectTrace }: SessionDetailViewProps) {
-	const { data: session, isPending, isError, error } = useLocalSessionDetail(sessionId)
+export function SessionDetailView({ sessionId, backLabel, onBack }: SessionDetailViewProps) {
+	const detail = useLocalSessionDetail(sessionId)
+	const { data: session, isPending, isError, error } = detail
 	const transcript = useLocalSessionTranscript(sessionId)
 	const events = useMemo(() => transcript.data ?? [], [transcript.data])
 
@@ -208,12 +209,12 @@ export function SessionDetailView({ sessionId, onBack, onSelectTrace }: SessionD
 			<div className="flex shrink-0 items-center gap-3 border-b px-4 py-2">
 				<Button variant="ghost" size="sm" onClick={onBack} className="gap-1.5">
 					<ArrowLeftIcon size={14} />
-					Sessions
+					{backLabel}
 				</Button>
 				<span className="truncate font-mono text-xs text-muted-foreground" title={sessionId}>
 					{sessionId}
 				</span>
-				<RefreshButton className="ml-auto" />
+				<RefreshButton className="ml-auto" since={detail.dataUpdatedAt} />
 			</div>
 
 			<div className="min-h-0 flex-1 overflow-auto">
@@ -222,7 +223,7 @@ export function SessionDetailView({ sessionId, onBack, onSelectTrace }: SessionD
 						<Spinner />
 					</div>
 				) : isError ? (
-					<ErrorState label="session" error={error} />
+					<ErrorState label="session" error={error} onRetry={() => detail.refetch()} />
 				) : !session ? (
 					<div className="flex h-full items-center justify-center text-sm text-muted-foreground">
 						Session not found.
@@ -251,9 +252,13 @@ export function SessionDetailView({ sessionId, onBack, onSelectTrace }: SessionD
 											className="max-w-80 truncate"
 											title={session.urlInitial || undefined}
 										>
-											{hostFromUrl(session.urlInitial) || "—"}
+											{hostFromUrl(session.urlInitial) || "-"}
 										</span>
-										<span>{formatRelativeTime(session.startTime)}</span>
+										<span
+											title={`${formatLocalDateTime(session.startTime)} (${formatUtcTitle(session.startTime)})`}
+										>
+											{formatRelativeTime(session.startTime)}
+										</span>
 										<CopyableBadge
 											value={sessionId}
 											label="session ID"
@@ -321,9 +326,10 @@ export function SessionDetailView({ sessionId, onBack, onSelectTrace }: SessionD
 										<ul className="space-y-1.5">
 											{(traces.data ?? []).map((trace) => (
 												<li key={trace.traceId}>
-													<button
-														type="button"
-														onClick={() => onSelectTrace(trace.traceId)}
+													<a
+														href={hrefFor(
+															`/traces/${encodeURIComponent(trace.traceId)}`,
+														)}
 														className="group flex w-full items-center gap-2 rounded-lg border px-2.5 py-2 text-left transition-colors hover:border-primary/40 hover:bg-accent/40"
 													>
 														<span
@@ -356,7 +362,7 @@ export function SessionDetailView({ sessionId, onBack, onSelectTrace }: SessionD
 															size={14}
 															className="shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100"
 														/>
-													</button>
+													</a>
 												</li>
 											))}
 										</ul>
@@ -376,7 +382,6 @@ export function SessionDetailView({ sessionId, onBack, onSelectTrace }: SessionD
 								activeMarker={activeMarker}
 								onActiveMarkerChange={setActiveMarker}
 								traceLinks={traceLinks}
-								onSelectTrace={onSelectTrace}
 							/>
 						</div>
 					</div>
@@ -403,7 +408,6 @@ interface EventPanelProps {
 	onActiveMarkerChange: (active: ActiveMarker | null) => void
 	/** Row id → the span a trace-id-less row was matched to. See `recoverTraceLinks`. */
 	traceLinks: ReadonlyMap<string, SessionSpanOutput>
-	onSelectTrace: (traceId: string) => void
 }
 
 function EventPanel({
@@ -418,7 +422,6 @@ function EventPanel({
 	activeMarker,
 	onActiveMarkerChange,
 	traceLinks,
-	onSelectTrace,
 }: EventPanelProps) {
 	const [tab, setTab] = useState<SessionEventTab>("all")
 	const counts = useMemo(() => tabCounts(events), [events])
@@ -506,7 +509,6 @@ function EventPanel({
 								hovered={activeMarker?.id === id}
 								onActiveMarkerChange={onActiveMarkerChange}
 								traceLink={traceLinkFor(event, traceLinks)}
-								onSelectTrace={onSelectTrace}
 							/>
 						)
 					})}
@@ -525,7 +527,6 @@ function EventRow({
 	hovered,
 	onActiveMarkerChange,
 	traceLink,
-	onSelectTrace,
 }: {
 	event: SessionTranscriptOutput
 	index: number
@@ -538,7 +539,6 @@ function EventRow({
 	onActiveMarkerChange: (active: ActiveMarker | null) => void
 	/** The backend trace this row happened under, recorded or recovered. */
 	traceLink?: TraceLink
-	onSelectTrace: (traceId: string) => void
 }) {
 	const danger = isErrorEvent(event)
 	const id = transcriptRowId(event)
@@ -602,7 +602,7 @@ function EventRow({
 				</div>
 				{kind ? <MarkerDot kind={kind} className="mt-1.5 size-1.5" /> : null}
 			</Row>
-			{traceLink ? <TraceLinkButton link={traceLink} onSelect={onSelectTrace} /> : null}
+			{traceLink ? <TraceLinkButton link={traceLink} /> : null}
 		</li>
 	)
 }
@@ -617,11 +617,10 @@ function EventRow({
  * is a hint rather than a different affordance: a dotted underline and a word,
  * so a reader can tell a recorded fact from an inferred one before trusting it.
  */
-function TraceLinkButton({ link, onSelect }: { link: TraceLink; onSelect: (traceId: string) => void }) {
+function TraceLinkButton({ link }: { link: TraceLink }) {
 	return (
-		<button
-			type="button"
-			onClick={() => onSelect(link.traceId)}
+		<a
+			href={hrefFor(`/traces/${encodeURIComponent(link.traceId)}`)}
 			title={
 				link.matched ? "Matched by session, URL and time" : `Open trace ${link.traceId.slice(0, 12)}`
 			}
@@ -635,7 +634,7 @@ function TraceLinkButton({ link, onSelect }: { link: TraceLink; onSelect: (trace
 			<span className={cn(link.matched && "border-b border-dotted border-current")}>trace</span>
 			{link.matched ? <span className="uppercase tracking-wide opacity-60">matched</span> : null}
 			<ArrowRightIcon size={10} className="shrink-0" />
-		</button>
+		</a>
 	)
 }
 
@@ -657,7 +656,7 @@ function EventBody({ event }: { event: SessionTranscriptOutput }) {
 			return (
 				<p className="truncate text-xs text-muted-foreground" title={event.url}>
 					<span className="mr-1.5 font-medium text-foreground">Navigate</span>
-					{event.url || "—"}
+					{event.url || "-"}
 				</p>
 			)
 		case "click":
@@ -791,7 +790,7 @@ function UserCard({ session }: { session: SessionReplayDetailOutput }) {
 								{key}
 							</dt>
 							<dd className="truncate text-sm" title={value}>
-								{value || "—"}
+								{value || "-"}
 							</dd>
 						</div>
 					))}
@@ -861,7 +860,7 @@ function EventIcon({ event }: { event: SessionTranscriptOutput }) {
  * is a measurement, so it keeps its own cell and only `null` reads as unknown.
  */
 function statDuration(ms: number | null): string {
-	if (ms === null) return "—"
+	if (ms === null) return "-"
 	return ms === 0 ? "0s" : formatSessionDuration(ms)
 }
 
@@ -921,7 +920,7 @@ function Meta({
 			<dt className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{label}</dt>
 			<dd className="mt-0.5 flex items-center gap-1.5 truncate text-sm" title={title ?? value}>
 				{icon}
-				<span className="truncate">{value || "—"}</span>
+				<span className="truncate">{value || "-"}</span>
 			</dd>
 		</div>
 	)
@@ -969,7 +968,7 @@ function Field({
 		<div className={cn("min-w-0", className)}>
 			<dt className="text-xs text-muted-foreground">{label}</dt>
 			<dd className="truncate" title={title ?? value}>
-				{value || "—"}
+				{value || "-"}
 			</dd>
 		</div>
 	)

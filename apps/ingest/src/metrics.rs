@@ -18,7 +18,6 @@ use opentelemetry::{global, KeyValue};
 
 static METER: LazyLock<Meter> = LazyLock::new(|| global::meter("maple-ingest"));
 
-
 static REQUESTS_TOTAL: LazyLock<Counter<u64>> = LazyLock::new(|| {
     METER
         .u64_counter("ingest_requests_total")
@@ -119,6 +118,27 @@ static SENTINEL_TOTAL: LazyLock<Counter<u64>> = LazyLock::new(|| {
         .build()
 });
 
+/// Requests abandoned by the gateway deadline. The signal that saturation is
+/// being shed rather than queued — before this existed the same condition was
+/// invisible in error rates because a hung request never fails.
+static REQUEST_TIMEOUTS_TOTAL: LazyLock<Counter<u64>> = LazyLock::new(|| {
+    METER
+        .u64_counter("ingest_request_timeouts_total")
+        .with_description("Requests abandoned after exceeding the gateway request timeout")
+        .build()
+});
+
+/// Frames dropped for exceeding `INGEST_QUEUE_MAX_AGE_SECS`. This is deliberate
+/// data loss and must be alertable: non-zero means a downstream target stalled
+/// long enough that the gateway chose to cut the backlog rather than let the
+/// accept path keep queueing behind it.
+static QUEUE_AGE_SHED_TOTAL: LazyLock<Counter<u64>> = LazyLock::new(|| {
+    METER
+        .u64_counter("ingest_queue_age_shed_total")
+        .with_description("Rows shed because their frame exceeded the lane's max queue age")
+        .build()
+});
+
 static WAL_SHARD_FULL_TOTAL: LazyLock<Counter<u64>> = LazyLock::new(|| {
     METER
         .u64_counter("ingest_wal_shard_full_total")
@@ -206,13 +226,6 @@ static TINYBIRD_EXPORT_RETRIES_TOTAL: LazyLock<Counter<u64>> = LazyLock::new(|| 
         .build()
 });
 
-static TINYBIRD_MIRROR_DROPPED_TOTAL: LazyLock<Counter<u64>> = LazyLock::new(|| {
-    METER
-        .u64_counter("ingest_tinybird_mirror_dropped_total")
-        .with_description("Rows dropped before reaching the Tinybird mirror lane")
-        .build()
-});
-
 static CLICKHOUSE_EXPORT_ROWS_TOTAL: LazyLock<Counter<u64>> = LazyLock::new(|| {
     METER
         .u64_counter("ingest_clickhouse_export_rows_total")
@@ -255,14 +268,12 @@ static AUTUMN_FLUSHES_TOTAL: LazyLock<Counter<u64>> = LazyLock::new(|| {
         .build()
 });
 
-
 static REQUESTS_IN_FLIGHT: LazyLock<UpDownCounter<i64>> = LazyLock::new(|| {
     METER
         .i64_up_down_counter("ingest_requests_in_flight")
         .with_description("In-flight ingest requests")
         .build()
 });
-
 
 static ORG_REQUESTS_IN_FLIGHT: LazyLock<Gauge<u64>> = LazyLock::new(|| {
     METER
@@ -293,7 +304,6 @@ static AUTUMN_PENDING_GB: LazyLock<Gauge<f64>> = LazyLock::new(|| {
         .with_description("Unflushed Autumn usage accumulated in memory, in GB")
         .build()
 });
-
 
 static REQUEST_DURATION_SECONDS: LazyLock<Histogram<f64>> = LazyLock::new(|| {
     METER
@@ -332,6 +342,47 @@ static WAL_COMMIT_BYTES: LazyLock<Histogram<u64>> = LazyLock::new(|| {
         .u64_histogram("ingest_wal_commit_bytes")
         .with_unit("By")
         .with_description("Bytes committed per WAL append")
+        .build()
+});
+
+/// How long frames actually waited in their lane before export. The companion
+/// to `ingest_queue_age_shed_total`: this shows the backlog building, that one
+/// shows it being cut.
+static QUEUE_AGE_SECONDS: LazyLock<Histogram<f64>> = LazyLock::new(|| {
+    METER
+        .f64_histogram("ingest_queue_age_seconds")
+        .with_unit("s")
+        .with_description("Age of a frame when its export batch was assembled")
+        .build()
+});
+
+/// Split three ways on purpose. A WAL append is `lock -> write -> fsync`, and
+/// when `ingest.wal_commit` blows up these are the only numbers that say which
+/// of the three it was: lock wait dominating means the lane count is the ceiling
+/// (more lanes / more vCPU helps), fsync dominating means the device is the
+/// ceiling (more lanes just redistribute the same IO). Without this split the
+/// only way to tell them apart was to read the source.
+static WAL_APPEND_DURATION_SECONDS: LazyLock<Histogram<f64>> = LazyLock::new(|| {
+    METER
+        .f64_histogram("ingest_wal_append_duration_seconds")
+        .with_unit("s")
+        .with_description("Total WAL append latency: lock wait, write and fsync")
+        .build()
+});
+
+static WAL_LOCK_WAIT_DURATION_SECONDS: LazyLock<Histogram<f64>> = LazyLock::new(|| {
+    METER
+        .f64_histogram("ingest_wal_lock_wait_duration_seconds")
+        .with_unit("s")
+        .with_description("Time spent waiting for a WAL lane's append mutex")
+        .build()
+});
+
+static WAL_FSYNC_DURATION_SECONDS: LazyLock<Histogram<f64>> = LazyLock::new(|| {
+    METER
+        .f64_histogram("ingest_wal_fsync_duration_seconds")
+        .with_unit("s")
+        .with_description("Time spent in sync_data on a WAL segment")
         .build()
 });
 
@@ -390,7 +441,6 @@ static AUTUMN_FLUSH_DURATION_SECONDS: LazyLock<Histogram<f64>> = LazyLock::new(|
         .with_description("Autumn usage-tracking flush cycle latency")
         .build()
 });
-
 
 /// A request entered the gateway; pair with [`request_finished`].
 pub fn request_started() {
@@ -570,6 +620,54 @@ pub fn wal_commit_bytes(shard: usize, destination: &str, bytes: u64) {
     );
 }
 
+/// A request was abandoned by the gateway deadline. `route` is the matched route
+/// pattern, never a raw URI — one ingest route carries a path parameter, and a
+/// label per connector id is unbounded cardinality.
+pub fn request_timed_out(route: &str) {
+    REQUEST_TIMEOUTS_TOTAL.add(1, &[KeyValue::new("route", route.to_owned())]);
+}
+
+/// Age of a frame at the moment its export batch was assembled.
+pub fn queue_age(destination: &str, signal: &str, seconds: f64) {
+    QUEUE_AGE_SECONDS.record(
+        seconds,
+        &[
+            KeyValue::new("destination", destination.to_owned()),
+            KeyValue::new("signal", signal.to_owned()),
+        ],
+    );
+}
+
+/// Rows shed because their frame exceeded the lane's max queue age.
+pub fn queue_age_shed(org_id: &str, destination: &str, datasource: &str, rows: u64) {
+    QUEUE_AGE_SHED_TOTAL.add(
+        rows,
+        &[
+            KeyValue::new("org_id", org_id.to_owned()),
+            KeyValue::new("destination", destination.to_owned()),
+            KeyValue::new("datasource", datasource.to_owned()),
+        ],
+    );
+}
+
+/// The three phases of one WAL append, recorded together so their ratio is
+/// readable on a single dashboard. See `WAL_APPEND_DURATION_SECONDS`.
+pub fn wal_append_durations(
+    shard: usize,
+    destination: &str,
+    lock_wait_seconds: f64,
+    fsync_seconds: f64,
+    total_seconds: f64,
+) {
+    let labels = [
+        KeyValue::new("shard", shard.to_string()),
+        KeyValue::new("destination", destination.to_owned()),
+    ];
+    WAL_LOCK_WAIT_DURATION_SECONDS.record(lock_wait_seconds, &labels);
+    WAL_FSYNC_DURATION_SECONDS.record(fsync_seconds, &labels);
+    WAL_APPEND_DURATION_SECONDS.record(total_seconds, &labels);
+}
+
 /// Bytes a WAL lane currently holds on disk, exported prefix included.
 pub fn wal_shard_bytes(shard: usize, destination: &str, bytes: u64) {
     WAL_SHARD_BYTES.record(
@@ -655,9 +753,8 @@ pub fn org_queue_bytes(org_id: &str, bytes: u64) {
 
 /// Latency and exported-byte size of a completed WAL export batch.
 ///
-/// `destination` matters here: without it a mirror lane's drain is
-/// indistinguishable from the primary's in the same shard, which is exactly the
-/// comparison a workspace migration needs.
+/// `destination` separates the Tinybird and ClickHouse lanes of one shard, which
+/// otherwise drain into the same series.
 pub fn export_batch_completed(
     shard: usize,
     destination: &str,
@@ -723,8 +820,8 @@ pub fn native_sampled_dropped(signal: &str, count: u64) {
 
 /// A successful Tinybird export: latency and exported row count.
 ///
-/// `destination` is `tinybird` or `tinybird_mirror`. Comparing the two row
-/// counters per datasource is how a mirrored workspace is proved complete.
+/// `destination` is always `tinybird`; the label is kept because the export
+/// path is per-lane and the dashboards query it.
 pub fn tinybird_export_succeeded(
     destination: &str,
     datasource: &str,
@@ -768,23 +865,6 @@ pub fn tinybird_export_retry(destination: &str, datasource: &str, status: &str) 
             KeyValue::new("destination", destination.to_owned()),
             KeyValue::new("datasource", datasource.to_owned()),
             KeyValue::new("status", status.to_owned()),
-        ],
-    );
-}
-
-/// Rows shed on the commit path before they ever reached the mirror lane
-/// (`reason` is `lane_full`, `org_quota`, `wal_error`, or `no_target`).
-///
-/// The mirror is best-effort, so these drops are invisible to clients and to
-/// every other counter — and nothing backfills the mirrored workspace, so a
-/// non-zero value here is permanent loss, not a gap to be repaired later. It is
-/// the one number that has to stay at zero for the whole migration window.
-pub fn tinybird_mirror_dropped(datasource: &str, reason: &str, rows: u64) {
-    TINYBIRD_MIRROR_DROPPED_TOTAL.add(
-        rows,
-        &[
-            KeyValue::new("datasource", datasource.to_owned()),
-            KeyValue::new("reason", reason.to_owned()),
         ],
     );
 }

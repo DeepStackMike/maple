@@ -22,7 +22,80 @@ SELECT
         GROUP BY orgId
         FORMAT JSON
 
--- builder:containers:containerCountersSummaryQuery:default  [6bbc043d]
+-- builder:audit-log:auditLogEntriesQuery:default  [906b6bee]
+SELECT
+          Id AS id,
+          OccurredAt AS occurredAt,
+          RecordedAt AS recordedAt,
+          ActorType AS actorType,
+          UserId AS userId,
+          ApiKeyId AS apiKeyId,
+          ActorId AS actorId,
+          ActorLabel AS actorLabel,
+          AffectedUserId AS affectedUserId,
+          Source AS source,
+          Action AS action,
+          Outcome AS outcome,
+          DenialReason AS denialReason,
+          ResourceType AS resourceType,
+          ResourceId AS resourceId,
+          ChangedFields AS changedFields,
+          Changes AS changes,
+          Metadata AS metadata,
+          RequestId AS requestId,
+          OriginIp AS originIp,
+          OriginCountry AS originCountry
+        FROM audit_log
+        WHERE OrgId = 'org_sql_catalog'
+        ORDER BY occurredAt DESC, id DESC
+        LIMIT 50
+        OFFSET 0
+        FORMAT JSON
+
+-- builder:audit-log:auditLogEntriesQuery:filtered  [a6bc921e]
+SELECT
+          Id AS id,
+          OccurredAt AS occurredAt,
+          RecordedAt AS recordedAt,
+          ActorType AS actorType,
+          UserId AS userId,
+          ApiKeyId AS apiKeyId,
+          ActorId AS actorId,
+          ActorLabel AS actorLabel,
+          AffectedUserId AS affectedUserId,
+          Source AS source,
+          Action AS action,
+          Outcome AS outcome,
+          DenialReason AS denialReason,
+          ResourceType AS resourceType,
+          ResourceId AS resourceId,
+          ChangedFields AS changedFields,
+          Changes AS changes,
+          Metadata AS metadata,
+          RequestId AS requestId,
+          OriginIp AS originIp,
+          OriginCountry AS originCountry
+        FROM audit_log
+        WHERE OrgId = 'org_sql_catalog'
+          AND ActorType = 'user'
+          AND UserId = 'user_1'
+          AND ApiKeyId = 'key_1'
+          AND ActorId = 'actor_1'
+          AND AffectedUserId = 'user_2'
+          AND Action = 'dashboard.updated'
+          AND Outcome = 'allowed'
+          AND ResourceType = 'dashboard'
+          AND ResourceId = 'dash_1'
+          AND has(ChangedFields, 'name')
+          AND RequestId = 'ray'
+          AND OccurredAt >= '2026-01-01 10:30:00'
+          AND OccurredAt <= '2026-01-03 14:15:00'
+        ORDER BY occurredAt DESC, id DESC
+        LIMIT 50
+        OFFSET 50
+        FORMAT JSON
+
+-- builder:containers:containerCountersSummaryQuery:default  [2f09a107]
 SELECT
           avg(memoryBytesAvg) AS memoryBytesAvg,
           max(memoryLimitBytes) AS memoryLimitBytes,
@@ -30,10 +103,10 @@ SELECT
           avg(pidsAvg) AS pidsAvg
         FROM (SELECT
           ResourceAttributes['host.name'] AS hostName,
-          ifNotFinite(avgIf(Value, MetricName = 'container.memory.usage.total'), 0) AS memoryBytesAvg,
+          ifNull(ifNotFinite(avgIf(Value, MetricName = 'container.memory.usage.total'), 0), 0) AS memoryBytesAvg,
           ifNotFinite(maxIf(Value, MetricName = 'container.memory.usage.limit'), 0) AS memoryLimitBytes,
           ifNotFinite(maxIf(Value, MetricName = 'container.restarts') - minIf(Value, MetricName = 'container.restarts'), 0) AS restartsDelta,
-          ifNotFinite(avgIf(Value, MetricName = 'container.pids.count'), 0) AS pidsAvg
+          ifNull(ifNotFinite(avgIf(Value, MetricName = 'container.pids.count'), 0), 0) AS pidsAvg
         FROM metrics_sum
         WHERE OrgId = 'org_sql_catalog'
           AND TimeUnix >= '2026-01-01 10:30:00'
@@ -45,7 +118,7 @@ SELECT
         GROUP BY hostName) AS hosts
         FORMAT JSON
 
--- builder:containers:containerDetailSummaryQuery:default  [58383940]
+-- builder:containers:containerDetailSummaryQuery:default  [e3e8c874]
 SELECT
           ResourceAttributes['container.name'] AS containerName,
           any(ResourceAttributes['host.name']) AS hostName,
@@ -56,9 +129,9 @@ SELECT
           any(coalesce(nullIf(ResourceAttributes['container.runtime.name'], ''), ResourceAttributes['container.runtime'])) AS runtime,
           min(TimeUnix) AS firstSeen,
           max(TimeUnix) AS lastSeen,
-          ifNotFinite(avgIf(Value, MetricName = 'container.cpu.utilization'), 0) / 100 AS cpuPct,
-          ifNotFinite(avgIf(Value, MetricName = 'container.memory.percent'), 0) / 100 AS memoryPct,
-          ifNotFinite(avgIf(Value, MetricName = 'container.cpu.limit'), 0) AS cpuLimitCores,
+          ifNull(ifNotFinite(avgIf(Value, MetricName = 'container.cpu.utilization'), 0), 0) / 100 AS cpuPct,
+          ifNull(ifNotFinite(avgIf(Value, MetricName = 'container.memory.percent'), 0), 0) / 100 AS memoryPct,
+          ifNull(ifNotFinite(avgIf(Value, MetricName = 'container.cpu.limit'), 0), 0) AS cpuLimitCores,
           ifNotFinite(maxIf(Value, MetricName = 'container.uptime'), 0) AS uptimeSeconds
         FROM metrics_gauge
         WHERE OrgId = 'org_sql_catalog'
@@ -250,7 +323,7 @@ SELECT
         ORDER BY bucket ASC
         FORMAT JSON
 
--- builder:containers:listContainersQuery:default  [df58f91f]
+-- builder:containers:listContainersQuery:default  [c0d1ff29]
 SELECT
           containerName AS containerName,
           hostName AS hostName,
@@ -278,11 +351,11 @@ SELECT
           any(coalesce(nullIf(ResourceAttributes['container.runtime.name'], ''), ResourceAttributes['container.runtime'])) AS runtime,
           any(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment'])) AS environment,
           max(TimeUnix) AS lastSeen,
-          ifNotFinite(avgIf(Value, MetricName = 'container.cpu.utilization'), 0) / 100 AS cpuPct,
-          ifNotFinite(avgIf(Value, MetricName = 'container.memory.percent'), 0) / 100 AS memoryPct,
+          ifNull(ifNotFinite(avgIf(Value, MetricName = 'container.cpu.utilization'), 0), 0) / 100 AS cpuPct,
+          ifNull(ifNotFinite(avgIf(Value, MetricName = 'container.memory.percent'), 0), 0) / 100 AS memoryPct,
           ifNotFinite(maxIf(Value, MetricName = 'container.cpu.utilization'), 0) / 100 AS cpuPctPeak,
           ifNotFinite(maxIf(Value, MetricName = 'container.memory.percent'), 0) / 100 AS memoryPctPeak,
-          ifNotFinite(avgIf(Value, MetricName = 'container.cpu.limit'), 0) AS cpuLimitCores,
+          ifNull(ifNotFinite(avgIf(Value, MetricName = 'container.cpu.limit'), 0), 0) AS cpuLimitCores,
           ifNotFinite(maxIf(Value, MetricName = 'container.uptime'), 0) AS uptimeSeconds,
           greatest(ifNotFinite(maxIf(Value, MetricName = 'container.cpu.utilization'), 0) / 100, ifNotFinite(maxIf(Value, MetricName = 'container.memory.percent'), 0) / 100) AS saturation
         FROM metrics_gauge
@@ -298,7 +371,7 @@ SELECT
         OFFSET 0
         FORMAT JSON
 
--- builder:containers:listContainersQuery:filtered  [16c1f98d]
+-- builder:containers:listContainersQuery:filtered  [5333cd27]
 SELECT
           containerName AS containerName,
           hostName AS hostName,
@@ -326,11 +399,11 @@ SELECT
           any(coalesce(nullIf(ResourceAttributes['container.runtime.name'], ''), ResourceAttributes['container.runtime'])) AS runtime,
           any(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment'])) AS environment,
           max(TimeUnix) AS lastSeen,
-          ifNotFinite(avgIf(Value, MetricName = 'container.cpu.utilization'), 0) / 100 AS cpuPct,
-          ifNotFinite(avgIf(Value, MetricName = 'container.memory.percent'), 0) / 100 AS memoryPct,
+          ifNull(ifNotFinite(avgIf(Value, MetricName = 'container.cpu.utilization'), 0), 0) / 100 AS cpuPct,
+          ifNull(ifNotFinite(avgIf(Value, MetricName = 'container.memory.percent'), 0), 0) / 100 AS memoryPct,
           ifNotFinite(maxIf(Value, MetricName = 'container.cpu.utilization'), 0) / 100 AS cpuPctPeak,
           ifNotFinite(maxIf(Value, MetricName = 'container.memory.percent'), 0) / 100 AS memoryPctPeak,
-          ifNotFinite(avgIf(Value, MetricName = 'container.cpu.limit'), 0) AS cpuLimitCores,
+          ifNull(ifNotFinite(avgIf(Value, MetricName = 'container.cpu.limit'), 0), 0) AS cpuLimitCores,
           ifNotFinite(maxIf(Value, MetricName = 'container.uptime'), 0) AS uptimeSeconds,
           greatest(ifNotFinite(maxIf(Value, MetricName = 'container.cpu.utilization'), 0) / 100, ifNotFinite(maxIf(Value, MetricName = 'container.memory.percent'), 0) / 100) AS saturation
         FROM metrics_gauge
@@ -351,7 +424,7 @@ SELECT
         OFFSET 0
         FORMAT JSON
 
--- builder:containers:listContainersQuery:scoped  [34d4c009]
+-- builder:containers:listContainersQuery:scoped  [5a6582b7]
 SELECT
           containerName AS containerName,
           hostName AS hostName,
@@ -379,11 +452,11 @@ SELECT
           any(coalesce(nullIf(ResourceAttributes['container.runtime.name'], ''), ResourceAttributes['container.runtime'])) AS runtime,
           any(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment'])) AS environment,
           max(TimeUnix) AS lastSeen,
-          ifNotFinite(avgIf(Value, MetricName = 'container.cpu.utilization'), 0) / 100 AS cpuPct,
-          ifNotFinite(avgIf(Value, MetricName = 'container.memory.percent'), 0) / 100 AS memoryPct,
+          ifNull(ifNotFinite(avgIf(Value, MetricName = 'container.cpu.utilization'), 0), 0) / 100 AS cpuPct,
+          ifNull(ifNotFinite(avgIf(Value, MetricName = 'container.memory.percent'), 0), 0) / 100 AS memoryPct,
           ifNotFinite(maxIf(Value, MetricName = 'container.cpu.utilization'), 0) / 100 AS cpuPctPeak,
           ifNotFinite(maxIf(Value, MetricName = 'container.memory.percent'), 0) / 100 AS memoryPctPeak,
-          ifNotFinite(avgIf(Value, MetricName = 'container.cpu.limit'), 0) AS cpuLimitCores,
+          ifNull(ifNotFinite(avgIf(Value, MetricName = 'container.cpu.limit'), 0), 0) AS cpuLimitCores,
           ifNotFinite(maxIf(Value, MetricName = 'container.uptime'), 0) AS uptimeSeconds,
           greatest(ifNotFinite(maxIf(Value, MetricName = 'container.cpu.utilization'), 0) / 100, ifNotFinite(maxIf(Value, MetricName = 'container.memory.percent'), 0) / 100) AS saturation
         FROM metrics_gauge
@@ -735,6 +808,253 @@ SELECT
           AND Timestamp <= '2026-01-03 14:15:00'
         LIMIT 1
         FORMAT JSON
+
+-- builder:errors:tracesDurationStatsQuery:rollup  [b8a8d457]
+SELECT
+          minIf(durationMin, traceCount > 0) / 1000000 AS minDurationMs,
+          maxIf(durationMax, traceCount > 0) / 1000000 AS maxDurationMs,
+          ifNull(ifNotFinite(arrayElement(quantilesTDigestMerge(0.5, 0.95)(durationQuantiles), 1) / 1000000, 0), 0) AS p50DurationMs,
+          ifNull(ifNotFinite(arrayElement(quantilesTDigestMerge(0.5, 0.95)(durationQuantiles), 2) / 1000000, 0), 0) AS p95DurationMs
+        FROM (
+SELECT
+          count() AS traceCount,
+          min(Duration) AS durationMin,
+          max(Duration) AS durationMax,
+          quantilesTDigestState(0.5, 0.95)(Duration) AS durationQuantiles
+        FROM trace_list_mv
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND ServiceName = 'api'
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
+UNION ALL
+SELECT
+          sum(TraceCount) AS traceCount,
+          min(DurationMin) AS durationMin,
+          max(DurationMax) AS durationMax,
+          quantilesTDigestMergeState(0.5, 0.95)(DurationQuantiles) AS durationQuantiles
+        FROM trace_facets_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+          AND ServiceName = 'api'
+) AS duration_tiers
+        FORMAT JSON
+
+-- builder:errors:tracesFacetsQuery:rollup  [054f1574]
+SELECT
+          name AS name,
+          sum(count) AS count,
+          'service' AS facetType
+        FROM (
+SELECT
+          ServiceName AS name,
+          count() AS count
+        FROM trace_list_mv
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND ServiceName = 'api'
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
+        GROUP BY name
+UNION ALL
+SELECT
+          ServiceName AS name,
+          sum(TraceCount) AS count
+        FROM trace_facets_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+          AND ServiceName = 'api'
+        GROUP BY name
+) AS service_tiers
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          name AS name,
+          sum(count) AS count,
+          'spanName' AS facetType
+        FROM (
+SELECT
+          SpanName AS name,
+          count() AS count
+        FROM trace_list_mv
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND ServiceName = 'api'
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
+          AND SpanName != ''
+        GROUP BY name
+UNION ALL
+SELECT
+          SpanName AS name,
+          sum(TraceCount) AS count
+        FROM trace_facets_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+          AND ServiceName = 'api'
+          AND SpanName != ''
+        GROUP BY name
+) AS spanName_tiers
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 20
+UNION ALL
+SELECT
+          name AS name,
+          sum(count) AS count,
+          'httpMethod' AS facetType
+        FROM (
+SELECT
+          HttpMethod AS name,
+          count() AS count
+        FROM trace_list_mv
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND ServiceName = 'api'
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
+          AND HttpMethod != ''
+        GROUP BY name
+UNION ALL
+SELECT
+          HttpMethod AS name,
+          sum(TraceCount) AS count
+        FROM trace_facets_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+          AND ServiceName = 'api'
+          AND HttpMethod != ''
+        GROUP BY name
+) AS httpMethod_tiers
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 20
+UNION ALL
+SELECT
+          name AS name,
+          sum(count) AS count,
+          'httpStatus' AS facetType
+        FROM (
+SELECT
+          HttpStatusCode AS name,
+          count() AS count
+        FROM trace_list_mv
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND ServiceName = 'api'
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
+          AND HttpStatusCode != ''
+        GROUP BY name
+UNION ALL
+SELECT
+          HttpStatusCode AS name,
+          sum(TraceCount) AS count
+        FROM trace_facets_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+          AND ServiceName = 'api'
+          AND HttpStatusCode != ''
+        GROUP BY name
+) AS httpStatus_tiers
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 20
+UNION ALL
+SELECT
+          name AS name,
+          sum(count) AS count,
+          'deploymentEnv' AS facetType
+        FROM (
+SELECT
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
+          count() AS count
+        FROM trace_list_mv
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND ServiceName = 'api'
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
+        GROUP BY name
+UNION ALL
+SELECT
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
+          sum(TraceCount) AS count
+        FROM trace_facets_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+          AND ServiceName = 'api'
+        GROUP BY name
+) AS deploymentEnv_tiers
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 20
+UNION ALL
+SELECT
+          name AS name,
+          sum(count) AS count,
+          'serviceNamespace' AS facetType
+        FROM (
+SELECT
+          ServiceNamespace AS name,
+          count() AS count
+        FROM trace_list_mv
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND ServiceName = 'api'
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
+          AND ServiceNamespace != ''
+        GROUP BY name
+UNION ALL
+SELECT
+          ServiceNamespace AS name,
+          sum(TraceCount) AS count
+        FROM trace_facets_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+          AND ServiceName = 'api'
+          AND ServiceNamespace != ''
+        GROUP BY name
+) AS serviceNamespace_tiers
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 20
+UNION ALL
+SELECT
+          'error' AS name,
+          sum(count) AS count,
+          'errorCount' AS facetType
+        FROM (
+SELECT
+          count() AS count
+        FROM trace_list_mv
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND ServiceName = 'api'
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
+          AND HasError = 1
+UNION ALL
+SELECT
+          sum(TraceCount) AS count
+        FROM trace_facets_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+          AND ServiceName = 'api'
+          AND HasError = 1
+) AS errorCount_tiers
+FORMAT JSON
 
 -- builder:infra:hostGaugeTimeseriesQuery:default  [7d9ca740]
 SELECT
@@ -1236,6 +1556,432 @@ SELECT
         GROUP BY spanId
         FORMAT JSON
 
+-- builder:product-events-explore:productEventAttributeKeysQuery:default  [f7da3259]
+SELECT
+          arrayJoin(mapKeys(Attributes)) AS attributeKey,
+          count() AS usageCount
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+        GROUP BY attributeKey
+        ORDER BY usageCount DESC
+        LIMIT 200
+        FORMAT JSON
+
+-- builder:product-events-explore:productEventAttributeValuesQuery:default  [8f896fc0]
+SELECT
+          Attributes['plan'] AS attributeValue,
+          count() AS usageCount
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND has(mapKeys(Attributes), 'plan')
+        GROUP BY attributeValue
+        ORDER BY usageCount DESC
+        LIMIT 50
+        FORMAT JSON
+
+-- builder:product-events-explore:productEventsBreakdownQuery:sessions-by-page  [747efb4d]
+SELECT
+          PagePath AS name,
+          uniqIf(SessionId, SessionId != '') AS value
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Host IN ('maple.dev')
+        GROUP BY name
+        ORDER BY value DESC, name ASC
+        LIMIT 10
+        FORMAT JSON
+
+-- builder:product-events-explore:productEventsListQuery:default  [e832cab5]
+SELECT
+          Timestamp AS timestamp,
+          EventName AS eventName,
+          Kind AS kind,
+          Source AS source,
+          Host AS host,
+          PagePath AS pagePath,
+          Url AS url,
+          ServiceName AS serviceName,
+          UserId AS userId,
+          GroupId AS groupId,
+          VisitorId AS visitorId,
+          SessionId AS sessionId,
+          TraceId AS traceId,
+          SpanId AS spanId,
+          Attributes AS attributes,
+          Seq AS seq
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Kind IN ('custom')
+        ORDER BY timestamp DESC, seq DESC
+        LIMIT 50
+        FORMAT JSON
+
+-- builder:product-events-explore:productEventsTimeseriesQuery:count  [e8e63fa5]
+SELECT
+          toStartOfInterval(Timestamp, INTERVAL 3600 SECOND) AS bucket,
+          'all' AS groupName,
+          count() AS value,
+          count() AS eventCount
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+        GROUP BY bucket, groupName
+        ORDER BY bucket ASC, groupName ASC
+        FORMAT JSON
+
+-- builder:product-events-explore:productEventsTimeseriesQuery:persons-grouped-filtered  [61a30d0b]
+SELECT
+          bucket AS bucket,
+          groupName AS groupName,
+          value AS value,
+          eventCount AS eventCount
+        FROM (SELECT
+          bucket AS bucket,
+          groupName AS groupName,
+          value AS value,
+          eventCount AS eventCount,
+          dense_rank() OVER (ORDER BY __series_peak DESC, groupName ASC) AS __series_rank
+        FROM (SELECT
+          bucket AS bucket,
+          groupName AS groupName,
+          value AS value,
+          eventCount AS eventCount,
+          max(value) OVER (PARTITION BY groupName) AS __series_peak
+        FROM (SELECT
+          toStartOfInterval(Timestamp, INTERVAL 3600 SECOND) AS bucket,
+          arrayStringConcat([coalesce(nullIf(EventName, ''), '(none)'), coalesce(nullIf(Attributes['plan'], ''), '(none)')], ' · ') AS groupName,
+          uniqIf(if(UserId != '', UserId, VisitorId), (UserId != '' OR VisitorId != '')) AS value,
+          count() AS eventCount
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND EventName IN ('signup_completed')
+          AND Attributes['plan'] = 'startup'
+          AND SessionId IN (SELECT
+          SessionId AS sessionId
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND Country = 'DE'
+        GROUP BY sessionId)
+        GROUP BY bucket, groupName) AS __series_base) AS __series_peaks) AS __series_ranked
+        WHERE __series_rank <= 5
+        ORDER BY bucket ASC, groupName ASC
+        FORMAT JSON
+
+-- builder:product-events-paths:productEventsPathsQuery:after-person  [cc3726c7]
+SELECT
+          hop AS hop,
+          fromNode AS fromNode,
+          toNode AS toNode,
+          count AS count
+        FROM (WITH path_hops AS (
+SELECT
+          key AS key,
+          tupleElement(edge, 1) AS hop,
+          tupleElement(edge, 2) AS fromNode,
+          tupleElement(edge, 3) AS toNode
+        FROM (SELECT
+          key AS key,
+          arrayJoin(arrayMap(i -> tuple(i, arrayElement(seq, i), if(i < length(seq), arrayElement(seq, i + 1), '')), arrayEnumerate(seq))) AS edge
+        FROM (SELECT
+          key AS key,
+          arrayFirstIndex(x -> x.4 = 1, evs) AS anchorIdx,
+          arraySlice(arrayCompact(arrayMap(x -> x.3, arraySlice(evs, anchorIdx))), 1, 4) AS seq
+        FROM (SELECT
+          key AS key,
+          arraySort(x -> (x.1, x.2), groupArray(tuple(ts, seq, name, isAnchor))) AS evs
+        FROM (SELECT
+          r.key AS key,
+          r.ts AS ts,
+          r.seq AS seq,
+          r.name AS name,
+          r.isAnchor AS isAnchor
+        FROM (SELECT
+          multiIf(e.UserId != '', e.UserId, coalesce(link.UserId, '') != '', coalesce(link.UserId, ''), e.VisitorId) AS key,
+          toUInt64(toUnixTimestamp64Milli(e.Timestamp)) AS ts,
+          e.Seq AS seq,
+          e.Kind AS kind,
+          if(e.Kind = 'navigation', e.PagePath, e.EventName) AS name,
+          toUInt8(e.EventName = 'signup_completed') AS isAnchor
+        FROM product_events AS e
+        LEFT JOIN (SELECT
+          VisitorId AS VisitorId,
+          argMin(UserId, FirstSeen) AS UserId
+        FROM (SELECT
+          VisitorId AS VisitorId,
+          UserId AS UserId,
+          min(FirstSeen) AS FirstSeen
+        FROM identity_links
+        WHERE OrgId = 'org_sql_catalog'
+        GROUP BY VisitorId, UserId) AS pair_links
+        GROUP BY VisitorId) AS link ON e.VisitorId = link.VisitorId
+        WHERE e.OrgId = 'org_sql_catalog'
+          AND e.Timestamp >= '2026-01-01 10:30:00'
+          AND e.Timestamp <= '2026-01-03 14:15:00'
+          AND multiIf(e.UserId != '', e.UserId, coalesce(link.UserId, '') != '', coalesce(link.UserId, ''), e.VisitorId) != '') AS r
+        INNER JOIN (SELECT
+          multiIf(e.UserId != '', e.UserId, coalesce(link.UserId, '') != '', coalesce(link.UserId, ''), e.VisitorId) AS key,
+          min(toUInt64(toUnixTimestamp64Milli(e.Timestamp))) AS anchorTs
+        FROM product_events AS e
+        LEFT JOIN (SELECT
+          VisitorId AS VisitorId,
+          argMin(UserId, FirstSeen) AS UserId
+        FROM (SELECT
+          VisitorId AS VisitorId,
+          UserId AS UserId,
+          min(FirstSeen) AS FirstSeen
+        FROM identity_links
+        WHERE OrgId = 'org_sql_catalog'
+        GROUP BY VisitorId, UserId) AS pair_links
+        GROUP BY VisitorId) AS link ON e.VisitorId = link.VisitorId
+        WHERE e.OrgId = 'org_sql_catalog'
+          AND e.Timestamp >= '2026-01-01 10:30:00'
+          AND e.Timestamp <= '2026-01-03 14:15:00'
+          AND multiIf(e.UserId != '', e.UserId, coalesce(link.UserId, '') != '', coalesce(link.UserId, ''), e.VisitorId) != ''
+          AND e.EventName = 'signup_completed'
+        GROUP BY key) AS a ON r.key = a.key
+        WHERE r.ts >= a.anchorTs
+          AND r.ts <= a.anchorTs + 86400000
+          AND (r.isAnchor = 1 OR r.name NOT IN ('heartbeat', '/'))) AS path_events
+        GROUP BY key) AS per_person
+        WHERE anchorIdx > 0) AS sequences) AS edges
+        WHERE tupleElement(edge, 1) <= 3
+)
+SELECT
+          h.hop AS hop,
+          multiIf(h.hop = 1, h.fromNode, coalesce(kf.name, '') != '', h.fromNode, '$other') AS fromNode,
+          multiIf(h.toNode = '', '', coalesce(kt.name, '') != '', h.toNode, '$other') AS toNode,
+          count() AS count
+        FROM path_hops AS h
+        LEFT JOIN (SELECT
+          hop AS hop,
+          hop + 1 AS nextHop,
+          tupleElement(entry, 1) AS name
+        FROM (SELECT
+          hop AS hop,
+          arrayJoin(head) AS entry
+        FROM (SELECT
+          hop AS hop,
+          arraySlice(arrayReverseSort(x -> x.2, groupArray(tuple(name, n))), 1, 4) AS head
+        FROM (SELECT
+          hop AS hop,
+          toNode AS name,
+          count() AS n
+        FROM path_hops
+        WHERE toNode != ''
+        GROUP BY hop, name) AS node_counts
+        GROUP BY hop) AS ranked) AS kept_entries) AS kf ON (h.hop = kf.nextHop AND h.fromNode = kf.name)
+        LEFT JOIN (SELECT
+          hop AS hop,
+          hop + 1 AS nextHop,
+          tupleElement(entry, 1) AS name
+        FROM (SELECT
+          hop AS hop,
+          arrayJoin(head) AS entry
+        FROM (SELECT
+          hop AS hop,
+          arraySlice(arrayReverseSort(x -> x.2, groupArray(tuple(name, n))), 1, 4) AS head
+        FROM (SELECT
+          hop AS hop,
+          toNode AS name,
+          count() AS n
+        FROM path_hops
+        WHERE toNode != ''
+        GROUP BY hop, name) AS node_counts
+        GROUP BY hop) AS ranked) AS kept_entries) AS kt ON (h.hop = kt.hop AND h.toNode = kt.name)
+        GROUP BY hop, fromNode, toNode) AS mapped
+        ORDER BY hop ASC, count DESC, fromNode ASC, toNode ASC
+        FORMAT JSON
+
+-- builder:product-events-paths:productEventsPathsQuery:before-session-pages-filtered  [f8c3b0c8]
+SELECT
+          hop AS hop,
+          fromNode AS fromNode,
+          toNode AS toNode,
+          count AS count
+        FROM (WITH path_hops AS (
+SELECT
+          key AS key,
+          tupleElement(edge, 1) AS hop,
+          tupleElement(edge, 2) AS fromNode,
+          tupleElement(edge, 3) AS toNode
+        FROM (SELECT
+          key AS key,
+          arrayJoin(arrayMap(i -> tuple(i, arrayElement(seq, i), if(i < length(seq), arrayElement(seq, i + 1), '')), arrayEnumerate(seq))) AS edge
+        FROM (SELECT
+          key AS key,
+          arrayFirstIndex(x -> x.4 = 1, arrayReverse(evs)) AS anchorIdx,
+          arraySlice(arrayCompact(arrayMap(x -> x.3, arraySlice(arrayReverse(evs), anchorIdx))), 1, 3) AS seq
+        FROM (SELECT
+          key AS key,
+          arraySort(x -> (x.1, x.2), groupArray(tuple(ts, seq, name, isAnchor))) AS evs
+        FROM (SELECT
+          r.key AS key,
+          r.ts AS ts,
+          r.seq AS seq,
+          r.name AS name,
+          r.isAnchor AS isAnchor
+        FROM (SELECT
+          SessionId AS key,
+          toUInt64(toUnixTimestamp64Milli(Timestamp)) AS ts,
+          Seq AS seq,
+          Kind AS kind,
+          if(Kind = 'navigation', PagePath, EventName) AS name,
+          toUInt8(((Kind = 'navigation' AND PagePath = '/pricing') AND Host = 'maple.dev')) AS isAnchor
+        FROM product_events AS e
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND SessionId != ''
+          AND SessionId IN (SELECT
+          SessionId AS key
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND SessionId IN (SELECT
+          SessionId AS sessionId
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Kind = 'navigation'
+          AND Host = 'maple.dev'
+          AND PagePath = '/pricing'
+        GROUP BY sessionId)
+          AND ReferrerHost = 't.co'
+          AND Country = 'DE'
+          AND DeviceType = 'desktop'
+          AND BrowserName = 'Chrome'
+          AND OsName = 'macOS'
+          AND Language = 'en-US'
+          AND UtmSource = 'twitter'
+          AND UtmMedium = 'social'
+          AND UtmCampaign = 'launch'
+          AND VisitorIsNew = 1
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
+          AND SessionId IN (SELECT
+          SessionId AS sessionId
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Kind = 'custom'
+          AND EventName = 'signup_started'
+        GROUP BY sessionId)
+        GROUP BY key)) AS r
+        INNER JOIN (SELECT
+          SessionId AS key,
+          max(toUInt64(toUnixTimestamp64Milli(Timestamp))) AS anchorTs
+        FROM product_events AS e
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND SessionId != ''
+          AND SessionId IN (SELECT
+          SessionId AS key
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND SessionId IN (SELECT
+          SessionId AS sessionId
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Kind = 'navigation'
+          AND Host = 'maple.dev'
+          AND PagePath = '/pricing'
+        GROUP BY sessionId)
+          AND ReferrerHost = 't.co'
+          AND Country = 'DE'
+          AND DeviceType = 'desktop'
+          AND BrowserName = 'Chrome'
+          AND OsName = 'macOS'
+          AND Language = 'en-US'
+          AND UtmSource = 'twitter'
+          AND UtmMedium = 'social'
+          AND UtmCampaign = 'launch'
+          AND VisitorIsNew = 1
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
+          AND SessionId IN (SELECT
+          SessionId AS sessionId
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Kind = 'custom'
+          AND EventName = 'signup_started'
+        GROUP BY sessionId)
+        GROUP BY key)
+          AND ((Kind = 'navigation' AND PagePath = '/pricing') AND Host = 'maple.dev')
+        GROUP BY key) AS a ON r.key = a.key
+        WHERE r.ts <= a.anchorTs
+          AND r.ts >= a.anchorTs - 3600000
+          AND (r.isAnchor = 1 OR r.kind = 'navigation')) AS path_events
+        GROUP BY key) AS per_person
+        WHERE anchorIdx > 0) AS sequences) AS edges
+        WHERE tupleElement(edge, 1) <= 2
+)
+SELECT
+          h.hop AS hop,
+          multiIf(h.hop = 1, h.fromNode, coalesce(kf.name, '') != '', h.fromNode, '$other') AS fromNode,
+          multiIf(h.toNode = '', '', coalesce(kt.name, '') != '', h.toNode, '$other') AS toNode,
+          count() AS count
+        FROM path_hops AS h
+        LEFT JOIN (SELECT
+          hop AS hop,
+          hop + 1 AS nextHop,
+          tupleElement(entry, 1) AS name
+        FROM (SELECT
+          hop AS hop,
+          arrayJoin(head) AS entry
+        FROM (SELECT
+          hop AS hop,
+          arraySlice(arrayReverseSort(x -> x.2, groupArray(tuple(name, n))), 1, 3) AS head
+        FROM (SELECT
+          hop AS hop,
+          toNode AS name,
+          count() AS n
+        FROM path_hops
+        WHERE toNode != ''
+        GROUP BY hop, name) AS node_counts
+        GROUP BY hop) AS ranked) AS kept_entries) AS kf ON (h.hop = kf.nextHop AND h.fromNode = kf.name)
+        LEFT JOIN (SELECT
+          hop AS hop,
+          hop + 1 AS nextHop,
+          tupleElement(entry, 1) AS name
+        FROM (SELECT
+          hop AS hop,
+          arrayJoin(head) AS entry
+        FROM (SELECT
+          hop AS hop,
+          arraySlice(arrayReverseSort(x -> x.2, groupArray(tuple(name, n))), 1, 3) AS head
+        FROM (SELECT
+          hop AS hop,
+          toNode AS name,
+          count() AS n
+        FROM path_hops
+        WHERE toNode != ''
+        GROUP BY hop, name) AS node_counts
+        GROUP BY hop) AS ranked) AS kept_entries) AS kt ON (h.hop = kt.hop AND h.toNode = kt.name)
+        GROUP BY hop, fromNode, toNode) AS mapped
+        ORDER BY hop ASC, count DESC, fromNode ASC, toNode ASC
+        FORMAT JSON
+
 -- builder:product-events:productEventNamesQuery:default  [4e7d15bf]
 SELECT
           EventName AS eventName,
@@ -1362,7 +2108,27 @@ SELECT
         LIMIT 20
         FORMAT JSON
 
--- builder:product-events:productEventsFunnelBreakdownQuery:attribute-session-step  [ac39fa69]
+-- builder:product-events:productEventsForTraceQuery:default  [d151e174]
+SELECT
+          Timestamp AS timestamp,
+          EventName AS eventName,
+          SpanId AS spanId,
+          ServiceName AS serviceName,
+          UserId AS userId,
+          GroupId AS groupId,
+          VisitorId AS visitorId,
+          SessionId AS sessionId,
+          Attributes AS attributes
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND TraceId = '4bf92f3577b34da6a3ce929d0e0e4736'
+        ORDER BY timestamp ASC, spanId ASC
+        LIMIT 50
+        FORMAT JSON
+
+-- builder:product-events:productEventsFunnelBreakdownQuery:attribute-session-step  [d21d27af]
 SELECT
           group AS group,
           arrayJoin([1, 2, 3, 4]) AS step,
@@ -1379,6 +2145,7 @@ SELECT
 SELECT
           UserId AS key,
           toUInt64(toUnixTimestamp64Milli(StartTime)) AS ts,
+          0 AS seq,
           1 AS s1,
           0 AS s2,
           0 AS s3,
@@ -1394,6 +2161,7 @@ UNION ALL
 SELECT
           UserId AS key,
           toUInt64(toUnixTimestamp64Milli(Timestamp)) AS ts,
+          Seq AS seq,
           0 AS s1,
           toUInt8(((Kind = 'navigation' AND PagePath = '/pricing') AND Host = 'maple.dev')) AS s2,
           toUInt8(EventName = 'signup_completed') AS s3,
@@ -1413,7 +2181,7 @@ SELECT
         ORDER BY group ASC, step ASC
         FORMAT JSON
 
--- builder:product-events:productEventsFunnelBreakdownQuery:session-dimension  [f52bc5e1]
+-- builder:product-events:productEventsFunnelBreakdownQuery:session-dimension  [c110ca44]
 SELECT
           group AS group,
           arrayJoin([1, 2, 3]) AS step,
@@ -1429,6 +2197,7 @@ SELECT
         FROM (SELECT
           multiIf(e.UserId != '', e.UserId, coalesce(link.UserId, '') != '', coalesce(link.UserId, ''), e.VisitorId) AS key,
           toUInt64(toUnixTimestamp64Milli(e.Timestamp)) AS ts,
+          e.Seq AS seq,
           toUInt8(((e.Kind = 'navigation' AND e.PagePath = '/pricing') AND e.Host = 'maple.dev')) AS s1,
           toUInt8(e.EventName = 'signup_completed') AS s2,
           toUInt8((e.EventName = 'plan_started' AND e.Attributes['plan'] = 'startup')) AS s3,
@@ -1465,7 +2234,146 @@ SELECT
         ORDER BY group ASC, step ASC
         FORMAT JSON
 
--- builder:product-events:productEventsFunnelQuery:person  [41bb75cc]
+-- builder:product-events:productEventsFunnelLeaversQuery:visitor-filtered  [1322620e]
+SELECT
+          step AS step,
+          tupleElement(hop, 1) AS next,
+          tupleElement(hop, 2) AS count
+        FROM (SELECT
+          step AS step,
+          arrayJoin(head) AS hop
+        FROM (SELECT
+          step AS step,
+          arraySlice(arrayReverseSort(x -> x.2, groupArray(tuple(next, count))), 1, 6) AS head
+        FROM (SELECT
+          step AS step,
+          next AS next,
+          count() AS count
+        FROM (SELECT
+          e.key AS key,
+          d.step AS step,
+          argMinIf(e.name, e.ts, e.ts > d.tLast) AS next
+        FROM (SELECT
+          VisitorId AS key,
+          toUInt64(toUnixTimestamp64Milli(Timestamp)) AS ts,
+          if(Kind = 'navigation', PagePath, EventName) AS name
+        FROM product_events AS e
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND VisitorId != ''
+          AND VisitorId IN (SELECT
+          VisitorId AS key
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND SessionId IN (SELECT
+          SessionId AS sessionId
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Kind = 'navigation'
+          AND Host = 'maple.dev'
+          AND PagePath = '/pricing'
+        GROUP BY sessionId)
+          AND ReferrerHost = 't.co'
+          AND Country = 'DE'
+          AND DeviceType = 'desktop'
+          AND BrowserName = 'Chrome'
+          AND OsName = 'macOS'
+          AND Language = 'en-US'
+          AND UtmSource = 'twitter'
+          AND UtmMedium = 'social'
+          AND UtmCampaign = 'launch'
+          AND VisitorIsNew = 1
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
+          AND SessionId IN (SELECT
+          SessionId AS sessionId
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Kind = 'custom'
+          AND EventName = 'signup_started'
+        GROUP BY sessionId)
+        GROUP BY key)) AS e
+        INNER JOIN (SELECT
+          key AS key,
+          level + 1 AS step,
+          arrayElement([t1, t2, t3], level) AS tLast
+        FROM (SELECT
+          key AS key,
+          level AS level,
+          tupleElement(arrayFirst(x -> x.3 = 1, evs), 1) AS t1,
+          tupleElement(arrayFirst(x -> t1 > 0 AND x.4 = 1 AND x.1 >= t1 AND x.1 <= t1 + 604800000, evs), 1) AS t2,
+          tupleElement(arrayFirst(x -> t2 > 0 AND x.5 = 1 AND x.1 >= t2 AND x.1 <= t1 + 604800000, evs), 1) AS t3
+        FROM (SELECT
+          key AS key,
+          windowFunnel(604800000)(ts, s1 = 1, s2 = 1, s3 = 1) AS level,
+          arraySort(x -> (x.1, x.2), groupArray(tuple(ts, seq, s1, s2, s3))) AS evs
+        FROM (SELECT
+          VisitorId AS key,
+          toUInt64(toUnixTimestamp64Milli(Timestamp)) AS ts,
+          Seq AS seq,
+          toUInt8(((Kind = 'navigation' AND PagePath = '/pricing') AND Host = 'maple.dev')) AS s1,
+          toUInt8(EventName = 'signup_completed') AS s2,
+          toUInt8((EventName = 'plan_started' AND Attributes['plan'] = 'startup')) AS s3
+        FROM product_events AS e
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND ((((Kind = 'navigation' AND PagePath = '/pricing') AND Host = 'maple.dev') OR EventName = 'signup_completed') OR (EventName = 'plan_started' AND Attributes['plan'] = 'startup'))
+          AND VisitorId != ''
+          AND VisitorId IN (SELECT
+          VisitorId AS key
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND SessionId IN (SELECT
+          SessionId AS sessionId
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Kind = 'navigation'
+          AND Host = 'maple.dev'
+          AND PagePath = '/pricing'
+        GROUP BY sessionId)
+          AND ReferrerHost = 't.co'
+          AND Country = 'DE'
+          AND DeviceType = 'desktop'
+          AND BrowserName = 'Chrome'
+          AND OsName = 'macOS'
+          AND Language = 'en-US'
+          AND UtmSource = 'twitter'
+          AND UtmMedium = 'social'
+          AND UtmCampaign = 'launch'
+          AND VisitorIsNew = 1
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
+          AND SessionId IN (SELECT
+          SessionId AS sessionId
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Kind = 'custom'
+          AND EventName = 'signup_started'
+        GROUP BY sessionId)
+        GROUP BY key)) AS funnel_events
+        GROUP BY key) AS chain_events) AS chain
+        WHERE level >= 1
+          AND level < 3
+          AND arrayElement([t1, t2, t3], level) > 0) AS d ON e.key = d.key
+        GROUP BY key, step) AS nexts
+        GROUP BY step, next) AS counted
+        GROUP BY step) AS ranked) AS hops
+        ORDER BY step ASC, count DESC, next ASC
+        FORMAT JSON
+
+-- builder:product-events:productEventsFunnelQuery:person  [54450cc9]
 SELECT
           arrayJoin([1, 2, 3]) AS step,
           arrayElement(counts, step) AS count
@@ -1477,6 +2385,7 @@ SELECT
         FROM (SELECT
           multiIf(e.UserId != '', e.UserId, coalesce(link.UserId, '') != '', coalesce(link.UserId, ''), e.VisitorId) AS key,
           toUInt64(toUnixTimestamp64Milli(e.Timestamp)) AS ts,
+          e.Seq AS seq,
           toUInt8(((e.Kind = 'navigation' AND e.PagePath = '/pricing') AND e.Host = 'maple.dev')) AS s1,
           toUInt8(e.EventName = 'signup_completed') AS s2,
           toUInt8((e.EventName = 'plan_started' AND e.Attributes['plan'] = 'startup')) AS s3
@@ -1501,7 +2410,7 @@ SELECT
         ORDER BY step ASC
         FORMAT JSON
 
--- builder:product-events:productEventsFunnelQuery:session-key  [619f95db]
+-- builder:product-events:productEventsFunnelQuery:session-key  [eab102d3]
 SELECT
           arrayJoin([1, 2, 3]) AS step,
           arrayElement(counts, step) AS count
@@ -1513,6 +2422,7 @@ SELECT
         FROM (SELECT
           SessionId AS key,
           toUInt64(toUnixTimestamp64Milli(Timestamp)) AS ts,
+          Seq AS seq,
           toUInt8(((Kind = 'navigation' AND PagePath = '/pricing') AND Host = 'maple.dev')) AS s1,
           toUInt8(EventName = 'signup_completed') AS s2,
           toUInt8((EventName = 'plan_started' AND Attributes['plan'] = 'startup')) AS s3
@@ -1526,7 +2436,7 @@ SELECT
         ORDER BY step ASC
         FORMAT JSON
 
--- builder:product-events:productEventsFunnelQuery:session-step-filtered  [b524ba59]
+-- builder:product-events:productEventsFunnelQuery:session-step-filtered  [1fea5abe]
 SELECT
           arrayJoin([1, 2, 3, 4]) AS step,
           arrayElement(counts, step) AS count
@@ -1539,6 +2449,7 @@ SELECT
 SELECT
           multiIf(s.UserId != '', s.UserId, coalesce(link.UserId, '') != '', coalesce(link.UserId, ''), s.VisitorId) AS key,
           toUInt64(toUnixTimestamp64Milli(s.StartTime)) AS ts,
+          0 AS seq,
           1 AS s1,
           0 AS s2,
           0 AS s3,
@@ -1612,6 +2523,7 @@ UNION ALL
 SELECT
           multiIf(e.UserId != '', e.UserId, coalesce(link.UserId, '') != '', coalesce(link.UserId, ''), e.VisitorId) AS key,
           toUInt64(toUnixTimestamp64Milli(e.Timestamp)) AS ts,
+          e.Seq AS seq,
           0 AS s1,
           toUInt8(((e.Kind = 'navigation' AND e.PagePath = '/pricing') AND e.Host = 'maple.dev')) AS s2,
           toUInt8(e.EventName = 'signup_completed') AS s3,
@@ -1686,7 +2598,7 @@ SELECT
         ORDER BY step ASC
         FORMAT JSON
 
--- builder:product-events:productEventsFunnelQuery:visitor-session-step  [1eb9e5d6]
+-- builder:product-events:productEventsFunnelQuery:visitor-session-step  [b4e9b8c4]
 SELECT
           arrayJoin([1, 2, 3, 4]) AS step,
           arrayElement(counts, step) AS count
@@ -1699,6 +2611,7 @@ SELECT
 SELECT
           VisitorId AS key,
           toUInt64(toUnixTimestamp64Milli(StartTime)) AS ts,
+          0 AS seq,
           1 AS s1,
           0 AS s2,
           0 AS s3,
@@ -1713,6 +2626,7 @@ UNION ALL
 SELECT
           VisitorId AS key,
           toUInt64(toUnixTimestamp64Milli(Timestamp)) AS ts,
+          Seq AS seq,
           0 AS s1,
           toUInt8(((Kind = 'navigation' AND PagePath = '/pricing') AND Host = 'maple.dev')) AS s2,
           toUInt8(EventName = 'signup_completed') AS s3,
@@ -1725,6 +2639,52 @@ SELECT
           AND VisitorId != ''
 ) AS funnel_events
         GROUP BY key) AS levels) AS totals
+        ORDER BY step ASC
+        FORMAT JSON
+
+-- builder:product-events:productEventsFunnelTimingQuery:person  [8b7cd411]
+SELECT
+          arrayJoin([2, 3]) AS step,
+          arrayElement(p50s, step) AS p50Ms,
+          arrayElement(p90s, step) AS p90Ms
+        FROM (SELECT
+          [0, ifNotFinite(quantileIf(0.5)(toFloat64(t2 - t1), level >= 2 AND t2 > 0), 0), ifNotFinite(quantileIf(0.5)(toFloat64(t3 - t2), level >= 3 AND t3 > 0), 0)] AS p50s,
+          [0, ifNotFinite(quantileIf(0.9)(toFloat64(t2 - t1), level >= 2 AND t2 > 0), 0), ifNotFinite(quantileIf(0.9)(toFloat64(t3 - t2), level >= 3 AND t3 > 0), 0)] AS p90s
+        FROM (SELECT
+          key AS key,
+          level AS level,
+          tupleElement(arrayFirst(x -> x.3 = 1, evs), 1) AS t1,
+          tupleElement(arrayFirst(x -> t1 > 0 AND x.4 = 1 AND x.1 >= t1 AND x.1 <= t1 + 604800000, evs), 1) AS t2,
+          tupleElement(arrayFirst(x -> t2 > 0 AND x.5 = 1 AND x.1 >= t2 AND x.1 <= t1 + 604800000, evs), 1) AS t3
+        FROM (SELECT
+          key AS key,
+          windowFunnel(604800000)(ts, s1 = 1, s2 = 1, s3 = 1) AS level,
+          arraySort(x -> (x.1, x.2), groupArray(tuple(ts, seq, s1, s2, s3))) AS evs
+        FROM (SELECT
+          multiIf(e.UserId != '', e.UserId, coalesce(link.UserId, '') != '', coalesce(link.UserId, ''), e.VisitorId) AS key,
+          toUInt64(toUnixTimestamp64Milli(e.Timestamp)) AS ts,
+          e.Seq AS seq,
+          toUInt8(((e.Kind = 'navigation' AND e.PagePath = '/pricing') AND e.Host = 'maple.dev')) AS s1,
+          toUInt8(e.EventName = 'signup_completed') AS s2,
+          toUInt8((e.EventName = 'plan_started' AND e.Attributes['plan'] = 'startup')) AS s3
+        FROM product_events AS e
+        LEFT JOIN (SELECT
+          VisitorId AS VisitorId,
+          argMin(UserId, FirstSeen) AS UserId
+        FROM (SELECT
+          VisitorId AS VisitorId,
+          UserId AS UserId,
+          min(FirstSeen) AS FirstSeen
+        FROM identity_links
+        WHERE OrgId = 'org_sql_catalog'
+        GROUP BY VisitorId, UserId) AS pair_links
+        GROUP BY VisitorId) AS link ON e.VisitorId = link.VisitorId
+        WHERE e.OrgId = 'org_sql_catalog'
+          AND e.Timestamp >= '2026-01-01 10:30:00'
+          AND e.Timestamp <= '2026-01-03 14:15:00'
+          AND ((((e.Kind = 'navigation' AND e.PagePath = '/pricing') AND e.Host = 'maple.dev') OR e.EventName = 'signup_completed') OR (e.EventName = 'plan_started' AND e.Attributes['plan'] = 'startup'))
+          AND multiIf(e.UserId != '', e.UserId, coalesce(link.UserId, '') != '', coalesce(link.UserId, ''), e.VisitorId) != '') AS funnel_events
+        GROUP BY key) AS chain_events) AS chain) AS totals
         ORDER BY step ASC
         FORMAT JSON
 
@@ -1791,6 +2751,307 @@ SELECT
           AND EventName = 'signup_completed'
         GROUP BY bucket
         ORDER BY bucket ASC
+        FORMAT JSON
+
+-- builder:product-events:productEventTraceSamplesQuery:default  [ee1608d5]
+SELECT
+          TraceId AS traceId,
+          SpanId AS spanId,
+          Timestamp AS timestamp,
+          ServiceName AS serviceName,
+          UserId AS userId,
+          VisitorId AS visitorId
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND EventName = 'checkout_completed'
+          AND TraceId != ''
+        ORDER BY timestamp DESC
+        LIMIT 20
+        FORMAT JSON
+
+-- builder:releases:releaseErrorFingerprintsQuery:default  [fc9f9c14]
+SELECT
+          toString(FingerprintHash) AS fingerprintHash,
+          count() AS count,
+          min(Timestamp) AS firstSeen
+        FROM error_events_by_time
+        WHERE OrgId = 'org_sql_catalog'
+          AND ServiceName = 'api'
+          AND ServiceVersion = '0af7651916cd43dd8448eb211c80319c0af76519'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND DeploymentEnv IN ('production')
+        GROUP BY fingerprintHash
+        ORDER BY count DESC
+        LIMIT 50
+        FORMAT JSON
+
+-- builder:releases:releasesListQuery:default  [dc07791a]
+SELECT
+          bServiceName AS serviceName,
+          bEnvironment AS environment,
+          bCommitSha AS commitSha,
+          min(bFirstSeen) AS firstSeen,
+          sum(bSpanCount) AS spanCount,
+          sum(bErrorCount) AS errorCount,
+          arrayElement(quantilesTDigestMerge(0.5, 0.95, 0.99)(bDurationQuantiles), 1) / 1000000 AS p50LatencyMs,
+          arrayElement(quantilesTDigestMerge(0.5, 0.95, 0.99)(bDurationQuantiles), 2) / 1000000 AS p95LatencyMs,
+          arrayElement(quantilesTDigestMerge(0.5, 0.95, 0.99)(bDurationQuantiles), 3) / 1000000 AS p99LatencyMs,
+          sum(bApdexSatisfiedCount) AS apdexSatisfiedCount,
+          sum(bApdexToleratingCount) AS apdexToleratingCount
+        FROM (
+SELECT
+          toStartOfHour(Timestamp) AS bBucket,
+          ServiceName AS bServiceName,
+          ServiceNamespace AS bServiceNamespace,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
+          CommitSha AS bCommitSha,
+          count() AS bSpanCount,
+          sum(SampleRate) AS bEstimatedSpanCount,
+          countIf(StatusCode = 'Error') AS bErrorCount,
+          sumIf(SampleRate, StatusCode = 'Error') AS bEstimatedErrorCount,
+          sum(toFloat64(Duration)) AS bDurationSum,
+          quantilesTDigestState(0.5, 0.95, 0.99)(Duration) AS bDurationQuantiles,
+          min(Timestamp) AS bFirstSeen,
+          countIf((StatusCode != 'Error' AND Duration < 500000000)) AS bApdexSatisfiedCount,
+          countIf(((StatusCode != 'Error' AND Duration >= 500000000) AND Duration < 2000000000)) AS bApdexToleratingCount
+        FROM service_overview_spans
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
+        GROUP BY bBucket, bServiceName, bServiceNamespace, bEnvironment, bCommitSha
+UNION ALL
+SELECT
+          Hour AS bBucket,
+          ServiceName AS bServiceName,
+          ServiceNamespace AS bServiceNamespace,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
+          CommitSha AS bCommitSha,
+          sum(SpanCount) AS bSpanCount,
+          sum(EstimatedSpanCount) AS bEstimatedSpanCount,
+          sum(ErrorCount) AS bErrorCount,
+          sum(EstimatedErrorCount) AS bEstimatedErrorCount,
+          sum(DurationSum) AS bDurationSum,
+          quantilesTDigestMergeState(0.5, 0.95, 0.99)(DurationQuantiles) AS bDurationQuantiles,
+          min(FirstSeen) AS bFirstSeen,
+          sum(ApdexSatisfiedCount) AS bApdexSatisfiedCount,
+          sum(ApdexToleratingCount) AS bApdexToleratingCount
+        FROM service_overview_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+        GROUP BY bBucket, bServiceName, bServiceNamespace, bEnvironment, bCommitSha
+) AS service_windows
+        WHERE bCommitSha NOT IN ('', 'unknown', 'N/A')
+          AND bServiceName IN ('api', 'web')
+        GROUP BY serviceName, environment, commitSha
+        ORDER BY firstSeen DESC, spanCount DESC
+        LIMIT 500
+        FORMAT JSON
+
+-- builder:releases:releasesListQuery:singleService  [53fe8ffb]
+SELECT
+          bServiceName AS serviceName,
+          bEnvironment AS environment,
+          bCommitSha AS commitSha,
+          min(bFirstSeen) AS firstSeen,
+          sum(bSpanCount) AS spanCount,
+          sum(bErrorCount) AS errorCount,
+          arrayElement(quantilesTDigestMerge(0.5, 0.95, 0.99)(bDurationQuantiles), 1) / 1000000 AS p50LatencyMs,
+          arrayElement(quantilesTDigestMerge(0.5, 0.95, 0.99)(bDurationQuantiles), 2) / 1000000 AS p95LatencyMs,
+          arrayElement(quantilesTDigestMerge(0.5, 0.95, 0.99)(bDurationQuantiles), 3) / 1000000 AS p99LatencyMs,
+          sum(bApdexSatisfiedCount) AS apdexSatisfiedCount,
+          sum(bApdexToleratingCount) AS apdexToleratingCount
+        FROM (
+SELECT
+          toStartOfHour(Timestamp) AS bBucket,
+          ServiceName AS bServiceName,
+          ServiceNamespace AS bServiceNamespace,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
+          CommitSha AS bCommitSha,
+          count() AS bSpanCount,
+          sum(SampleRate) AS bEstimatedSpanCount,
+          countIf(StatusCode = 'Error') AS bErrorCount,
+          sumIf(SampleRate, StatusCode = 'Error') AS bEstimatedErrorCount,
+          sum(toFloat64(Duration)) AS bDurationSum,
+          quantilesTDigestState(0.5, 0.95, 0.99)(Duration) AS bDurationQuantiles,
+          min(Timestamp) AS bFirstSeen,
+          countIf((StatusCode != 'Error' AND Duration < 500000000)) AS bApdexSatisfiedCount,
+          countIf(((StatusCode != 'Error' AND Duration >= 500000000) AND Duration < 2000000000)) AS bApdexToleratingCount
+        FROM service_overview_spans
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND ServiceName = 'api'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
+        GROUP BY bBucket, bServiceName, bServiceNamespace, bEnvironment, bCommitSha
+UNION ALL
+SELECT
+          Hour AS bBucket,
+          ServiceName AS bServiceName,
+          ServiceNamespace AS bServiceNamespace,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
+          CommitSha AS bCommitSha,
+          sum(SpanCount) AS bSpanCount,
+          sum(EstimatedSpanCount) AS bEstimatedSpanCount,
+          sum(ErrorCount) AS bErrorCount,
+          sum(EstimatedErrorCount) AS bEstimatedErrorCount,
+          sum(DurationSum) AS bDurationSum,
+          quantilesTDigestMergeState(0.5, 0.95, 0.99)(DurationQuantiles) AS bDurationQuantiles,
+          min(FirstSeen) AS bFirstSeen,
+          sum(ApdexSatisfiedCount) AS bApdexSatisfiedCount,
+          sum(ApdexToleratingCount) AS bApdexToleratingCount
+        FROM service_overview_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND ServiceName = 'api'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+        GROUP BY bBucket, bServiceName, bServiceNamespace, bEnvironment, bCommitSha
+) AS service_windows
+        WHERE bCommitSha NOT IN ('', 'unknown', 'N/A')
+        GROUP BY serviceName, environment, commitSha
+        ORDER BY firstSeen DESC, spanCount DESC
+        LIMIT 100
+        FORMAT JSON
+
+-- builder:releases:releasesTimelineQuery:hourly  [87b4e898]
+SELECT
+          toStartOfInterval(bBucket, INTERVAL 3600 SECOND) AS bucket,
+          bServiceName AS serviceName,
+          bCommitSha AS commitSha,
+          sum(bSpanCount) AS count
+        FROM (
+SELECT
+          toStartOfHour(Timestamp) AS bBucket,
+          ServiceName AS bServiceName,
+          ServiceNamespace AS bServiceNamespace,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
+          CommitSha AS bCommitSha,
+          count() AS bSpanCount,
+          sum(SampleRate) AS bEstimatedSpanCount,
+          countIf(StatusCode = 'Error') AS bErrorCount,
+          sumIf(SampleRate, StatusCode = 'Error') AS bEstimatedErrorCount,
+          sum(toFloat64(Duration)) AS bDurationSum,
+          quantilesTDigestState(0.5, 0.95, 0.99)(Duration) AS bDurationQuantiles,
+          min(Timestamp) AS bFirstSeen,
+          countIf((StatusCode != 'Error' AND Duration < 500000000)) AS bApdexSatisfiedCount,
+          countIf(((StatusCode != 'Error' AND Duration >= 500000000) AND Duration < 2000000000)) AS bApdexToleratingCount
+        FROM service_overview_spans
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND ServiceName = 'api'
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
+        GROUP BY bBucket, bServiceName, bServiceNamespace, bEnvironment, bCommitSha
+UNION ALL
+SELECT
+          Hour AS bBucket,
+          ServiceName AS bServiceName,
+          ServiceNamespace AS bServiceNamespace,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
+          CommitSha AS bCommitSha,
+          sum(SpanCount) AS bSpanCount,
+          sum(EstimatedSpanCount) AS bEstimatedSpanCount,
+          sum(ErrorCount) AS bErrorCount,
+          sum(EstimatedErrorCount) AS bEstimatedErrorCount,
+          sum(DurationSum) AS bDurationSum,
+          quantilesTDigestMergeState(0.5, 0.95, 0.99)(DurationQuantiles) AS bDurationQuantiles,
+          min(FirstSeen) AS bFirstSeen,
+          sum(ApdexSatisfiedCount) AS bApdexSatisfiedCount,
+          sum(ApdexToleratingCount) AS bApdexToleratingCount
+        FROM service_overview_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND ServiceName = 'api'
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+        GROUP BY bBucket, bServiceName, bServiceNamespace, bEnvironment, bCommitSha
+) AS service_windows
+        WHERE bCommitSha NOT IN ('', 'unknown', 'N/A')
+        GROUP BY bucket, serviceName, commitSha
+        ORDER BY bucket ASC
+        LIMIT 5000
+        FORMAT JSON
+
+-- builder:releases:releasesTimelineQuery:minutely  [7a023776]
+SELECT
+          toStartOfInterval(bBucket, INTERVAL 300 SECOND) AS bucket,
+          bServiceName AS serviceName,
+          bCommitSha AS commitSha,
+          sum(bSpanCount) AS count
+        FROM (
+SELECT
+          toStartOfMinute(Timestamp) AS bBucket,
+          ServiceName AS bServiceName,
+          ServiceNamespace AS bServiceNamespace,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
+          CommitSha AS bCommitSha,
+          count() AS bSpanCount,
+          sum(SampleRate) AS bEstimatedSpanCount,
+          countIf(StatusCode = 'Error') AS bErrorCount,
+          sumIf(SampleRate, StatusCode = 'Error') AS bEstimatedErrorCount,
+          sum(toFloat64(Duration)) AS bDurationSum,
+          quantilesTDigestState(0.5, 0.95, 0.99)(Duration) AS bDurationQuantiles,
+          min(Timestamp) AS bFirstSeen,
+          countIf((StatusCode != 'Error' AND Duration < 500000000)) AS bApdexSatisfiedCount,
+          countIf(((StatusCode != 'Error' AND Duration >= 500000000) AND Duration < 2000000000)) AS bApdexToleratingCount
+        FROM service_overview_spans
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfMinute(toDateTime('2026-01-01 10:30:00')), toStartOfMinute(toDateTime('2026-01-01 10:30:00')), toStartOfMinute(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 MINUTE) OR Timestamp >= toStartOfMinute(toDateTime('2026-01-03 14:15:00')))
+        GROUP BY bBucket, bServiceName, bServiceNamespace, bEnvironment, bCommitSha
+UNION ALL
+SELECT
+          Minute AS bBucket,
+          ServiceName AS bServiceName,
+          ServiceNamespace AS bServiceNamespace,
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS bEnvironment,
+          CommitSha AS bCommitSha,
+          sum(SpanCount) AS bSpanCount,
+          sum(EstimatedSpanCount) AS bEstimatedSpanCount,
+          sum(ErrorCount) AS bErrorCount,
+          sum(EstimatedErrorCount) AS bEstimatedErrorCount,
+          sum(DurationSum) AS bDurationSum,
+          quantilesTDigestMergeState(0.5, 0.95, 0.99)(DurationQuantiles) AS bDurationQuantiles,
+          min(FirstSeen) AS bFirstSeen,
+          sum(ApdexSatisfiedCount) AS bApdexSatisfiedCount,
+          sum(ApdexToleratingCount) AS bApdexToleratingCount
+        FROM service_overview_minutely
+        WHERE OrgId = 'org_sql_catalog'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') IN ('production')
+          AND Minute >= if(toDateTime('2026-01-01 10:30:00') = toStartOfMinute(toDateTime('2026-01-01 10:30:00')), toStartOfMinute(toDateTime('2026-01-01 10:30:00')), toStartOfMinute(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 MINUTE)
+          AND Minute < toStartOfMinute(toDateTime('2026-01-03 14:15:00'))
+        GROUP BY bBucket, bServiceName, bServiceNamespace, bEnvironment, bCommitSha
+) AS service_windows
+        WHERE bCommitSha NOT IN ('', 'unknown', 'N/A')
+        GROUP BY bucket, serviceName, commitSha
+        ORDER BY bucket ASC
+        LIMIT 5000
+        FORMAT JSON
+
+-- builder:releases:releasesTimelineQuery:raw  [d69f9338]
+SELECT
+          toStartOfInterval(Timestamp, INTERVAL 30 SECOND) AS bucket,
+          ServiceName AS serviceName,
+          CommitSha AS commitSha,
+          count() AS count
+        FROM service_overview_spans
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND ServiceName = 'api'
+          AND CommitSha NOT IN ('', 'unknown', 'N/A')
+        GROUP BY bucket, serviceName, commitSha
+        ORDER BY bucket ASC
+        LIMIT 5000
         FORMAT JSON
 
 -- builder:service-catalog-versions:serviceCatalogVersionsQuery:default  [3ab90f18]
@@ -2032,14 +3293,14 @@ SELECT
         GROUP BY hourTs
         FORMAT JSON
 
--- builder:service-map:serviceDbEdgesForServiceQuery:default  [7adb3fed]
+-- builder:service-map:serviceDbEdgesForServiceQuery:default  [1c14b132]
 SELECT
           sourceService AS sourceService,
           dbSystem AS dbSystem,
           dbNamespace AS dbNamespace,
           sum(bucketCallCount) AS callCount,
           sum(bucketErrorCount) AS errorCount,
-          sum(bucketDurationSumMs) / nullIf(sum(bucketCallCount), 0) AS avgDurationMs,
+          ifNull(ifNotFinite(sum(bucketDurationSumMs) / nullIf(sum(bucketCallCount), 0), 0), 0) AS avgDurationMs,
           max(bucketMaxDurationMs) AS maxDurationMs,
           if(sum(bucketCallCount) > 0, arrayElement(quantilesTDigestWeightedMerge(0.5, 0.95)(bucketDurationQuantiles), 2) / 1000000, 0) AS p95DurationMs,
           sum(bucketEstimatedSpanCount) AS estimatedSpanCount
@@ -2087,14 +3348,14 @@ SELECT
         LIMIT 200
         FORMAT JSON
 
--- builder:service-map:serviceDbEdgesSQL:default  [e06f1809]
+-- builder:service-map:serviceDbEdgesSQL:default  [05e514a0]
 SELECT
           sourceService AS sourceService,
           dbSystem AS dbSystem,
           dbNamespace AS dbNamespace,
           sum(bucketCallCount) AS callCount,
           sum(bucketErrorCount) AS errorCount,
-          sum(bucketDurationSumMs) / nullIf(sum(bucketCallCount), 0) AS avgDurationMs,
+          ifNull(ifNotFinite(sum(bucketDurationSumMs) / nullIf(sum(bucketCallCount), 0), 0), 0) AS avgDurationMs,
           max(bucketMaxDurationMs) AS maxDurationMs,
           if(sum(bucketCallCount) > 0, arrayElement(quantilesTDigestWeightedMerge(0.5, 0.95)(bucketDurationQuantiles), 2) / 1000000, 0) AS p95DurationMs,
           sum(bucketEstimatedSpanCount) AS estimatedSpanCount
@@ -2141,14 +3402,14 @@ SELECT
         LIMIT 200
         FORMAT JSON
 
--- builder:service-map:serviceDbEdgesSQL:env-scoped  [9e90f959]
+-- builder:service-map:serviceDbEdgesSQL:env-scoped  [40e90943]
 SELECT
           sourceService AS sourceService,
           dbSystem AS dbSystem,
           dbNamespace AS dbNamespace,
           sum(bucketCallCount) AS callCount,
           sum(bucketErrorCount) AS errorCount,
-          sum(bucketDurationSumMs) / nullIf(sum(bucketCallCount), 0) AS avgDurationMs,
+          ifNull(ifNotFinite(sum(bucketDurationSumMs) / nullIf(sum(bucketCallCount), 0), 0), 0) AS avgDurationMs,
           max(bucketMaxDurationMs) AS maxDurationMs,
           if(sum(bucketCallCount) > 0, arrayElement(quantilesTDigestWeightedMerge(0.5, 0.95)(bucketDurationQuantiles), 2) / 1000000, 0) AS p95DurationMs,
           sum(bucketEstimatedSpanCount) AS estimatedSpanCount
@@ -2168,7 +3429,7 @@ SELECT
           AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
           AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
           AND DbSystem != ''
-          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+          AND DeploymentEnv = 'production'
         GROUP BY sourceService, dbSystem, dbNamespace
 UNION ALL
 SELECT
@@ -2412,13 +3673,13 @@ SELECT
         LIMIT 10
         FORMAT JSON
 
--- builder:service-map:serviceDependenciesForServiceQuery:default  [1a386155]
+-- builder:service-map:serviceDependenciesForServiceQuery:default  [8aa4cfbe]
 SELECT
           sourceService AS sourceService,
           targetService AS targetService,
           sum(bucketCallCount) AS callCount,
           sum(bucketErrorCount) AS errorCount,
-          sum(bucketDurationSumMs) / nullIf(sum(bucketCallCount), 0) AS avgDurationMs,
+          ifNull(ifNotFinite(sum(bucketDurationSumMs) / nullIf(sum(bucketCallCount), 0), 0), 0) AS avgDurationMs,
           max(bucketMaxDurationMs) AS maxDurationMs,
           sum(bucketEstimatedSpanCount) AS estimatedSpanCount
         FROM (
@@ -2479,13 +3740,13 @@ SELECT
         LIMIT 200
         FORMAT JSON
 
--- builder:service-map:serviceDependenciesSQL:default  [d0522185]
+-- builder:service-map:serviceDependenciesSQL:default  [9703b8d6]
 SELECT
           sourceService AS sourceService,
           targetService AS targetService,
           sum(bucketCallCount) AS callCount,
           sum(bucketErrorCount) AS errorCount,
-          sum(bucketDurationSumMs) / nullIf(sum(bucketCallCount), 0) AS avgDurationMs,
+          ifNull(ifNotFinite(sum(bucketDurationSumMs) / nullIf(sum(bucketCallCount), 0), 0), 0) AS avgDurationMs,
           max(bucketMaxDurationMs) AS maxDurationMs,
           sum(bucketEstimatedSpanCount) AS estimatedSpanCount
         FROM (
@@ -2544,13 +3805,13 @@ SELECT
         LIMIT 200
         FORMAT JSON
 
--- builder:service-map:serviceDependenciesSQL:env-scoped  [04bb09d7]
+-- builder:service-map:serviceDependenciesSQL:env-scoped  [43be6b84]
 SELECT
           sourceService AS sourceService,
           targetService AS targetService,
           sum(bucketCallCount) AS callCount,
           sum(bucketErrorCount) AS errorCount,
-          sum(bucketDurationSumMs) / nullIf(sum(bucketCallCount), 0) AS avgDurationMs,
+          ifNull(ifNotFinite(sum(bucketDurationSumMs) / nullIf(sum(bucketCallCount), 0), 0), 0) AS avgDurationMs,
           max(bucketMaxDurationMs) AS maxDurationMs,
           sum(bucketEstimatedSpanCount) AS estimatedSpanCount
         FROM (
@@ -2612,7 +3873,7 @@ SELECT
         LIMIT 200
         FORMAT JSON
 
--- builder:service-map:serviceExternalEdgesSQL:default  [1709b03d]
+-- builder:service-map:serviceExternalEdgesSQL:default  [bf9cb394]
 SELECT
           sourceService AS sourceService,
           targetType AS targetType,
@@ -2620,7 +3881,7 @@ SELECT
           targetName AS targetName,
           sum(bucketCallCount) AS callCount,
           sum(bucketErrorCount) AS errorCount,
-          sum(bucketDurationSumMs) / nullIf(sum(bucketCallCount), 0) AS avgDurationMs,
+          ifNull(ifNotFinite(sum(bucketDurationSumMs) / nullIf(sum(bucketCallCount), 0), 0), 0) AS avgDurationMs,
           max(bucketMaxDurationMs) AS maxDurationMs,
           if(sum(bucketCallCount) > 0, arrayElement(quantilesTDigestWeightedMerge(0.5, 0.95)(bucketDurationQuantiles), 2) / 1000000, 0) AS p95DurationMs,
           sum(bucketEstimatedSpanCount) AS estimatedSpanCount
@@ -2681,7 +3942,7 @@ SELECT
         LIMIT 200
         FORMAT JSON
 
--- builder:service-map:serviceExternalEdgesSQL:env-scoped  [856955eb]
+-- builder:service-map:serviceExternalEdgesSQL:env-scoped  [570014cc]
 SELECT
           sourceService AS sourceService,
           targetType AS targetType,
@@ -2689,7 +3950,7 @@ SELECT
           targetName AS targetName,
           sum(bucketCallCount) AS callCount,
           sum(bucketErrorCount) AS errorCount,
-          sum(bucketDurationSumMs) / nullIf(sum(bucketCallCount), 0) AS avgDurationMs,
+          ifNull(ifNotFinite(sum(bucketDurationSumMs) / nullIf(sum(bucketCallCount), 0), 0), 0) AS avgDurationMs,
           max(bucketMaxDurationMs) AS maxDurationMs,
           if(sum(bucketCallCount) > 0, arrayElement(quantilesTDigestWeightedMerge(0.5, 0.95)(bucketDurationQuantiles), 2) / 1000000, 0) AS p95DurationMs,
           sum(bucketEstimatedSpanCount) AS estimatedSpanCount
@@ -2711,7 +3972,7 @@ SELECT
           AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
           AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
           AND TargetName != ''
-          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+          AND DeploymentEnv = 'production'
         GROUP BY sourceService, targetType, targetSystem, targetName
 UNION ALL
 SELECT
@@ -2746,7 +4007,7 @@ SELECT
           AND Hour >= toStartOfHour(toDateTime('2026-01-01 10:30:00'))
           AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
           AND ParentServerAddress != ''
-          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+          AND DeploymentEnv = 'production'
         GROUP BY ParentServerAddress)))
         GROUP BY sourceService, targetType, targetSystem, targetName
         ORDER BY callCount DESC
@@ -2836,97 +4097,6 @@ SELECT
           AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production') AS c ON (p.SpanId = c.ParentSpanId AND p.TraceId = c.TraceId)
         WHERE p.ServiceName != c.ServiceName
         GROUP BY OrgId, Hour, SourceService, TargetService, DeploymentEnv
-        FORMAT JSON
-
--- builder:service-map:serviceMapEdgesQuery:default  [ea2be780]
-SELECT
-          p.ServiceName AS callerService,
-          c.ServiceName AS calleeService,
-          count() AS callCount,
-          countIf(c.StatusCode = 'Error') AS errorCount,
-          avg(c.Duration) / 1000000 AS avgDurationMs,
-          quantile(0.95)(c.Duration) / 1000000 AS p95DurationMs
-        FROM (SELECT
-          OrgId AS OrgId,
-          Timestamp AS Timestamp,
-          TraceId AS TraceId,
-          SpanId AS SpanId,
-          ServiceName AS ServiceName,
-          DeploymentEnv AS DeploymentEnv
-        FROM service_map_spans
-        WHERE SpanKind IN ('Client', 'Producer')
-          AND Timestamp >= toDateTime('2026-01-01 10:30:00')
-          AND Timestamp < toDateTime('2026-01-03 14:15:00')
-          AND OrgId = 'org_sql_catalog') AS p
-        INNER JOIN (SELECT
-          TraceId AS TraceId,
-          ParentSpanId AS ParentSpanId,
-          ServiceName AS ServiceName,
-          Duration AS Duration,
-          StatusCode AS StatusCode,
-          TraceState AS TraceState
-        FROM service_map_children
-        WHERE Timestamp >= toDateTime('2026-01-01 10:30:00')
-          AND Timestamp < toDateTime('2026-01-03 14:15:00')
-          AND OrgId = 'org_sql_catalog') AS c ON (p.SpanId = c.ParentSpanId AND p.TraceId = c.TraceId)
-        WHERE p.ServiceName != c.ServiceName
-        GROUP BY callerService, calleeService
-        ORDER BY callCount DESC
-        LIMIT 200
-        FORMAT JSON
-
--- builder:service-map:serviceMapEdgesQuery:env-scoped  [cf0a7904]
-SELECT
-          p.ServiceName AS callerService,
-          c.ServiceName AS calleeService,
-          count() AS callCount,
-          countIf(c.StatusCode = 'Error') AS errorCount,
-          avg(c.Duration) / 1000000 AS avgDurationMs,
-          quantile(0.95)(c.Duration) / 1000000 AS p95DurationMs
-        FROM (SELECT
-          OrgId AS OrgId,
-          Timestamp AS Timestamp,
-          TraceId AS TraceId,
-          SpanId AS SpanId,
-          ServiceName AS ServiceName,
-          DeploymentEnv AS DeploymentEnv
-        FROM service_map_spans
-        WHERE SpanKind IN ('Client', 'Producer')
-          AND Timestamp >= toDateTime('2026-01-01 10:30:00')
-          AND Timestamp < toDateTime('2026-01-03 14:15:00')
-          AND OrgId = 'org_sql_catalog'
-          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production') AS p
-        INNER JOIN (SELECT
-          TraceId AS TraceId,
-          ParentSpanId AS ParentSpanId,
-          ServiceName AS ServiceName,
-          Duration AS Duration,
-          StatusCode AS StatusCode,
-          TraceState AS TraceState
-        FROM service_map_children
-        WHERE Timestamp >= toDateTime('2026-01-01 10:30:00')
-          AND Timestamp < toDateTime('2026-01-03 14:15:00')
-          AND OrgId = 'org_sql_catalog'
-          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production') AS c ON (p.SpanId = c.ParentSpanId AND p.TraceId = c.TraceId)
-        WHERE p.ServiceName != c.ServiceName
-        GROUP BY callerService, calleeService
-        ORDER BY callCount DESC
-        LIMIT 200
-        FORMAT JSON
-
--- builder:service-map:serviceMapNodeStatsQuery:default  [76cfbe8d]
-SELECT
-          ServiceName AS serviceName,
-          count() AS spanCount,
-          countIf(StatusCode = 'Error') AS errorCount,
-          quantile(0.95)(Duration) / 1000000 AS p95DurationMs
-        FROM service_map_spans
-        WHERE OrgId = 'org_sql_catalog'
-          AND Timestamp >= toDateTime('2026-01-01 10:30:00')
-          AND Timestamp < toDateTime('2026-01-03 14:15:00')
-        GROUP BY serviceName
-        ORDER BY spanCount DESC
-        LIMIT 200
         FORMAT JSON
 
 -- builder:service-operations:serviceOperationsSummaryQuery:default  [369067d7]
@@ -3503,7 +4673,7 @@ SELECT
         LIMIT 40
         FORMAT JSON
 
--- builder:session-replays:sessionReplaysFacetsQuery:default  [028f5de8]
+-- builder:session-replays:sessionReplaysFacetsQuery:default  [b22f75dd]
 SELECT
           ServiceName AS name,
           uniq(SessionId) AS count,
@@ -3570,6 +4740,42 @@ SELECT
         LIMIT 50
 UNION ALL
 SELECT
+          PagePath AS name,
+          uniq(SessionId) AS count,
+          'page' AS facetType
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Kind = 'navigation'
+          AND PagePath != ''
+          AND SessionId IN (SELECT
+          SessionId AS SessionId
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00')
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 200
+UNION ALL
+SELECT
+          arrayJoin(arrayFilter(tag -> tag != '', [quality, if(signedIn = 1, 'signed_in', ''), if(newVisitor = 1, 'new_visitor', '')])) AS name,
+          count() AS count,
+          'tag' AS facetType
+        FROM (SELECT
+          SessionId AS sessionId,
+          multiIf(multiSearchAnyCaseInsensitive(argMax(UserAgent, Version), ['GPTBot', 'OAI-SearchBot', 'ChatGPT-User', 'ClaudeBot', 'Claude-User', 'PerplexityBot', 'Google-Extended', 'Applebot-Extended', 'meta-externalagent', 'meta-webindexer', 'Bytespider', 'CCBot', 'Amazonbot', 'DuckAssistBot', 'Googlebot', 'GoogleOther', 'AdsBot-Google', 'Google-Read-Aloud', 'bingbot', 'YandexBot', 'Baiduspider', 'DuckDuckBot', 'Applebot', 'Sogou', 'SeznamBot', 'AhrefsSiteAudit', 'AhrefsBot', 'SemrushBot', 'DataForSeoBot', 'DotBot', 'MJ12bot', 'Barkrowler', 'Screaming Frog', 'facebookexternalhit', 'Twitterbot', 'LinkedInBot', 'Slackbot', 'Discordbot', 'TelegramBot', 'Pinterest', 'HubSpot Crawler', 'Stripebot', 'UptimeRobot', 'Pingdom', 'StatusCake', 'Headless', 'bot/', 'bot\x3B', 'bot)', 'crawler', 'spider', '+http']), 'bot', (coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 5000 AND argMax(ClickCount, Version) = 0), 'bounce', ((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) = 0) AND argMax(ErrorCount, Version) = 0), 'idle', (((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) <= 2) AND argMax(ErrorCount, Version) = 0) AND coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 30000), 'glance', 'engaged') AS quality,
+          if(argMax(UserId, Version) != '', 1, 0) AS signedIn,
+          argMax(VisitorIsNew, Version) AS newVisitor
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+        GROUP BY sessionId) AS t
+        GROUP BY name
+UNION ALL
+SELECT
           toString(toUInt64(round(pow(2, floor(log2(greatest(DurationMs, 1000) / 1000) * 2) / 2) * 1000))) AS name,
           uniq(SessionId) AS count,
           'durationBucket' AS facetType
@@ -3583,7 +4789,7 @@ SELECT
 UNION ALL
 SELECT
           'p50' AS name,
-          toUInt64(ifNotFinite(round(quantile(0.5)(assumeNotNull(DurationMs))), 0)) AS count,
+          toUInt64(ifNull(ifNotFinite(round(quantile(0.5)(assumeNotNull(DurationMs))), 0), 0)) AS count,
           'durationStat' AS facetType
         FROM session_replays
         WHERE OrgId = 'org_sql_catalog'
@@ -3593,13 +4799,31 @@ SELECT
 UNION ALL
 SELECT
           'p95' AS name,
-          toUInt64(ifNotFinite(round(quantile(0.95)(assumeNotNull(DurationMs))), 0)) AS count,
+          toUInt64(ifNull(ifNotFinite(round(quantile(0.95)(assumeNotNull(DurationMs))), 0), 0)) AS count,
           'durationStat' AS facetType
         FROM session_replays
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
           AND DurationMs > 0
+UNION ALL
+SELECT
+          'total' AS name,
+          uniq(SessionId) AS count,
+          'total' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+UNION ALL
+SELECT
+          'live' AS name,
+          uniqIf(SessionId, (Status = 'active' AND coalesce(LastActivityAt, StartTime) >= toDateTime('2026-01-03 14:15:00') - INTERVAL 300 SECOND)) AS count,
+          'live' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
 UNION ALL
 SELECT
           'error' AS name,
@@ -3612,7 +4836,7 @@ SELECT
           AND ErrorCount > 0
 FORMAT JSON
 
--- builder:session-replays:sessionReplaysFacetsQuery:environment-scoped  [30d28a8a]
+-- builder:session-replays:sessionReplaysFacetsQuery:environment-scoped  [9d8755df]
 SELECT
           ServiceName AS name,
           uniq(SessionId) AS count,
@@ -3684,6 +4908,44 @@ SELECT
         LIMIT 50
 UNION ALL
 SELECT
+          PagePath AS name,
+          uniq(SessionId) AS count,
+          'page' AS facetType
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Kind = 'navigation'
+          AND PagePath != ''
+          AND SessionId IN (SELECT
+          SessionId AS SessionId
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production')
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 200
+UNION ALL
+SELECT
+          arrayJoin(arrayFilter(tag -> tag != '', [quality, if(signedIn = 1, 'signed_in', ''), if(newVisitor = 1, 'new_visitor', '')])) AS name,
+          count() AS count,
+          'tag' AS facetType
+        FROM (SELECT
+          SessionId AS sessionId,
+          multiIf(multiSearchAnyCaseInsensitive(argMax(UserAgent, Version), ['GPTBot', 'OAI-SearchBot', 'ChatGPT-User', 'ClaudeBot', 'Claude-User', 'PerplexityBot', 'Google-Extended', 'Applebot-Extended', 'meta-externalagent', 'meta-webindexer', 'Bytespider', 'CCBot', 'Amazonbot', 'DuckAssistBot', 'Googlebot', 'GoogleOther', 'AdsBot-Google', 'Google-Read-Aloud', 'bingbot', 'YandexBot', 'Baiduspider', 'DuckDuckBot', 'Applebot', 'Sogou', 'SeznamBot', 'AhrefsSiteAudit', 'AhrefsBot', 'SemrushBot', 'DataForSeoBot', 'DotBot', 'MJ12bot', 'Barkrowler', 'Screaming Frog', 'facebookexternalhit', 'Twitterbot', 'LinkedInBot', 'Slackbot', 'Discordbot', 'TelegramBot', 'Pinterest', 'HubSpot Crawler', 'Stripebot', 'UptimeRobot', 'Pingdom', 'StatusCake', 'Headless', 'bot/', 'bot\x3B', 'bot)', 'crawler', 'spider', '+http']), 'bot', (coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 5000 AND argMax(ClickCount, Version) = 0), 'bounce', ((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) = 0) AND argMax(ErrorCount, Version) = 0), 'idle', (((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) <= 2) AND argMax(ErrorCount, Version) = 0) AND coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 30000), 'glance', 'engaged') AS quality,
+          if(argMax(UserId, Version) != '', 1, 0) AS signedIn,
+          argMax(VisitorIsNew, Version) AS newVisitor
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
+        GROUP BY sessionId) AS t
+        GROUP BY name
+UNION ALL
+SELECT
           toString(toUInt64(round(pow(2, floor(log2(greatest(DurationMs, 1000) / 1000) * 2) / 2) * 1000))) AS name,
           uniq(SessionId) AS count,
           'durationBucket' AS facetType
@@ -3698,7 +4960,7 @@ SELECT
 UNION ALL
 SELECT
           'p50' AS name,
-          toUInt64(ifNotFinite(round(quantile(0.5)(assumeNotNull(DurationMs))), 0)) AS count,
+          toUInt64(ifNull(ifNotFinite(round(quantile(0.5)(assumeNotNull(DurationMs))), 0), 0)) AS count,
           'durationStat' AS facetType
         FROM session_replays
         WHERE OrgId = 'org_sql_catalog'
@@ -3709,7 +4971,7 @@ SELECT
 UNION ALL
 SELECT
           'p95' AS name,
-          toUInt64(ifNotFinite(round(quantile(0.95)(assumeNotNull(DurationMs))), 0)) AS count,
+          toUInt64(ifNull(ifNotFinite(round(quantile(0.95)(assumeNotNull(DurationMs))), 0), 0)) AS count,
           'durationStat' AS facetType
         FROM session_replays
         WHERE OrgId = 'org_sql_catalog'
@@ -3717,6 +4979,26 @@ SELECT
           AND StartTime <= '2026-01-03 14:15:00'
           AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
           AND DurationMs > 0
+UNION ALL
+SELECT
+          'total' AS name,
+          uniq(SessionId) AS count,
+          'total' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
+UNION ALL
+SELECT
+          'live' AS name,
+          uniqIf(SessionId, (Status = 'active' AND coalesce(LastActivityAt, StartTime) >= toDateTime('2026-01-03 14:15:00') - INTERVAL 300 SECOND)) AS count,
+          'live' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
 UNION ALL
 SELECT
           'error' AS name,
@@ -3730,7 +5012,7 @@ SELECT
           AND ErrorCount > 0
 FORMAT JSON
 
--- builder:session-replays:sessionReplaysFacetsQuery:identity-filtered  [92d30094]
+-- builder:session-replays:sessionReplaysFacetsQuery:identity-filtered  [e54d21e1]
 SELECT
           ServiceName AS name,
           uniq(SessionId) AS count,
@@ -3806,6 +5088,46 @@ SELECT
         LIMIT 50
 UNION ALL
 SELECT
+          PagePath AS name,
+          uniq(SessionId) AS count,
+          'page' AS facetType
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Kind = 'navigation'
+          AND PagePath != ''
+          AND SessionId IN (SELECT
+          SessionId AS SessionId
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND GroupName = 'Acme Inc'
+          AND (UserName ILIKE '%ada%' OR UserEmail ILIKE '%ada%'))
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 200
+UNION ALL
+SELECT
+          arrayJoin(arrayFilter(tag -> tag != '', [quality, if(signedIn = 1, 'signed_in', ''), if(newVisitor = 1, 'new_visitor', '')])) AS name,
+          count() AS count,
+          'tag' AS facetType
+        FROM (SELECT
+          SessionId AS sessionId,
+          multiIf(multiSearchAnyCaseInsensitive(argMax(UserAgent, Version), ['GPTBot', 'OAI-SearchBot', 'ChatGPT-User', 'ClaudeBot', 'Claude-User', 'PerplexityBot', 'Google-Extended', 'Applebot-Extended', 'meta-externalagent', 'meta-webindexer', 'Bytespider', 'CCBot', 'Amazonbot', 'DuckAssistBot', 'Googlebot', 'GoogleOther', 'AdsBot-Google', 'Google-Read-Aloud', 'bingbot', 'YandexBot', 'Baiduspider', 'DuckDuckBot', 'Applebot', 'Sogou', 'SeznamBot', 'AhrefsSiteAudit', 'AhrefsBot', 'SemrushBot', 'DataForSeoBot', 'DotBot', 'MJ12bot', 'Barkrowler', 'Screaming Frog', 'facebookexternalhit', 'Twitterbot', 'LinkedInBot', 'Slackbot', 'Discordbot', 'TelegramBot', 'Pinterest', 'HubSpot Crawler', 'Stripebot', 'UptimeRobot', 'Pingdom', 'StatusCake', 'Headless', 'bot/', 'bot\x3B', 'bot)', 'crawler', 'spider', '+http']), 'bot', (coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 5000 AND argMax(ClickCount, Version) = 0), 'bounce', ((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) = 0) AND argMax(ErrorCount, Version) = 0), 'idle', (((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) <= 2) AND argMax(ErrorCount, Version) = 0) AND coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 30000), 'glance', 'engaged') AS quality,
+          if(argMax(UserId, Version) != '', 1, 0) AS signedIn,
+          argMax(VisitorIsNew, Version) AS newVisitor
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND GroupName = 'Acme Inc'
+          AND (UserName ILIKE '%ada%' OR UserEmail ILIKE '%ada%')
+        GROUP BY sessionId) AS t
+        GROUP BY name
+UNION ALL
+SELECT
           toString(toUInt64(round(pow(2, floor(log2(greatest(DurationMs, 1000) / 1000) * 2) / 2) * 1000))) AS name,
           uniq(SessionId) AS count,
           'durationBucket' AS facetType
@@ -3821,7 +5143,7 @@ SELECT
 UNION ALL
 SELECT
           'p50' AS name,
-          toUInt64(ifNotFinite(round(quantile(0.5)(assumeNotNull(DurationMs))), 0)) AS count,
+          toUInt64(ifNull(ifNotFinite(round(quantile(0.5)(assumeNotNull(DurationMs))), 0), 0)) AS count,
           'durationStat' AS facetType
         FROM session_replays
         WHERE OrgId = 'org_sql_catalog'
@@ -3833,7 +5155,7 @@ SELECT
 UNION ALL
 SELECT
           'p95' AS name,
-          toUInt64(ifNotFinite(round(quantile(0.95)(assumeNotNull(DurationMs))), 0)) AS count,
+          toUInt64(ifNull(ifNotFinite(round(quantile(0.95)(assumeNotNull(DurationMs))), 0), 0)) AS count,
           'durationStat' AS facetType
         FROM session_replays
         WHERE OrgId = 'org_sql_catalog'
@@ -3842,6 +5164,28 @@ SELECT
           AND GroupName = 'Acme Inc'
           AND (UserName ILIKE '%ada%' OR UserEmail ILIKE '%ada%')
           AND DurationMs > 0
+UNION ALL
+SELECT
+          'total' AS name,
+          uniq(SessionId) AS count,
+          'total' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND GroupName = 'Acme Inc'
+          AND (UserName ILIKE '%ada%' OR UserEmail ILIKE '%ada%')
+UNION ALL
+SELECT
+          'live' AS name,
+          uniqIf(SessionId, (Status = 'active' AND coalesce(LastActivityAt, StartTime) >= toDateTime('2026-01-03 14:15:00') - INTERVAL 300 SECOND)) AS count,
+          'live' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND GroupName = 'Acme Inc'
+          AND (UserName ILIKE '%ada%' OR UserEmail ILIKE '%ada%')
 UNION ALL
 SELECT
           'error' AS name,
@@ -3856,7 +5200,585 @@ SELECT
           AND ErrorCount > 0
 FORMAT JSON
 
--- builder:session-replays:sessionReplaysFacetsQuery:unknown-environment-scoped  [30d28a8a]
+-- builder:session-replays:sessionReplaysFacetsQuery:page-visited  [62ffbe75]
+SELECT
+          ServiceName AS name,
+          uniq(SessionId) AS count,
+          'service' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND SessionId IN (SELECT
+          SessionId AS SessionId
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Kind = 'navigation'
+          AND PagePath = '/pricing')
+          AND ServiceName != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          BrowserName AS name,
+          uniq(SessionId) AS count,
+          'browser' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND SessionId IN (SELECT
+          SessionId AS SessionId
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Kind = 'navigation'
+          AND PagePath = '/pricing')
+          AND BrowserName != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          Country AS name,
+          uniq(SessionId) AS count,
+          'country' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND SessionId IN (SELECT
+          SessionId AS SessionId
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Kind = 'navigation'
+          AND PagePath = '/pricing')
+          AND Country != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          DeviceType AS name,
+          uniq(SessionId) AS count,
+          'device' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND SessionId IN (SELECT
+          SessionId AS SessionId
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Kind = 'navigation'
+          AND PagePath = '/pricing')
+          AND DeviceType != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          GroupName AS name,
+          uniq(SessionId) AS count,
+          'group' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND SessionId IN (SELECT
+          SessionId AS SessionId
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Kind = 'navigation'
+          AND PagePath = '/pricing')
+          AND GroupName != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          PagePath AS name,
+          uniq(SessionId) AS count,
+          'page' AS facetType
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Kind = 'navigation'
+          AND PagePath != ''
+          AND SessionId IN (SELECT
+          SessionId AS SessionId
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00')
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 200
+UNION ALL
+SELECT
+          arrayJoin(arrayFilter(tag -> tag != '', [quality, if(signedIn = 1, 'signed_in', ''), if(newVisitor = 1, 'new_visitor', '')])) AS name,
+          count() AS count,
+          'tag' AS facetType
+        FROM (SELECT
+          SessionId AS sessionId,
+          multiIf(multiSearchAnyCaseInsensitive(argMax(UserAgent, Version), ['GPTBot', 'OAI-SearchBot', 'ChatGPT-User', 'ClaudeBot', 'Claude-User', 'PerplexityBot', 'Google-Extended', 'Applebot-Extended', 'meta-externalagent', 'meta-webindexer', 'Bytespider', 'CCBot', 'Amazonbot', 'DuckAssistBot', 'Googlebot', 'GoogleOther', 'AdsBot-Google', 'Google-Read-Aloud', 'bingbot', 'YandexBot', 'Baiduspider', 'DuckDuckBot', 'Applebot', 'Sogou', 'SeznamBot', 'AhrefsSiteAudit', 'AhrefsBot', 'SemrushBot', 'DataForSeoBot', 'DotBot', 'MJ12bot', 'Barkrowler', 'Screaming Frog', 'facebookexternalhit', 'Twitterbot', 'LinkedInBot', 'Slackbot', 'Discordbot', 'TelegramBot', 'Pinterest', 'HubSpot Crawler', 'Stripebot', 'UptimeRobot', 'Pingdom', 'StatusCake', 'Headless', 'bot/', 'bot\x3B', 'bot)', 'crawler', 'spider', '+http']), 'bot', (coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 5000 AND argMax(ClickCount, Version) = 0), 'bounce', ((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) = 0) AND argMax(ErrorCount, Version) = 0), 'idle', (((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) <= 2) AND argMax(ErrorCount, Version) = 0) AND coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 30000), 'glance', 'engaged') AS quality,
+          if(argMax(UserId, Version) != '', 1, 0) AS signedIn,
+          argMax(VisitorIsNew, Version) AS newVisitor
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND SessionId IN (SELECT
+          SessionId AS SessionId
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Kind = 'navigation'
+          AND PagePath = '/pricing')
+        GROUP BY sessionId) AS t
+        GROUP BY name
+UNION ALL
+SELECT
+          toString(toUInt64(round(pow(2, floor(log2(greatest(DurationMs, 1000) / 1000) * 2) / 2) * 1000))) AS name,
+          uniq(SessionId) AS count,
+          'durationBucket' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND SessionId IN (SELECT
+          SessionId AS SessionId
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Kind = 'navigation'
+          AND PagePath = '/pricing')
+          AND DurationMs > 0
+        GROUP BY name
+        LIMIT 40
+UNION ALL
+SELECT
+          'p50' AS name,
+          toUInt64(ifNull(ifNotFinite(round(quantile(0.5)(assumeNotNull(DurationMs))), 0), 0)) AS count,
+          'durationStat' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND SessionId IN (SELECT
+          SessionId AS SessionId
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Kind = 'navigation'
+          AND PagePath = '/pricing')
+          AND DurationMs > 0
+UNION ALL
+SELECT
+          'p95' AS name,
+          toUInt64(ifNull(ifNotFinite(round(quantile(0.95)(assumeNotNull(DurationMs))), 0), 0)) AS count,
+          'durationStat' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND SessionId IN (SELECT
+          SessionId AS SessionId
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Kind = 'navigation'
+          AND PagePath = '/pricing')
+          AND DurationMs > 0
+UNION ALL
+SELECT
+          'total' AS name,
+          uniq(SessionId) AS count,
+          'total' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND SessionId IN (SELECT
+          SessionId AS SessionId
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Kind = 'navigation'
+          AND PagePath = '/pricing')
+UNION ALL
+SELECT
+          'live' AS name,
+          uniqIf(SessionId, (Status = 'active' AND coalesce(LastActivityAt, StartTime) >= toDateTime('2026-01-03 14:15:00') - INTERVAL 300 SECOND)) AS count,
+          'live' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND SessionId IN (SELECT
+          SessionId AS SessionId
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Kind = 'navigation'
+          AND PagePath = '/pricing')
+UNION ALL
+SELECT
+          'error' AS name,
+          uniq(SessionId) AS count,
+          'error' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND SessionId IN (SELECT
+          SessionId AS SessionId
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Kind = 'navigation'
+          AND PagePath = '/pricing')
+          AND ErrorCount > 0
+FORMAT JSON
+
+-- builder:session-replays:sessionReplaysFacetsQuery:tagged  [139da92f]
+SELECT
+          ServiceName AS name,
+          uniq(SessionId) AS count,
+          'service' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND SessionId IN (SELECT
+          sessionId AS SessionId
+        FROM (SELECT
+          SessionId AS sessionId,
+          multiIf(multiSearchAnyCaseInsensitive(argMax(UserAgent, Version), ['GPTBot', 'OAI-SearchBot', 'ChatGPT-User', 'ClaudeBot', 'Claude-User', 'PerplexityBot', 'Google-Extended', 'Applebot-Extended', 'meta-externalagent', 'meta-webindexer', 'Bytespider', 'CCBot', 'Amazonbot', 'DuckAssistBot', 'Googlebot', 'GoogleOther', 'AdsBot-Google', 'Google-Read-Aloud', 'bingbot', 'YandexBot', 'Baiduspider', 'DuckDuckBot', 'Applebot', 'Sogou', 'SeznamBot', 'AhrefsSiteAudit', 'AhrefsBot', 'SemrushBot', 'DataForSeoBot', 'DotBot', 'MJ12bot', 'Barkrowler', 'Screaming Frog', 'facebookexternalhit', 'Twitterbot', 'LinkedInBot', 'Slackbot', 'Discordbot', 'TelegramBot', 'Pinterest', 'HubSpot Crawler', 'Stripebot', 'UptimeRobot', 'Pingdom', 'StatusCake', 'Headless', 'bot/', 'bot\x3B', 'bot)', 'crawler', 'spider', '+http']), 'bot', (coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 5000 AND argMax(ClickCount, Version) = 0), 'bounce', ((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) = 0) AND argMax(ErrorCount, Version) = 0), 'idle', (((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) <= 2) AND argMax(ErrorCount, Version) = 0) AND coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 30000), 'glance', 'engaged') AS quality,
+          if(argMax(UserId, Version) != '', 1, 0) AS signedIn,
+          argMax(VisitorIsNew, Version) AS newVisitor
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+        GROUP BY sessionId) AS t
+        WHERE quality = 'engaged')
+          AND ServiceName != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          BrowserName AS name,
+          uniq(SessionId) AS count,
+          'browser' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND SessionId IN (SELECT
+          sessionId AS SessionId
+        FROM (SELECT
+          SessionId AS sessionId,
+          multiIf(multiSearchAnyCaseInsensitive(argMax(UserAgent, Version), ['GPTBot', 'OAI-SearchBot', 'ChatGPT-User', 'ClaudeBot', 'Claude-User', 'PerplexityBot', 'Google-Extended', 'Applebot-Extended', 'meta-externalagent', 'meta-webindexer', 'Bytespider', 'CCBot', 'Amazonbot', 'DuckAssistBot', 'Googlebot', 'GoogleOther', 'AdsBot-Google', 'Google-Read-Aloud', 'bingbot', 'YandexBot', 'Baiduspider', 'DuckDuckBot', 'Applebot', 'Sogou', 'SeznamBot', 'AhrefsSiteAudit', 'AhrefsBot', 'SemrushBot', 'DataForSeoBot', 'DotBot', 'MJ12bot', 'Barkrowler', 'Screaming Frog', 'facebookexternalhit', 'Twitterbot', 'LinkedInBot', 'Slackbot', 'Discordbot', 'TelegramBot', 'Pinterest', 'HubSpot Crawler', 'Stripebot', 'UptimeRobot', 'Pingdom', 'StatusCake', 'Headless', 'bot/', 'bot\x3B', 'bot)', 'crawler', 'spider', '+http']), 'bot', (coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 5000 AND argMax(ClickCount, Version) = 0), 'bounce', ((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) = 0) AND argMax(ErrorCount, Version) = 0), 'idle', (((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) <= 2) AND argMax(ErrorCount, Version) = 0) AND coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 30000), 'glance', 'engaged') AS quality,
+          if(argMax(UserId, Version) != '', 1, 0) AS signedIn,
+          argMax(VisitorIsNew, Version) AS newVisitor
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+        GROUP BY sessionId) AS t
+        WHERE quality = 'engaged')
+          AND BrowserName != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          Country AS name,
+          uniq(SessionId) AS count,
+          'country' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND SessionId IN (SELECT
+          sessionId AS SessionId
+        FROM (SELECT
+          SessionId AS sessionId,
+          multiIf(multiSearchAnyCaseInsensitive(argMax(UserAgent, Version), ['GPTBot', 'OAI-SearchBot', 'ChatGPT-User', 'ClaudeBot', 'Claude-User', 'PerplexityBot', 'Google-Extended', 'Applebot-Extended', 'meta-externalagent', 'meta-webindexer', 'Bytespider', 'CCBot', 'Amazonbot', 'DuckAssistBot', 'Googlebot', 'GoogleOther', 'AdsBot-Google', 'Google-Read-Aloud', 'bingbot', 'YandexBot', 'Baiduspider', 'DuckDuckBot', 'Applebot', 'Sogou', 'SeznamBot', 'AhrefsSiteAudit', 'AhrefsBot', 'SemrushBot', 'DataForSeoBot', 'DotBot', 'MJ12bot', 'Barkrowler', 'Screaming Frog', 'facebookexternalhit', 'Twitterbot', 'LinkedInBot', 'Slackbot', 'Discordbot', 'TelegramBot', 'Pinterest', 'HubSpot Crawler', 'Stripebot', 'UptimeRobot', 'Pingdom', 'StatusCake', 'Headless', 'bot/', 'bot\x3B', 'bot)', 'crawler', 'spider', '+http']), 'bot', (coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 5000 AND argMax(ClickCount, Version) = 0), 'bounce', ((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) = 0) AND argMax(ErrorCount, Version) = 0), 'idle', (((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) <= 2) AND argMax(ErrorCount, Version) = 0) AND coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 30000), 'glance', 'engaged') AS quality,
+          if(argMax(UserId, Version) != '', 1, 0) AS signedIn,
+          argMax(VisitorIsNew, Version) AS newVisitor
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+        GROUP BY sessionId) AS t
+        WHERE quality = 'engaged')
+          AND Country != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          DeviceType AS name,
+          uniq(SessionId) AS count,
+          'device' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND SessionId IN (SELECT
+          sessionId AS SessionId
+        FROM (SELECT
+          SessionId AS sessionId,
+          multiIf(multiSearchAnyCaseInsensitive(argMax(UserAgent, Version), ['GPTBot', 'OAI-SearchBot', 'ChatGPT-User', 'ClaudeBot', 'Claude-User', 'PerplexityBot', 'Google-Extended', 'Applebot-Extended', 'meta-externalagent', 'meta-webindexer', 'Bytespider', 'CCBot', 'Amazonbot', 'DuckAssistBot', 'Googlebot', 'GoogleOther', 'AdsBot-Google', 'Google-Read-Aloud', 'bingbot', 'YandexBot', 'Baiduspider', 'DuckDuckBot', 'Applebot', 'Sogou', 'SeznamBot', 'AhrefsSiteAudit', 'AhrefsBot', 'SemrushBot', 'DataForSeoBot', 'DotBot', 'MJ12bot', 'Barkrowler', 'Screaming Frog', 'facebookexternalhit', 'Twitterbot', 'LinkedInBot', 'Slackbot', 'Discordbot', 'TelegramBot', 'Pinterest', 'HubSpot Crawler', 'Stripebot', 'UptimeRobot', 'Pingdom', 'StatusCake', 'Headless', 'bot/', 'bot\x3B', 'bot)', 'crawler', 'spider', '+http']), 'bot', (coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 5000 AND argMax(ClickCount, Version) = 0), 'bounce', ((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) = 0) AND argMax(ErrorCount, Version) = 0), 'idle', (((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) <= 2) AND argMax(ErrorCount, Version) = 0) AND coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 30000), 'glance', 'engaged') AS quality,
+          if(argMax(UserId, Version) != '', 1, 0) AS signedIn,
+          argMax(VisitorIsNew, Version) AS newVisitor
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+        GROUP BY sessionId) AS t
+        WHERE quality = 'engaged')
+          AND DeviceType != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          GroupName AS name,
+          uniq(SessionId) AS count,
+          'group' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND SessionId IN (SELECT
+          sessionId AS SessionId
+        FROM (SELECT
+          SessionId AS sessionId,
+          multiIf(multiSearchAnyCaseInsensitive(argMax(UserAgent, Version), ['GPTBot', 'OAI-SearchBot', 'ChatGPT-User', 'ClaudeBot', 'Claude-User', 'PerplexityBot', 'Google-Extended', 'Applebot-Extended', 'meta-externalagent', 'meta-webindexer', 'Bytespider', 'CCBot', 'Amazonbot', 'DuckAssistBot', 'Googlebot', 'GoogleOther', 'AdsBot-Google', 'Google-Read-Aloud', 'bingbot', 'YandexBot', 'Baiduspider', 'DuckDuckBot', 'Applebot', 'Sogou', 'SeznamBot', 'AhrefsSiteAudit', 'AhrefsBot', 'SemrushBot', 'DataForSeoBot', 'DotBot', 'MJ12bot', 'Barkrowler', 'Screaming Frog', 'facebookexternalhit', 'Twitterbot', 'LinkedInBot', 'Slackbot', 'Discordbot', 'TelegramBot', 'Pinterest', 'HubSpot Crawler', 'Stripebot', 'UptimeRobot', 'Pingdom', 'StatusCake', 'Headless', 'bot/', 'bot\x3B', 'bot)', 'crawler', 'spider', '+http']), 'bot', (coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 5000 AND argMax(ClickCount, Version) = 0), 'bounce', ((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) = 0) AND argMax(ErrorCount, Version) = 0), 'idle', (((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) <= 2) AND argMax(ErrorCount, Version) = 0) AND coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 30000), 'glance', 'engaged') AS quality,
+          if(argMax(UserId, Version) != '', 1, 0) AS signedIn,
+          argMax(VisitorIsNew, Version) AS newVisitor
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+        GROUP BY sessionId) AS t
+        WHERE quality = 'engaged')
+          AND GroupName != ''
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 50
+UNION ALL
+SELECT
+          PagePath AS name,
+          uniq(SessionId) AS count,
+          'page' AS facetType
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Kind = 'navigation'
+          AND PagePath != ''
+          AND SessionId IN (SELECT
+          SessionId AS SessionId
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND SessionId IN (SELECT
+          sessionId AS SessionId
+        FROM (SELECT
+          SessionId AS sessionId,
+          multiIf(multiSearchAnyCaseInsensitive(argMax(UserAgent, Version), ['GPTBot', 'OAI-SearchBot', 'ChatGPT-User', 'ClaudeBot', 'Claude-User', 'PerplexityBot', 'Google-Extended', 'Applebot-Extended', 'meta-externalagent', 'meta-webindexer', 'Bytespider', 'CCBot', 'Amazonbot', 'DuckAssistBot', 'Googlebot', 'GoogleOther', 'AdsBot-Google', 'Google-Read-Aloud', 'bingbot', 'YandexBot', 'Baiduspider', 'DuckDuckBot', 'Applebot', 'Sogou', 'SeznamBot', 'AhrefsSiteAudit', 'AhrefsBot', 'SemrushBot', 'DataForSeoBot', 'DotBot', 'MJ12bot', 'Barkrowler', 'Screaming Frog', 'facebookexternalhit', 'Twitterbot', 'LinkedInBot', 'Slackbot', 'Discordbot', 'TelegramBot', 'Pinterest', 'HubSpot Crawler', 'Stripebot', 'UptimeRobot', 'Pingdom', 'StatusCake', 'Headless', 'bot/', 'bot\x3B', 'bot)', 'crawler', 'spider', '+http']), 'bot', (coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 5000 AND argMax(ClickCount, Version) = 0), 'bounce', ((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) = 0) AND argMax(ErrorCount, Version) = 0), 'idle', (((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) <= 2) AND argMax(ErrorCount, Version) = 0) AND coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 30000), 'glance', 'engaged') AS quality,
+          if(argMax(UserId, Version) != '', 1, 0) AS signedIn,
+          argMax(VisitorIsNew, Version) AS newVisitor
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+        GROUP BY sessionId) AS t
+        WHERE quality = 'engaged'))
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 200
+UNION ALL
+SELECT
+          arrayJoin(arrayFilter(tag -> tag != '', [quality, if((signedIn = 1 AND quality = 'engaged'), 'signed_in', ''), if((newVisitor = 1 AND quality = 'engaged'), 'new_visitor', '')])) AS name,
+          count() AS count,
+          'tag' AS facetType
+        FROM (SELECT
+          SessionId AS sessionId,
+          multiIf(multiSearchAnyCaseInsensitive(argMax(UserAgent, Version), ['GPTBot', 'OAI-SearchBot', 'ChatGPT-User', 'ClaudeBot', 'Claude-User', 'PerplexityBot', 'Google-Extended', 'Applebot-Extended', 'meta-externalagent', 'meta-webindexer', 'Bytespider', 'CCBot', 'Amazonbot', 'DuckAssistBot', 'Googlebot', 'GoogleOther', 'AdsBot-Google', 'Google-Read-Aloud', 'bingbot', 'YandexBot', 'Baiduspider', 'DuckDuckBot', 'Applebot', 'Sogou', 'SeznamBot', 'AhrefsSiteAudit', 'AhrefsBot', 'SemrushBot', 'DataForSeoBot', 'DotBot', 'MJ12bot', 'Barkrowler', 'Screaming Frog', 'facebookexternalhit', 'Twitterbot', 'LinkedInBot', 'Slackbot', 'Discordbot', 'TelegramBot', 'Pinterest', 'HubSpot Crawler', 'Stripebot', 'UptimeRobot', 'Pingdom', 'StatusCake', 'Headless', 'bot/', 'bot\x3B', 'bot)', 'crawler', 'spider', '+http']), 'bot', (coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 5000 AND argMax(ClickCount, Version) = 0), 'bounce', ((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) = 0) AND argMax(ErrorCount, Version) = 0), 'idle', (((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) <= 2) AND argMax(ErrorCount, Version) = 0) AND coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 30000), 'glance', 'engaged') AS quality,
+          if(argMax(UserId, Version) != '', 1, 0) AS signedIn,
+          argMax(VisitorIsNew, Version) AS newVisitor
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+        GROUP BY sessionId) AS t
+        GROUP BY name
+UNION ALL
+SELECT
+          toString(toUInt64(round(pow(2, floor(log2(greatest(DurationMs, 1000) / 1000) * 2) / 2) * 1000))) AS name,
+          uniq(SessionId) AS count,
+          'durationBucket' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND SessionId IN (SELECT
+          sessionId AS SessionId
+        FROM (SELECT
+          SessionId AS sessionId,
+          multiIf(multiSearchAnyCaseInsensitive(argMax(UserAgent, Version), ['GPTBot', 'OAI-SearchBot', 'ChatGPT-User', 'ClaudeBot', 'Claude-User', 'PerplexityBot', 'Google-Extended', 'Applebot-Extended', 'meta-externalagent', 'meta-webindexer', 'Bytespider', 'CCBot', 'Amazonbot', 'DuckAssistBot', 'Googlebot', 'GoogleOther', 'AdsBot-Google', 'Google-Read-Aloud', 'bingbot', 'YandexBot', 'Baiduspider', 'DuckDuckBot', 'Applebot', 'Sogou', 'SeznamBot', 'AhrefsSiteAudit', 'AhrefsBot', 'SemrushBot', 'DataForSeoBot', 'DotBot', 'MJ12bot', 'Barkrowler', 'Screaming Frog', 'facebookexternalhit', 'Twitterbot', 'LinkedInBot', 'Slackbot', 'Discordbot', 'TelegramBot', 'Pinterest', 'HubSpot Crawler', 'Stripebot', 'UptimeRobot', 'Pingdom', 'StatusCake', 'Headless', 'bot/', 'bot\x3B', 'bot)', 'crawler', 'spider', '+http']), 'bot', (coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 5000 AND argMax(ClickCount, Version) = 0), 'bounce', ((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) = 0) AND argMax(ErrorCount, Version) = 0), 'idle', (((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) <= 2) AND argMax(ErrorCount, Version) = 0) AND coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 30000), 'glance', 'engaged') AS quality,
+          if(argMax(UserId, Version) != '', 1, 0) AS signedIn,
+          argMax(VisitorIsNew, Version) AS newVisitor
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+        GROUP BY sessionId) AS t
+        WHERE quality = 'engaged')
+          AND DurationMs > 0
+        GROUP BY name
+        LIMIT 40
+UNION ALL
+SELECT
+          'p50' AS name,
+          toUInt64(ifNull(ifNotFinite(round(quantile(0.5)(assumeNotNull(DurationMs))), 0), 0)) AS count,
+          'durationStat' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND SessionId IN (SELECT
+          sessionId AS SessionId
+        FROM (SELECT
+          SessionId AS sessionId,
+          multiIf(multiSearchAnyCaseInsensitive(argMax(UserAgent, Version), ['GPTBot', 'OAI-SearchBot', 'ChatGPT-User', 'ClaudeBot', 'Claude-User', 'PerplexityBot', 'Google-Extended', 'Applebot-Extended', 'meta-externalagent', 'meta-webindexer', 'Bytespider', 'CCBot', 'Amazonbot', 'DuckAssistBot', 'Googlebot', 'GoogleOther', 'AdsBot-Google', 'Google-Read-Aloud', 'bingbot', 'YandexBot', 'Baiduspider', 'DuckDuckBot', 'Applebot', 'Sogou', 'SeznamBot', 'AhrefsSiteAudit', 'AhrefsBot', 'SemrushBot', 'DataForSeoBot', 'DotBot', 'MJ12bot', 'Barkrowler', 'Screaming Frog', 'facebookexternalhit', 'Twitterbot', 'LinkedInBot', 'Slackbot', 'Discordbot', 'TelegramBot', 'Pinterest', 'HubSpot Crawler', 'Stripebot', 'UptimeRobot', 'Pingdom', 'StatusCake', 'Headless', 'bot/', 'bot\x3B', 'bot)', 'crawler', 'spider', '+http']), 'bot', (coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 5000 AND argMax(ClickCount, Version) = 0), 'bounce', ((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) = 0) AND argMax(ErrorCount, Version) = 0), 'idle', (((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) <= 2) AND argMax(ErrorCount, Version) = 0) AND coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 30000), 'glance', 'engaged') AS quality,
+          if(argMax(UserId, Version) != '', 1, 0) AS signedIn,
+          argMax(VisitorIsNew, Version) AS newVisitor
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+        GROUP BY sessionId) AS t
+        WHERE quality = 'engaged')
+          AND DurationMs > 0
+UNION ALL
+SELECT
+          'p95' AS name,
+          toUInt64(ifNull(ifNotFinite(round(quantile(0.95)(assumeNotNull(DurationMs))), 0), 0)) AS count,
+          'durationStat' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND SessionId IN (SELECT
+          sessionId AS SessionId
+        FROM (SELECT
+          SessionId AS sessionId,
+          multiIf(multiSearchAnyCaseInsensitive(argMax(UserAgent, Version), ['GPTBot', 'OAI-SearchBot', 'ChatGPT-User', 'ClaudeBot', 'Claude-User', 'PerplexityBot', 'Google-Extended', 'Applebot-Extended', 'meta-externalagent', 'meta-webindexer', 'Bytespider', 'CCBot', 'Amazonbot', 'DuckAssistBot', 'Googlebot', 'GoogleOther', 'AdsBot-Google', 'Google-Read-Aloud', 'bingbot', 'YandexBot', 'Baiduspider', 'DuckDuckBot', 'Applebot', 'Sogou', 'SeznamBot', 'AhrefsSiteAudit', 'AhrefsBot', 'SemrushBot', 'DataForSeoBot', 'DotBot', 'MJ12bot', 'Barkrowler', 'Screaming Frog', 'facebookexternalhit', 'Twitterbot', 'LinkedInBot', 'Slackbot', 'Discordbot', 'TelegramBot', 'Pinterest', 'HubSpot Crawler', 'Stripebot', 'UptimeRobot', 'Pingdom', 'StatusCake', 'Headless', 'bot/', 'bot\x3B', 'bot)', 'crawler', 'spider', '+http']), 'bot', (coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 5000 AND argMax(ClickCount, Version) = 0), 'bounce', ((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) = 0) AND argMax(ErrorCount, Version) = 0), 'idle', (((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) <= 2) AND argMax(ErrorCount, Version) = 0) AND coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 30000), 'glance', 'engaged') AS quality,
+          if(argMax(UserId, Version) != '', 1, 0) AS signedIn,
+          argMax(VisitorIsNew, Version) AS newVisitor
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+        GROUP BY sessionId) AS t
+        WHERE quality = 'engaged')
+          AND DurationMs > 0
+UNION ALL
+SELECT
+          'total' AS name,
+          uniq(SessionId) AS count,
+          'total' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND SessionId IN (SELECT
+          sessionId AS SessionId
+        FROM (SELECT
+          SessionId AS sessionId,
+          multiIf(multiSearchAnyCaseInsensitive(argMax(UserAgent, Version), ['GPTBot', 'OAI-SearchBot', 'ChatGPT-User', 'ClaudeBot', 'Claude-User', 'PerplexityBot', 'Google-Extended', 'Applebot-Extended', 'meta-externalagent', 'meta-webindexer', 'Bytespider', 'CCBot', 'Amazonbot', 'DuckAssistBot', 'Googlebot', 'GoogleOther', 'AdsBot-Google', 'Google-Read-Aloud', 'bingbot', 'YandexBot', 'Baiduspider', 'DuckDuckBot', 'Applebot', 'Sogou', 'SeznamBot', 'AhrefsSiteAudit', 'AhrefsBot', 'SemrushBot', 'DataForSeoBot', 'DotBot', 'MJ12bot', 'Barkrowler', 'Screaming Frog', 'facebookexternalhit', 'Twitterbot', 'LinkedInBot', 'Slackbot', 'Discordbot', 'TelegramBot', 'Pinterest', 'HubSpot Crawler', 'Stripebot', 'UptimeRobot', 'Pingdom', 'StatusCake', 'Headless', 'bot/', 'bot\x3B', 'bot)', 'crawler', 'spider', '+http']), 'bot', (coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 5000 AND argMax(ClickCount, Version) = 0), 'bounce', ((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) = 0) AND argMax(ErrorCount, Version) = 0), 'idle', (((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) <= 2) AND argMax(ErrorCount, Version) = 0) AND coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 30000), 'glance', 'engaged') AS quality,
+          if(argMax(UserId, Version) != '', 1, 0) AS signedIn,
+          argMax(VisitorIsNew, Version) AS newVisitor
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+        GROUP BY sessionId) AS t
+        WHERE quality = 'engaged')
+UNION ALL
+SELECT
+          'live' AS name,
+          uniqIf(SessionId, (Status = 'active' AND coalesce(LastActivityAt, StartTime) >= toDateTime('2026-01-03 14:15:00') - INTERVAL 300 SECOND)) AS count,
+          'live' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND SessionId IN (SELECT
+          sessionId AS SessionId
+        FROM (SELECT
+          SessionId AS sessionId,
+          multiIf(multiSearchAnyCaseInsensitive(argMax(UserAgent, Version), ['GPTBot', 'OAI-SearchBot', 'ChatGPT-User', 'ClaudeBot', 'Claude-User', 'PerplexityBot', 'Google-Extended', 'Applebot-Extended', 'meta-externalagent', 'meta-webindexer', 'Bytespider', 'CCBot', 'Amazonbot', 'DuckAssistBot', 'Googlebot', 'GoogleOther', 'AdsBot-Google', 'Google-Read-Aloud', 'bingbot', 'YandexBot', 'Baiduspider', 'DuckDuckBot', 'Applebot', 'Sogou', 'SeznamBot', 'AhrefsSiteAudit', 'AhrefsBot', 'SemrushBot', 'DataForSeoBot', 'DotBot', 'MJ12bot', 'Barkrowler', 'Screaming Frog', 'facebookexternalhit', 'Twitterbot', 'LinkedInBot', 'Slackbot', 'Discordbot', 'TelegramBot', 'Pinterest', 'HubSpot Crawler', 'Stripebot', 'UptimeRobot', 'Pingdom', 'StatusCake', 'Headless', 'bot/', 'bot\x3B', 'bot)', 'crawler', 'spider', '+http']), 'bot', (coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 5000 AND argMax(ClickCount, Version) = 0), 'bounce', ((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) = 0) AND argMax(ErrorCount, Version) = 0), 'idle', (((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) <= 2) AND argMax(ErrorCount, Version) = 0) AND coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 30000), 'glance', 'engaged') AS quality,
+          if(argMax(UserId, Version) != '', 1, 0) AS signedIn,
+          argMax(VisitorIsNew, Version) AS newVisitor
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+        GROUP BY sessionId) AS t
+        WHERE quality = 'engaged')
+UNION ALL
+SELECT
+          'error' AS name,
+          uniq(SessionId) AS count,
+          'error' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND SessionId IN (SELECT
+          sessionId AS SessionId
+        FROM (SELECT
+          SessionId AS sessionId,
+          multiIf(multiSearchAnyCaseInsensitive(argMax(UserAgent, Version), ['GPTBot', 'OAI-SearchBot', 'ChatGPT-User', 'ClaudeBot', 'Claude-User', 'PerplexityBot', 'Google-Extended', 'Applebot-Extended', 'meta-externalagent', 'meta-webindexer', 'Bytespider', 'CCBot', 'Amazonbot', 'DuckAssistBot', 'Googlebot', 'GoogleOther', 'AdsBot-Google', 'Google-Read-Aloud', 'bingbot', 'YandexBot', 'Baiduspider', 'DuckDuckBot', 'Applebot', 'Sogou', 'SeznamBot', 'AhrefsSiteAudit', 'AhrefsBot', 'SemrushBot', 'DataForSeoBot', 'DotBot', 'MJ12bot', 'Barkrowler', 'Screaming Frog', 'facebookexternalhit', 'Twitterbot', 'LinkedInBot', 'Slackbot', 'Discordbot', 'TelegramBot', 'Pinterest', 'HubSpot Crawler', 'Stripebot', 'UptimeRobot', 'Pingdom', 'StatusCake', 'Headless', 'bot/', 'bot\x3B', 'bot)', 'crawler', 'spider', '+http']), 'bot', (coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 5000 AND argMax(ClickCount, Version) = 0), 'bounce', ((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) = 0) AND argMax(ErrorCount, Version) = 0), 'idle', (((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) <= 2) AND argMax(ErrorCount, Version) = 0) AND coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 30000), 'glance', 'engaged') AS quality,
+          if(argMax(UserId, Version) != '', 1, 0) AS signedIn,
+          argMax(VisitorIsNew, Version) AS newVisitor
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+        GROUP BY sessionId) AS t
+        WHERE quality = 'engaged')
+          AND ErrorCount > 0
+FORMAT JSON
+
+-- builder:session-replays:sessionReplaysFacetsQuery:unknown-environment-scoped  [9d8755df]
 SELECT
           ServiceName AS name,
           uniq(SessionId) AS count,
@@ -3928,6 +5850,44 @@ SELECT
         LIMIT 50
 UNION ALL
 SELECT
+          PagePath AS name,
+          uniq(SessionId) AS count,
+          'page' AS facetType
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Kind = 'navigation'
+          AND PagePath != ''
+          AND SessionId IN (SELECT
+          SessionId AS SessionId
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'unknown')
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 200
+UNION ALL
+SELECT
+          arrayJoin(arrayFilter(tag -> tag != '', [quality, if(signedIn = 1, 'signed_in', ''), if(newVisitor = 1, 'new_visitor', '')])) AS name,
+          count() AS count,
+          'tag' AS facetType
+        FROM (SELECT
+          SessionId AS sessionId,
+          multiIf(multiSearchAnyCaseInsensitive(argMax(UserAgent, Version), ['GPTBot', 'OAI-SearchBot', 'ChatGPT-User', 'ClaudeBot', 'Claude-User', 'PerplexityBot', 'Google-Extended', 'Applebot-Extended', 'meta-externalagent', 'meta-webindexer', 'Bytespider', 'CCBot', 'Amazonbot', 'DuckAssistBot', 'Googlebot', 'GoogleOther', 'AdsBot-Google', 'Google-Read-Aloud', 'bingbot', 'YandexBot', 'Baiduspider', 'DuckDuckBot', 'Applebot', 'Sogou', 'SeznamBot', 'AhrefsSiteAudit', 'AhrefsBot', 'SemrushBot', 'DataForSeoBot', 'DotBot', 'MJ12bot', 'Barkrowler', 'Screaming Frog', 'facebookexternalhit', 'Twitterbot', 'LinkedInBot', 'Slackbot', 'Discordbot', 'TelegramBot', 'Pinterest', 'HubSpot Crawler', 'Stripebot', 'UptimeRobot', 'Pingdom', 'StatusCake', 'Headless', 'bot/', 'bot\x3B', 'bot)', 'crawler', 'spider', '+http']), 'bot', (coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 5000 AND argMax(ClickCount, Version) = 0), 'bounce', ((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) = 0) AND argMax(ErrorCount, Version) = 0), 'idle', (((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) <= 2) AND argMax(ErrorCount, Version) = 0) AND coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 30000), 'glance', 'engaged') AS quality,
+          if(argMax(UserId, Version) != '', 1, 0) AS signedIn,
+          argMax(VisitorIsNew, Version) AS newVisitor
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'unknown'
+        GROUP BY sessionId) AS t
+        GROUP BY name
+UNION ALL
+SELECT
           toString(toUInt64(round(pow(2, floor(log2(greatest(DurationMs, 1000) / 1000) * 2) / 2) * 1000))) AS name,
           uniq(SessionId) AS count,
           'durationBucket' AS facetType
@@ -3942,7 +5902,7 @@ SELECT
 UNION ALL
 SELECT
           'p50' AS name,
-          toUInt64(ifNotFinite(round(quantile(0.5)(assumeNotNull(DurationMs))), 0)) AS count,
+          toUInt64(ifNull(ifNotFinite(round(quantile(0.5)(assumeNotNull(DurationMs))), 0), 0)) AS count,
           'durationStat' AS facetType
         FROM session_replays
         WHERE OrgId = 'org_sql_catalog'
@@ -3953,7 +5913,7 @@ SELECT
 UNION ALL
 SELECT
           'p95' AS name,
-          toUInt64(ifNotFinite(round(quantile(0.95)(assumeNotNull(DurationMs))), 0)) AS count,
+          toUInt64(ifNull(ifNotFinite(round(quantile(0.95)(assumeNotNull(DurationMs))), 0), 0)) AS count,
           'durationStat' AS facetType
         FROM session_replays
         WHERE OrgId = 'org_sql_catalog'
@@ -3961,6 +5921,26 @@ SELECT
           AND StartTime <= '2026-01-03 14:15:00'
           AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'unknown'
           AND DurationMs > 0
+UNION ALL
+SELECT
+          'total' AS name,
+          uniq(SessionId) AS count,
+          'total' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'unknown'
+UNION ALL
+SELECT
+          'live' AS name,
+          uniqIf(SessionId, (Status = 'active' AND coalesce(LastActivityAt, StartTime) >= toDateTime('2026-01-03 14:15:00') - INTERVAL 300 SECOND)) AS count,
+          'live' AS facetType
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'unknown'
 UNION ALL
 SELECT
           'error' AS name,
@@ -3974,13 +5954,14 @@ SELECT
           AND ErrorCount > 0
 FORMAT JSON
 
--- builder:session-replays:sessionReplaysListQuery:default  [291656ac]
+-- builder:session-replays:sessionReplaysListQuery:default  [69a2ce1d]
 SELECT
           SessionId AS sessionId,
           argMax(StartTime, Version) AS startTime,
           argMax(EndTime, Version) AS endTime,
           argMax(DurationMs, Version) AS durationMs,
           argMax(Status, Version) AS status,
+          argMax(LastActivityAt, Version) AS lastActivityAt,
           argMax(UserId, Version) AS userId,
           argMax(UserName, Version) AS userName,
           argMax(UserEmail, Version) AS userEmail,
@@ -3999,7 +5980,9 @@ SELECT
           argMax(ClickCount, Version) AS clickCount,
           argMax(ErrorCount, Version) AS errorCount,
           length(argMax(TraceIds, Version)) AS traceCount,
-          argMax(ResourceAttributes['maple.session.recorded'], Version) AS recorded
+          argMax(ResourceAttributes['maple.session.recorded'], Version) AS recorded,
+          multiIf(multiSearchAnyCaseInsensitive(argMax(UserAgent, Version), ['GPTBot', 'OAI-SearchBot', 'ChatGPT-User', 'ClaudeBot', 'Claude-User', 'PerplexityBot', 'Google-Extended', 'Applebot-Extended', 'meta-externalagent', 'meta-webindexer', 'Bytespider', 'CCBot', 'Amazonbot', 'DuckAssistBot', 'Googlebot', 'GoogleOther', 'AdsBot-Google', 'Google-Read-Aloud', 'bingbot', 'YandexBot', 'Baiduspider', 'DuckDuckBot', 'Applebot', 'Sogou', 'SeznamBot', 'AhrefsSiteAudit', 'AhrefsBot', 'SemrushBot', 'DataForSeoBot', 'DotBot', 'MJ12bot', 'Barkrowler', 'Screaming Frog', 'facebookexternalhit', 'Twitterbot', 'LinkedInBot', 'Slackbot', 'Discordbot', 'TelegramBot', 'Pinterest', 'HubSpot Crawler', 'Stripebot', 'UptimeRobot', 'Pingdom', 'StatusCake', 'Headless', 'bot/', 'bot\x3B', 'bot)', 'crawler', 'spider', '+http']), 'bot', (coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 5000 AND argMax(ClickCount, Version) = 0), 'bounce', ((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) = 0) AND argMax(ErrorCount, Version) = 0), 'idle', (((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) <= 2) AND argMax(ErrorCount, Version) = 0) AND coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 30000), 'glance', 'engaged') AS quality,
+          argMax(VisitorIsNew, Version) AS visitorIsNew
         FROM session_replays
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
@@ -4010,13 +5993,14 @@ SELECT
         OFFSET 0
         FORMAT JSON
 
--- builder:session-replays:sessionReplaysListQuery:environment-scoped  [e9af3782]
+-- builder:session-replays:sessionReplaysListQuery:environment-scoped  [1d613c63]
 SELECT
           SessionId AS sessionId,
           argMax(StartTime, Version) AS startTime,
           argMax(EndTime, Version) AS endTime,
           argMax(DurationMs, Version) AS durationMs,
           argMax(Status, Version) AS status,
+          argMax(LastActivityAt, Version) AS lastActivityAt,
           argMax(UserId, Version) AS userId,
           argMax(UserName, Version) AS userName,
           argMax(UserEmail, Version) AS userEmail,
@@ -4035,7 +6019,9 @@ SELECT
           argMax(ClickCount, Version) AS clickCount,
           argMax(ErrorCount, Version) AS errorCount,
           length(argMax(TraceIds, Version)) AS traceCount,
-          argMax(ResourceAttributes['maple.session.recorded'], Version) AS recorded
+          argMax(ResourceAttributes['maple.session.recorded'], Version) AS recorded,
+          multiIf(multiSearchAnyCaseInsensitive(argMax(UserAgent, Version), ['GPTBot', 'OAI-SearchBot', 'ChatGPT-User', 'ClaudeBot', 'Claude-User', 'PerplexityBot', 'Google-Extended', 'Applebot-Extended', 'meta-externalagent', 'meta-webindexer', 'Bytespider', 'CCBot', 'Amazonbot', 'DuckAssistBot', 'Googlebot', 'GoogleOther', 'AdsBot-Google', 'Google-Read-Aloud', 'bingbot', 'YandexBot', 'Baiduspider', 'DuckDuckBot', 'Applebot', 'Sogou', 'SeznamBot', 'AhrefsSiteAudit', 'AhrefsBot', 'SemrushBot', 'DataForSeoBot', 'DotBot', 'MJ12bot', 'Barkrowler', 'Screaming Frog', 'facebookexternalhit', 'Twitterbot', 'LinkedInBot', 'Slackbot', 'Discordbot', 'TelegramBot', 'Pinterest', 'HubSpot Crawler', 'Stripebot', 'UptimeRobot', 'Pingdom', 'StatusCake', 'Headless', 'bot/', 'bot\x3B', 'bot)', 'crawler', 'spider', '+http']), 'bot', (coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 5000 AND argMax(ClickCount, Version) = 0), 'bounce', ((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) = 0) AND argMax(ErrorCount, Version) = 0), 'idle', (((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) <= 2) AND argMax(ErrorCount, Version) = 0) AND coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 30000), 'glance', 'engaged') AS quality,
+          argMax(VisitorIsNew, Version) AS visitorIsNew
         FROM session_replays
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
@@ -4047,13 +6033,14 @@ SELECT
         OFFSET 0
         FORMAT JSON
 
--- builder:session-replays:sessionReplaysListQuery:filtered  [42983806]
+-- builder:session-replays:sessionReplaysListQuery:filtered  [78196418]
 SELECT
           s.sessionId AS sessionId,
           s.startTime AS startTime,
           s.endTime AS endTime,
           s.durationMs AS durationMs,
           s.status AS status,
+          s.lastActivityAt AS lastActivityAt,
           s.userId AS userId,
           s.userName AS userName,
           s.userEmail AS userEmail,
@@ -4072,13 +6059,16 @@ SELECT
           s.clickCount AS clickCount,
           s.errorCount AS errorCount,
           s.traceCount AS traceCount,
-          s.recorded AS recorded
+          s.recorded AS recorded,
+          s.quality AS quality,
+          s.visitorIsNew AS visitorIsNew
         FROM (SELECT
           SessionId AS sessionId,
           argMax(StartTime, Version) AS startTime,
           argMax(EndTime, Version) AS endTime,
           argMax(DurationMs, Version) AS durationMs,
           argMax(Status, Version) AS status,
+          argMax(LastActivityAt, Version) AS lastActivityAt,
           argMax(UserId, Version) AS userId,
           argMax(UserName, Version) AS userName,
           argMax(UserEmail, Version) AS userEmail,
@@ -4097,7 +6087,9 @@ SELECT
           argMax(ClickCount, Version) AS clickCount,
           argMax(ErrorCount, Version) AS errorCount,
           length(argMax(TraceIds, Version)) AS traceCount,
-          argMax(ResourceAttributes['maple.session.recorded'], Version) AS recorded
+          argMax(ResourceAttributes['maple.session.recorded'], Version) AS recorded,
+          multiIf(multiSearchAnyCaseInsensitive(argMax(UserAgent, Version), ['GPTBot', 'OAI-SearchBot', 'ChatGPT-User', 'ClaudeBot', 'Claude-User', 'PerplexityBot', 'Google-Extended', 'Applebot-Extended', 'meta-externalagent', 'meta-webindexer', 'Bytespider', 'CCBot', 'Amazonbot', 'DuckAssistBot', 'Googlebot', 'GoogleOther', 'AdsBot-Google', 'Google-Read-Aloud', 'bingbot', 'YandexBot', 'Baiduspider', 'DuckDuckBot', 'Applebot', 'Sogou', 'SeznamBot', 'AhrefsSiteAudit', 'AhrefsBot', 'SemrushBot', 'DataForSeoBot', 'DotBot', 'MJ12bot', 'Barkrowler', 'Screaming Frog', 'facebookexternalhit', 'Twitterbot', 'LinkedInBot', 'Slackbot', 'Discordbot', 'TelegramBot', 'Pinterest', 'HubSpot Crawler', 'Stripebot', 'UptimeRobot', 'Pingdom', 'StatusCake', 'Headless', 'bot/', 'bot\x3B', 'bot)', 'crawler', 'spider', '+http']), 'bot', (coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 5000 AND argMax(ClickCount, Version) = 0), 'bounce', ((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) = 0) AND argMax(ErrorCount, Version) = 0), 'idle', (((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) <= 2) AND argMax(ErrorCount, Version) = 0) AND coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 30000), 'glance', 'engaged') AS quality,
+          argMax(VisitorIsNew, Version) AS visitorIsNew
         FROM session_replays
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
@@ -4128,13 +6120,14 @@ SELECT
         OFFSET 0
         FORMAT JSON
 
--- builder:session-replays:sessionReplaysListQuery:unknown-environment-scoped  [e9af3782]
+-- builder:session-replays:sessionReplaysListQuery:page-visited  [fafb2e94]
 SELECT
           SessionId AS sessionId,
           argMax(StartTime, Version) AS startTime,
           argMax(EndTime, Version) AS endTime,
           argMax(DurationMs, Version) AS durationMs,
           argMax(Status, Version) AS status,
+          argMax(LastActivityAt, Version) AS lastActivityAt,
           argMax(UserId, Version) AS userId,
           argMax(UserName, Version) AS userName,
           argMax(UserEmail, Version) AS userEmail,
@@ -4153,7 +6146,109 @@ SELECT
           argMax(ClickCount, Version) AS clickCount,
           argMax(ErrorCount, Version) AS errorCount,
           length(argMax(TraceIds, Version)) AS traceCount,
-          argMax(ResourceAttributes['maple.session.recorded'], Version) AS recorded
+          argMax(ResourceAttributes['maple.session.recorded'], Version) AS recorded,
+          multiIf(multiSearchAnyCaseInsensitive(argMax(UserAgent, Version), ['GPTBot', 'OAI-SearchBot', 'ChatGPT-User', 'ClaudeBot', 'Claude-User', 'PerplexityBot', 'Google-Extended', 'Applebot-Extended', 'meta-externalagent', 'meta-webindexer', 'Bytespider', 'CCBot', 'Amazonbot', 'DuckAssistBot', 'Googlebot', 'GoogleOther', 'AdsBot-Google', 'Google-Read-Aloud', 'bingbot', 'YandexBot', 'Baiduspider', 'DuckDuckBot', 'Applebot', 'Sogou', 'SeznamBot', 'AhrefsSiteAudit', 'AhrefsBot', 'SemrushBot', 'DataForSeoBot', 'DotBot', 'MJ12bot', 'Barkrowler', 'Screaming Frog', 'facebookexternalhit', 'Twitterbot', 'LinkedInBot', 'Slackbot', 'Discordbot', 'TelegramBot', 'Pinterest', 'HubSpot Crawler', 'Stripebot', 'UptimeRobot', 'Pingdom', 'StatusCake', 'Headless', 'bot/', 'bot\x3B', 'bot)', 'crawler', 'spider', '+http']), 'bot', (coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 5000 AND argMax(ClickCount, Version) = 0), 'bounce', ((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) = 0) AND argMax(ErrorCount, Version) = 0), 'idle', (((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) <= 2) AND argMax(ErrorCount, Version) = 0) AND coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 30000), 'glance', 'engaged') AS quality,
+          argMax(VisitorIsNew, Version) AS visitorIsNew
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND SessionId IN (SELECT
+          SessionId AS SessionId
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Kind = 'navigation'
+          AND PagePath = '/pricing')
+        GROUP BY sessionId
+        ORDER BY startTime DESC, sessionId DESC
+        LIMIT 50
+        OFFSET 0
+        FORMAT JSON
+
+-- builder:session-replays:sessionReplaysListQuery:tagged  [6f91e3ed]
+SELECT
+          SessionId AS sessionId,
+          argMax(StartTime, Version) AS startTime,
+          argMax(EndTime, Version) AS endTime,
+          argMax(DurationMs, Version) AS durationMs,
+          argMax(Status, Version) AS status,
+          argMax(LastActivityAt, Version) AS lastActivityAt,
+          argMax(UserId, Version) AS userId,
+          argMax(UserName, Version) AS userName,
+          argMax(UserEmail, Version) AS userEmail,
+          argMax(GroupId, Version) AS groupId,
+          argMax(GroupName, Version) AS groupName,
+          argMax(VisitorId, Version) AS visitorId,
+          argMax(UtmSource, Version) AS utmSource,
+          argMax(EntryPath, Version) AS entryPath,
+          argMax(UrlInitial, Version) AS urlInitial,
+          argMax(BrowserName, Version) AS browserName,
+          argMax(OsName, Version) AS osName,
+          argMax(DeviceType, Version) AS deviceType,
+          argMax(Country, Version) AS country,
+          argMax(ServiceName, Version) AS serviceName,
+          argMax(PageViews, Version) AS pageViews,
+          argMax(ClickCount, Version) AS clickCount,
+          argMax(ErrorCount, Version) AS errorCount,
+          length(argMax(TraceIds, Version)) AS traceCount,
+          argMax(ResourceAttributes['maple.session.recorded'], Version) AS recorded,
+          multiIf(multiSearchAnyCaseInsensitive(argMax(UserAgent, Version), ['GPTBot', 'OAI-SearchBot', 'ChatGPT-User', 'ClaudeBot', 'Claude-User', 'PerplexityBot', 'Google-Extended', 'Applebot-Extended', 'meta-externalagent', 'meta-webindexer', 'Bytespider', 'CCBot', 'Amazonbot', 'DuckAssistBot', 'Googlebot', 'GoogleOther', 'AdsBot-Google', 'Google-Read-Aloud', 'bingbot', 'YandexBot', 'Baiduspider', 'DuckDuckBot', 'Applebot', 'Sogou', 'SeznamBot', 'AhrefsSiteAudit', 'AhrefsBot', 'SemrushBot', 'DataForSeoBot', 'DotBot', 'MJ12bot', 'Barkrowler', 'Screaming Frog', 'facebookexternalhit', 'Twitterbot', 'LinkedInBot', 'Slackbot', 'Discordbot', 'TelegramBot', 'Pinterest', 'HubSpot Crawler', 'Stripebot', 'UptimeRobot', 'Pingdom', 'StatusCake', 'Headless', 'bot/', 'bot\x3B', 'bot)', 'crawler', 'spider', '+http']), 'bot', (coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 5000 AND argMax(ClickCount, Version) = 0), 'bounce', ((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) = 0) AND argMax(ErrorCount, Version) = 0), 'idle', (((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) <= 2) AND argMax(ErrorCount, Version) = 0) AND coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 30000), 'glance', 'engaged') AS quality,
+          argMax(VisitorIsNew, Version) AS visitorIsNew
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND SessionId IN (SELECT
+          sessionId AS SessionId
+        FROM (SELECT
+          SessionId AS sessionId,
+          multiIf(multiSearchAnyCaseInsensitive(argMax(UserAgent, Version), ['GPTBot', 'OAI-SearchBot', 'ChatGPT-User', 'ClaudeBot', 'Claude-User', 'PerplexityBot', 'Google-Extended', 'Applebot-Extended', 'meta-externalagent', 'meta-webindexer', 'Bytespider', 'CCBot', 'Amazonbot', 'DuckAssistBot', 'Googlebot', 'GoogleOther', 'AdsBot-Google', 'Google-Read-Aloud', 'bingbot', 'YandexBot', 'Baiduspider', 'DuckDuckBot', 'Applebot', 'Sogou', 'SeznamBot', 'AhrefsSiteAudit', 'AhrefsBot', 'SemrushBot', 'DataForSeoBot', 'DotBot', 'MJ12bot', 'Barkrowler', 'Screaming Frog', 'facebookexternalhit', 'Twitterbot', 'LinkedInBot', 'Slackbot', 'Discordbot', 'TelegramBot', 'Pinterest', 'HubSpot Crawler', 'Stripebot', 'UptimeRobot', 'Pingdom', 'StatusCake', 'Headless', 'bot/', 'bot\x3B', 'bot)', 'crawler', 'spider', '+http']), 'bot', (coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 5000 AND argMax(ClickCount, Version) = 0), 'bounce', ((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) = 0) AND argMax(ErrorCount, Version) = 0), 'idle', (((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) <= 2) AND argMax(ErrorCount, Version) = 0) AND coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 30000), 'glance', 'engaged') AS quality,
+          if(argMax(UserId, Version) != '', 1, 0) AS signedIn,
+          argMax(VisitorIsNew, Version) AS newVisitor
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+        GROUP BY sessionId) AS t
+        WHERE quality = 'engaged'
+          AND signedIn = 1)
+        GROUP BY sessionId
+        ORDER BY startTime DESC, sessionId DESC
+        LIMIT 50
+        OFFSET 0
+        FORMAT JSON
+
+-- builder:session-replays:sessionReplaysListQuery:unknown-environment-scoped  [1d613c63]
+SELECT
+          SessionId AS sessionId,
+          argMax(StartTime, Version) AS startTime,
+          argMax(EndTime, Version) AS endTime,
+          argMax(DurationMs, Version) AS durationMs,
+          argMax(Status, Version) AS status,
+          argMax(LastActivityAt, Version) AS lastActivityAt,
+          argMax(UserId, Version) AS userId,
+          argMax(UserName, Version) AS userName,
+          argMax(UserEmail, Version) AS userEmail,
+          argMax(GroupId, Version) AS groupId,
+          argMax(GroupName, Version) AS groupName,
+          argMax(VisitorId, Version) AS visitorId,
+          argMax(UtmSource, Version) AS utmSource,
+          argMax(EntryPath, Version) AS entryPath,
+          argMax(UrlInitial, Version) AS urlInitial,
+          argMax(BrowserName, Version) AS browserName,
+          argMax(OsName, Version) AS osName,
+          argMax(DeviceType, Version) AS deviceType,
+          argMax(Country, Version) AS country,
+          argMax(ServiceName, Version) AS serviceName,
+          argMax(PageViews, Version) AS pageViews,
+          argMax(ClickCount, Version) AS clickCount,
+          argMax(ErrorCount, Version) AS errorCount,
+          length(argMax(TraceIds, Version)) AS traceCount,
+          argMax(ResourceAttributes['maple.session.recorded'], Version) AS recorded,
+          multiIf(multiSearchAnyCaseInsensitive(argMax(UserAgent, Version), ['GPTBot', 'OAI-SearchBot', 'ChatGPT-User', 'ClaudeBot', 'Claude-User', 'PerplexityBot', 'Google-Extended', 'Applebot-Extended', 'meta-externalagent', 'meta-webindexer', 'Bytespider', 'CCBot', 'Amazonbot', 'DuckAssistBot', 'Googlebot', 'GoogleOther', 'AdsBot-Google', 'Google-Read-Aloud', 'bingbot', 'YandexBot', 'Baiduspider', 'DuckDuckBot', 'Applebot', 'Sogou', 'SeznamBot', 'AhrefsSiteAudit', 'AhrefsBot', 'SemrushBot', 'DataForSeoBot', 'DotBot', 'MJ12bot', 'Barkrowler', 'Screaming Frog', 'facebookexternalhit', 'Twitterbot', 'LinkedInBot', 'Slackbot', 'Discordbot', 'TelegramBot', 'Pinterest', 'HubSpot Crawler', 'Stripebot', 'UptimeRobot', 'Pingdom', 'StatusCake', 'Headless', 'bot/', 'bot\x3B', 'bot)', 'crawler', 'spider', '+http']), 'bot', (coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 5000 AND argMax(ClickCount, Version) = 0), 'bounce', ((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) = 0) AND argMax(ErrorCount, Version) = 0), 'idle', (((argMax(PageViews, Version) <= 1 AND argMax(ClickCount, Version) <= 2) AND argMax(ErrorCount, Version) = 0) AND coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 30000), 'glance', 'engaged') AS quality,
+          argMax(VisitorIsNew, Version) AS visitorIsNew
         FROM session_replays
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
@@ -4304,6 +6399,61 @@ SELECT
         LIMIT 200
         FORMAT JSON
 
+-- builder:signal-presence:signalPresenceQuery:default  [1e5ac049]
+SELECT
+          'traces' AS signal,
+          sum(TraceCount) AS count,
+          toString(min(Hour)) AS firstSeen,
+          toString(max(Hour)) AS lastSeen
+        FROM service_usage
+        WHERE OrgId = 'org_sql_catalog'
+          AND Hour >= toStartOfHour(toDateTime('2026-01-01 10:30:00'))
+          AND Hour <= toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+          AND TraceCount > 0
+UNION ALL
+SELECT
+          'logs' AS signal,
+          sum(LogCount) AS count,
+          toString(min(Hour)) AS firstSeen,
+          toString(max(Hour)) AS lastSeen
+        FROM service_usage
+        WHERE OrgId = 'org_sql_catalog'
+          AND Hour >= toStartOfHour(toDateTime('2026-01-01 10:30:00'))
+          AND Hour <= toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+          AND LogCount > 0
+UNION ALL
+SELECT
+          'metrics' AS signal,
+          sum(SumMetricCount) + sum(GaugeMetricCount) + sum(HistogramMetricCount) + sum(ExpHistogramMetricCount) AS count,
+          toString(min(Hour)) AS firstSeen,
+          toString(max(Hour)) AS lastSeen
+        FROM service_usage
+        WHERE OrgId = 'org_sql_catalog'
+          AND Hour >= toStartOfHour(toDateTime('2026-01-01 10:30:00'))
+          AND Hour <= toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+          AND SumMetricCount + GaugeMetricCount + HistogramMetricCount + ExpHistogramMetricCount > 0
+UNION ALL
+SELECT
+          'sessions' AS signal,
+          count() AS count,
+          toString(min(StartTime)) AS firstSeen,
+          toString(max(StartTime)) AS lastSeen
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+UNION ALL
+SELECT
+          'product_events' AS signal,
+          count() AS count,
+          toString(min(Timestamp)) AS firstSeen,
+          toString(max(Timestamp)) AS lastSeen
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+FORMAT JSON
+
 -- builder:traces:resourceNamespacesQuery:default  [1ea89a80]
 SELECT
           ResourceAttributes['service.namespace'] AS namespace,
@@ -4318,10 +6468,11 @@ SELECT
         LIMIT 100
         FORMAT JSON
 
--- builder:traces:traceListQuery:default  [b47ce2af]
+-- builder:traces:traceListQuery:default  [799f01c8]
 SELECT
           TraceId AS traceId,
           argMin(Timestamp, (if(ParentSpanId = '', 0, 1), Timestamp)) AS startTime,
+          toDateTime(argMin(Timestamp, (if(ParentSpanId = '', 0, 1), Timestamp))) AS startSecond,
           fromUnixTimestamp64Nano(max(toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS endTime,
           intDiv(max(toUnixTimestamp64Nano(Timestamp) + toInt64(Duration)) - min(toUnixTimestamp64Nano(Timestamp)), 1000) AS durationMicros,
           intDiv(argMin(Duration, (if(ParentSpanId = '', 0, 1), Timestamp)), 1000) AS rootDurationMicros,
@@ -4330,9 +6481,9 @@ SELECT
           argMin(SpanName, (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanName,
           argMin(SpanKind, (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanKind,
           argMin(StatusCode, (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanStatusCode,
-          argMin(SpanAttributes['http.method'], (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpMethod,
+          argMin(if(SpanAttributes['http.method'] != '', SpanAttributes['http.method'], SpanAttributes['http.request.method']), (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpMethod,
           argMin(SpanAttributes['http.route'], (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpRoute,
-          argMin(SpanAttributes['http.status_code'], (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpStatusCode,
+          argMin(if(SpanAttributes['http.status_code'] != '', SpanAttributes['http.status_code'], SpanAttributes['http.response.status_code']), (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpStatusCode,
           argMin(toJSONString(map('http.method', SpanAttributes['http.method'], 'http.request.method', SpanAttributes['http.request.method'], 'http.route', SpanAttributes['http.route'], 'http.target', SpanAttributes['http.target'], 'http.status_code', SpanAttributes['http.status_code'], 'http.response.status_code', SpanAttributes['http.response.status_code'], 'http.url', SpanAttributes['http.url'], 'url.full', SpanAttributes['url.full'], 'url.path', SpanAttributes['url.path'], 'server.address', SpanAttributes['server.address'], 'net.peer.name', SpanAttributes['net.peer.name'], 'screen.name', SpanAttributes['screen.name'])), (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanAttributes,
           if(argMin(StatusCode, (if(ParentSpanId = '', 0, 1), Timestamp)) = 'Error', 1, 0) AS hasError
         FROM trace_detail_spans
@@ -4350,14 +6501,15 @@ SELECT
         ORDER BY ts DESC, traceId DESC
         LIMIT 25))
         GROUP BY traceId
-        ORDER BY startTime DESC, traceId DESC
+        ORDER BY startSecond DESC, traceId DESC
         LIMIT 25
         FORMAT JSON
 
--- builder:traces:traceListQuery:healthExcluded  [42d9f920]
+-- builder:traces:traceListQuery:healthExcluded  [93fc3c3b]
 SELECT
           TraceId AS traceId,
           argMin(Timestamp, (if(ParentSpanId = '', 0, 1), Timestamp)) AS startTime,
+          toDateTime(argMin(Timestamp, (if(ParentSpanId = '', 0, 1), Timestamp))) AS startSecond,
           fromUnixTimestamp64Nano(max(toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS endTime,
           intDiv(max(toUnixTimestamp64Nano(Timestamp) + toInt64(Duration)) - min(toUnixTimestamp64Nano(Timestamp)), 1000) AS durationMicros,
           intDiv(argMin(Duration, (if(ParentSpanId = '', 0, 1), Timestamp)), 1000) AS rootDurationMicros,
@@ -4366,9 +6518,9 @@ SELECT
           argMin(SpanName, (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanName,
           argMin(SpanKind, (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanKind,
           argMin(StatusCode, (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanStatusCode,
-          argMin(SpanAttributes['http.method'], (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpMethod,
+          argMin(if(SpanAttributes['http.method'] != '', SpanAttributes['http.method'], SpanAttributes['http.request.method']), (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpMethod,
           argMin(SpanAttributes['http.route'], (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpRoute,
-          argMin(SpanAttributes['http.status_code'], (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpStatusCode,
+          argMin(if(SpanAttributes['http.status_code'] != '', SpanAttributes['http.status_code'], SpanAttributes['http.response.status_code']), (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpStatusCode,
           argMin(toJSONString(map('http.method', SpanAttributes['http.method'], 'http.request.method', SpanAttributes['http.request.method'], 'http.route', SpanAttributes['http.route'], 'http.target', SpanAttributes['http.target'], 'http.status_code', SpanAttributes['http.status_code'], 'http.response.status_code', SpanAttributes['http.response.status_code'], 'http.url', SpanAttributes['http.url'], 'url.full', SpanAttributes['url.full'], 'url.path', SpanAttributes['url.path'], 'server.address', SpanAttributes['server.address'], 'net.peer.name', SpanAttributes['net.peer.name'], 'screen.name', SpanAttributes['screen.name'])), (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanAttributes,
           if(argMin(StatusCode, (if(ParentSpanId = '', 0, 1), Timestamp)) = 'Error', 1, 0) AS hasError
         FROM trace_detail_spans
@@ -4387,7 +6539,7 @@ SELECT
         ORDER BY ts DESC, traceId DESC
         LIMIT 25))
         GROUP BY traceId
-        ORDER BY startTime DESC, traceId DESC
+        ORDER BY startSecond DESC, traceId DESC
         LIMIT 25
         FORMAT JSON
 
@@ -4402,6 +6554,184 @@ SELECT
           AND Timestamp <= '2026-01-03 14:15:00'
         GROUP BY traceId
         LIMIT 2
+        FORMAT JSON
+
+-- builder:traces:traceSpanStatsByTraceIdsQuery:page-enrichment  [e366055a]
+SELECT
+          TraceId AS traceId,
+          count() AS spanCount,
+          arrayDistinct(arrayPushFront(arraySort(groupUniqArray(ServiceName)), argMin(ServiceName, (if(ParentSpanId = '', 0, 1), Timestamp)))) AS services
+        FROM trace_detail_spans
+        WHERE OrgId = 'org_sql_catalog'
+          AND TraceId IN ('0af7651916cd43dd8448eb211c80319c', '4bf92f3577b34da6a3ce929d0e0e4736')
+          AND Timestamp >= subtractHours(toDateTime('2026-01-01 10:30:00'), 1)
+          AND Timestamp <= addHours(toDateTime('2026-01-03 14:15:00'), 1)
+        GROUP BY traceId
+        LIMIT 2
+        FORMAT JSON
+
+-- builder:web-analytics-ai:webAnalyticsAiCrawledPagesQuery:default  [938997b6]
+SELECT
+          Host AS host,
+          Path AS path,
+          uniq(TraceId) AS requests,
+          arraySort(groupUniqArray(Crawler)) AS crawlers,
+          max(Timestamp) AS lastSeen
+        FROM ai_crawler_requests
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND HttpStatus < 400
+        GROUP BY host, path
+        ORDER BY requests DESC
+        LIMIT 50
+        FORMAT JSON
+
+-- builder:web-analytics-ai:webAnalyticsAiCrawlerFormatsQuery:url-filtered  [d4b89adc]
+SELECT
+          multiIf(match(lower(Path), '\\.(md|mdx|markdown)$'), 'markdown', match(lower(Path), '(^|/)llms(-full)?\\.txt$'), 'llms', match(lower(Path), '(/[^/.]*|\\.html?)$'), 'html', 'other') AS format,
+          uniq(TraceId) AS requests,
+          uniqIf(TraceId, NOT (HttpStatus < 400)) AS failedRequests,
+          uniqIf(concat(Host, Path), HttpStatus < 400) AS pages,
+          arraySort(groupUniqArray(Crawler)) AS crawlers
+        FROM ai_crawler_requests
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Host = 'maple.dev'
+          AND Path = '/pricing'
+        GROUP BY format
+        FORMAT JSON
+
+-- builder:web-analytics-ai:webAnalyticsAiCrawlersQuery:default  [7b2521a3]
+SELECT
+          Crawler AS crawler,
+          uniq(TraceId) AS requests,
+          uniqIf(TraceId, NOT (HttpStatus < 400)) AS failedRequests,
+          uniqIf(concat(Host, Path), HttpStatus < 400) AS pages,
+          max(Timestamp) AS lastSeen
+        FROM ai_crawler_requests
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+        GROUP BY crawler
+        ORDER BY requests DESC
+        FORMAT JSON
+
+-- builder:web-analytics-ai:webAnalyticsAiReferralsQuery:default  [cce5afb7]
+SELECT
+          toStartOfInterval(StartTime, INTERVAL 3600 SECOND) AS bucket,
+          if(transform(replaceRegexpOne(lower(ReferrerHost), '^www\\.', ''), ['chatgpt.com', 'chat.openai.com', 'com.openai.chatgpt', 'claude.ai', 'com.anthropic.claude', 'gemini.google.com', 'bard.google.com', 'perplexity.ai', 'ai.perplexity.app.android', 'copilot.microsoft.com', 'copilot.cloud.microsoft', 'm365.cloud.microsoft', 'meta.ai', 'doubao.com', 'chat.deepseek.com', 'deepseek.com', 'grok.com', 'chat.mistral.ai', 'kimi.com', 'kimi.moonshot.cn'], ['chatgpt', 'chatgpt', 'chatgpt', 'claude', 'claude', 'gemini', 'gemini', 'perplexity', 'perplexity', 'copilot', 'copilot', 'copilot', 'meta', 'doubao', 'deepseek', 'deepseek', 'grok', 'mistral', 'kimi', 'kimi'], '') != '', transform(replaceRegexpOne(lower(ReferrerHost), '^www\\.', ''), ['chatgpt.com', 'chat.openai.com', 'com.openai.chatgpt', 'claude.ai', 'com.anthropic.claude', 'gemini.google.com', 'bard.google.com', 'perplexity.ai', 'ai.perplexity.app.android', 'copilot.microsoft.com', 'copilot.cloud.microsoft', 'm365.cloud.microsoft', 'meta.ai', 'doubao.com', 'chat.deepseek.com', 'deepseek.com', 'grok.com', 'chat.mistral.ai', 'kimi.com', 'kimi.moonshot.cn'], ['chatgpt', 'chatgpt', 'chatgpt', 'claude', 'claude', 'gemini', 'gemini', 'perplexity', 'perplexity', 'copilot', 'copilot', 'copilot', 'meta', 'doubao', 'deepseek', 'deepseek', 'grok', 'mistral', 'kimi', 'kimi'], ''), transform(lower(UtmSource), ['chatgpt.com', 'chatgpt', 'chat.openai.com', 'openai', 'claude.ai', 'claude', 'gemini.google.com', 'gemini', 'perplexity.ai', 'perplexity', 'copilot.microsoft.com', 'copilot.com', 'copilot', 'meta.ai', 'doubao.com', 'doubao', 'deepseek.com', 'deepseek', 'grok.com', 'grok', 'chat.mistral.ai', 'mistral', 'kimi.com', 'kimi'], ['chatgpt', 'chatgpt', 'chatgpt', 'chatgpt', 'claude', 'claude', 'gemini', 'gemini', 'perplexity', 'perplexity', 'copilot', 'copilot', 'copilot', 'meta', 'doubao', 'doubao', 'deepseek', 'deepseek', 'grok', 'grok', 'mistral', 'mistral', 'kimi', 'kimi'], '')) AS product,
+          uniq(SessionId) AS sessions
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND (replaceRegexpOne(lower(ReferrerHost), '^www\\.', '') IN ('chatgpt.com', 'chat.openai.com', 'com.openai.chatgpt', 'claude.ai', 'com.anthropic.claude', 'gemini.google.com', 'bard.google.com', 'perplexity.ai', 'ai.perplexity.app.android', 'copilot.microsoft.com', 'copilot.cloud.microsoft', 'm365.cloud.microsoft', 'meta.ai', 'doubao.com', 'chat.deepseek.com', 'deepseek.com', 'grok.com', 'chat.mistral.ai', 'kimi.com', 'kimi.moonshot.cn') OR lower(UtmSource) IN ('chatgpt.com', 'chatgpt', 'chat.openai.com', 'openai', 'claude.ai', 'claude', 'gemini.google.com', 'gemini', 'perplexity.ai', 'perplexity', 'copilot.microsoft.com', 'copilot.com', 'copilot', 'meta.ai', 'doubao.com', 'doubao', 'deepseek.com', 'deepseek', 'grok.com', 'grok', 'chat.mistral.ai', 'mistral', 'kimi.com', 'kimi'))
+        GROUP BY bucket, product
+        ORDER BY bucket ASC
+        FORMAT JSON
+
+-- builder:web-analytics-ai:webAnalyticsAiReferralsQuery:default-rollup  [cce5afb7]
+SELECT
+          toStartOfInterval(StartTime, INTERVAL 3600 SECOND) AS bucket,
+          if(transform(replaceRegexpOne(lower(ReferrerHost), '^www\\.', ''), ['chatgpt.com', 'chat.openai.com', 'com.openai.chatgpt', 'claude.ai', 'com.anthropic.claude', 'gemini.google.com', 'bard.google.com', 'perplexity.ai', 'ai.perplexity.app.android', 'copilot.microsoft.com', 'copilot.cloud.microsoft', 'm365.cloud.microsoft', 'meta.ai', 'doubao.com', 'chat.deepseek.com', 'deepseek.com', 'grok.com', 'chat.mistral.ai', 'kimi.com', 'kimi.moonshot.cn'], ['chatgpt', 'chatgpt', 'chatgpt', 'claude', 'claude', 'gemini', 'gemini', 'perplexity', 'perplexity', 'copilot', 'copilot', 'copilot', 'meta', 'doubao', 'deepseek', 'deepseek', 'grok', 'mistral', 'kimi', 'kimi'], '') != '', transform(replaceRegexpOne(lower(ReferrerHost), '^www\\.', ''), ['chatgpt.com', 'chat.openai.com', 'com.openai.chatgpt', 'claude.ai', 'com.anthropic.claude', 'gemini.google.com', 'bard.google.com', 'perplexity.ai', 'ai.perplexity.app.android', 'copilot.microsoft.com', 'copilot.cloud.microsoft', 'm365.cloud.microsoft', 'meta.ai', 'doubao.com', 'chat.deepseek.com', 'deepseek.com', 'grok.com', 'chat.mistral.ai', 'kimi.com', 'kimi.moonshot.cn'], ['chatgpt', 'chatgpt', 'chatgpt', 'claude', 'claude', 'gemini', 'gemini', 'perplexity', 'perplexity', 'copilot', 'copilot', 'copilot', 'meta', 'doubao', 'deepseek', 'deepseek', 'grok', 'mistral', 'kimi', 'kimi'], ''), transform(lower(UtmSource), ['chatgpt.com', 'chatgpt', 'chat.openai.com', 'openai', 'claude.ai', 'claude', 'gemini.google.com', 'gemini', 'perplexity.ai', 'perplexity', 'copilot.microsoft.com', 'copilot.com', 'copilot', 'meta.ai', 'doubao.com', 'doubao', 'deepseek.com', 'deepseek', 'grok.com', 'grok', 'chat.mistral.ai', 'mistral', 'kimi.com', 'kimi'], ['chatgpt', 'chatgpt', 'chatgpt', 'chatgpt', 'claude', 'claude', 'gemini', 'gemini', 'perplexity', 'perplexity', 'copilot', 'copilot', 'copilot', 'meta', 'doubao', 'doubao', 'deepseek', 'deepseek', 'grok', 'grok', 'mistral', 'mistral', 'kimi', 'kimi'], '')) AS product,
+          uniq(SessionId) AS sessions
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND (replaceRegexpOne(lower(ReferrerHost), '^www\\.', '') IN ('chatgpt.com', 'chat.openai.com', 'com.openai.chatgpt', 'claude.ai', 'com.anthropic.claude', 'gemini.google.com', 'bard.google.com', 'perplexity.ai', 'ai.perplexity.app.android', 'copilot.microsoft.com', 'copilot.cloud.microsoft', 'm365.cloud.microsoft', 'meta.ai', 'doubao.com', 'chat.deepseek.com', 'deepseek.com', 'grok.com', 'chat.mistral.ai', 'kimi.com', 'kimi.moonshot.cn') OR lower(UtmSource) IN ('chatgpt.com', 'chatgpt', 'chat.openai.com', 'openai', 'claude.ai', 'claude', 'gemini.google.com', 'gemini', 'perplexity.ai', 'perplexity', 'copilot.microsoft.com', 'copilot.com', 'copilot', 'meta.ai', 'doubao.com', 'doubao', 'deepseek.com', 'deepseek', 'grok.com', 'grok', 'chat.mistral.ai', 'mistral', 'kimi.com', 'kimi'))
+        GROUP BY bucket, product
+        ORDER BY bucket ASC
+        FORMAT JSON
+
+-- builder:web-analytics-ai:webAnalyticsAiReferralsQuery:filtered  [d9ce2639]
+SELECT
+          toStartOfInterval(StartTime, INTERVAL 3600 SECOND) AS bucket,
+          if(transform(replaceRegexpOne(lower(ReferrerHost), '^www\\.', ''), ['chatgpt.com', 'chat.openai.com', 'com.openai.chatgpt', 'claude.ai', 'com.anthropic.claude', 'gemini.google.com', 'bard.google.com', 'perplexity.ai', 'ai.perplexity.app.android', 'copilot.microsoft.com', 'copilot.cloud.microsoft', 'm365.cloud.microsoft', 'meta.ai', 'doubao.com', 'chat.deepseek.com', 'deepseek.com', 'grok.com', 'chat.mistral.ai', 'kimi.com', 'kimi.moonshot.cn'], ['chatgpt', 'chatgpt', 'chatgpt', 'claude', 'claude', 'gemini', 'gemini', 'perplexity', 'perplexity', 'copilot', 'copilot', 'copilot', 'meta', 'doubao', 'deepseek', 'deepseek', 'grok', 'mistral', 'kimi', 'kimi'], '') != '', transform(replaceRegexpOne(lower(ReferrerHost), '^www\\.', ''), ['chatgpt.com', 'chat.openai.com', 'com.openai.chatgpt', 'claude.ai', 'com.anthropic.claude', 'gemini.google.com', 'bard.google.com', 'perplexity.ai', 'ai.perplexity.app.android', 'copilot.microsoft.com', 'copilot.cloud.microsoft', 'm365.cloud.microsoft', 'meta.ai', 'doubao.com', 'chat.deepseek.com', 'deepseek.com', 'grok.com', 'chat.mistral.ai', 'kimi.com', 'kimi.moonshot.cn'], ['chatgpt', 'chatgpt', 'chatgpt', 'claude', 'claude', 'gemini', 'gemini', 'perplexity', 'perplexity', 'copilot', 'copilot', 'copilot', 'meta', 'doubao', 'deepseek', 'deepseek', 'grok', 'mistral', 'kimi', 'kimi'], ''), transform(lower(UtmSource), ['chatgpt.com', 'chatgpt', 'chat.openai.com', 'openai', 'claude.ai', 'claude', 'gemini.google.com', 'gemini', 'perplexity.ai', 'perplexity', 'copilot.microsoft.com', 'copilot.com', 'copilot', 'meta.ai', 'doubao.com', 'doubao', 'deepseek.com', 'deepseek', 'grok.com', 'grok', 'chat.mistral.ai', 'mistral', 'kimi.com', 'kimi'], ['chatgpt', 'chatgpt', 'chatgpt', 'chatgpt', 'claude', 'claude', 'gemini', 'gemini', 'perplexity', 'perplexity', 'copilot', 'copilot', 'copilot', 'meta', 'doubao', 'doubao', 'deepseek', 'deepseek', 'grok', 'grok', 'mistral', 'mistral', 'kimi', 'kimi'], '')) AS product,
+          uniq(SessionId) AS sessions
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND SessionId IN (SELECT
+          SessionId AS sessionId
+        FROM session_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Type = 'navigation'
+          AND domain(Url) = 'maple.dev'
+          AND path(Url) = '/pricing'
+        GROUP BY sessionId)
+          AND ReferrerHost = 't.co'
+          AND Country = 'DE'
+          AND DeviceType = 'desktop'
+          AND BrowserName = 'Chrome'
+          AND OsName = 'macOS'
+          AND Language = 'en-US'
+          AND UtmSource = 'twitter'
+          AND UtmMedium = 'social'
+          AND UtmCampaign = 'launch'
+          AND VisitorIsNew = 1
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
+          AND SessionId IN (SELECT
+          SessionId AS sessionId
+        FROM session_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Type = 'custom'
+          AND Message = 'signup_started'
+        GROUP BY sessionId)
+          AND (replaceRegexpOne(lower(ReferrerHost), '^www\\.', '') IN ('chatgpt.com', 'chat.openai.com', 'com.openai.chatgpt', 'claude.ai', 'com.anthropic.claude', 'gemini.google.com', 'bard.google.com', 'perplexity.ai', 'ai.perplexity.app.android', 'copilot.microsoft.com', 'copilot.cloud.microsoft', 'm365.cloud.microsoft', 'meta.ai', 'doubao.com', 'chat.deepseek.com', 'deepseek.com', 'grok.com', 'chat.mistral.ai', 'kimi.com', 'kimi.moonshot.cn') OR lower(UtmSource) IN ('chatgpt.com', 'chatgpt', 'chat.openai.com', 'openai', 'claude.ai', 'claude', 'gemini.google.com', 'gemini', 'perplexity.ai', 'perplexity', 'copilot.microsoft.com', 'copilot.com', 'copilot', 'meta.ai', 'doubao.com', 'doubao', 'deepseek.com', 'deepseek', 'grok.com', 'grok', 'chat.mistral.ai', 'mistral', 'kimi.com', 'kimi'))
+        GROUP BY bucket, product
+        ORDER BY bucket ASC
+        FORMAT JSON
+
+-- builder:web-analytics-ai:webAnalyticsAiReferralsQuery:filtered-rollup  [44e5e60a]
+SELECT
+          toStartOfInterval(StartTime, INTERVAL 3600 SECOND) AS bucket,
+          if(transform(replaceRegexpOne(lower(ReferrerHost), '^www\\.', ''), ['chatgpt.com', 'chat.openai.com', 'com.openai.chatgpt', 'claude.ai', 'com.anthropic.claude', 'gemini.google.com', 'bard.google.com', 'perplexity.ai', 'ai.perplexity.app.android', 'copilot.microsoft.com', 'copilot.cloud.microsoft', 'm365.cloud.microsoft', 'meta.ai', 'doubao.com', 'chat.deepseek.com', 'deepseek.com', 'grok.com', 'chat.mistral.ai', 'kimi.com', 'kimi.moonshot.cn'], ['chatgpt', 'chatgpt', 'chatgpt', 'claude', 'claude', 'gemini', 'gemini', 'perplexity', 'perplexity', 'copilot', 'copilot', 'copilot', 'meta', 'doubao', 'deepseek', 'deepseek', 'grok', 'mistral', 'kimi', 'kimi'], '') != '', transform(replaceRegexpOne(lower(ReferrerHost), '^www\\.', ''), ['chatgpt.com', 'chat.openai.com', 'com.openai.chatgpt', 'claude.ai', 'com.anthropic.claude', 'gemini.google.com', 'bard.google.com', 'perplexity.ai', 'ai.perplexity.app.android', 'copilot.microsoft.com', 'copilot.cloud.microsoft', 'm365.cloud.microsoft', 'meta.ai', 'doubao.com', 'chat.deepseek.com', 'deepseek.com', 'grok.com', 'chat.mistral.ai', 'kimi.com', 'kimi.moonshot.cn'], ['chatgpt', 'chatgpt', 'chatgpt', 'claude', 'claude', 'gemini', 'gemini', 'perplexity', 'perplexity', 'copilot', 'copilot', 'copilot', 'meta', 'doubao', 'deepseek', 'deepseek', 'grok', 'mistral', 'kimi', 'kimi'], ''), transform(lower(UtmSource), ['chatgpt.com', 'chatgpt', 'chat.openai.com', 'openai', 'claude.ai', 'claude', 'gemini.google.com', 'gemini', 'perplexity.ai', 'perplexity', 'copilot.microsoft.com', 'copilot.com', 'copilot', 'meta.ai', 'doubao.com', 'doubao', 'deepseek.com', 'deepseek', 'grok.com', 'grok', 'chat.mistral.ai', 'mistral', 'kimi.com', 'kimi'], ['chatgpt', 'chatgpt', 'chatgpt', 'chatgpt', 'claude', 'claude', 'gemini', 'gemini', 'perplexity', 'perplexity', 'copilot', 'copilot', 'copilot', 'meta', 'doubao', 'doubao', 'deepseek', 'deepseek', 'grok', 'grok', 'mistral', 'mistral', 'kimi', 'kimi'], '')) AS product,
+          uniq(SessionId) AS sessions
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-01 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND SessionId IN (SELECT
+          SessionId AS sessionId
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Kind = 'navigation'
+          AND Host = 'maple.dev'
+          AND PagePath = '/pricing'
+        GROUP BY sessionId)
+          AND ReferrerHost = 't.co'
+          AND Country = 'DE'
+          AND DeviceType = 'desktop'
+          AND BrowserName = 'Chrome'
+          AND OsName = 'macOS'
+          AND Language = 'en-US'
+          AND UtmSource = 'twitter'
+          AND UtmMedium = 'social'
+          AND UtmCampaign = 'launch'
+          AND VisitorIsNew = 1
+          AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'
+          AND SessionId IN (SELECT
+          SessionId AS sessionId
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Kind = 'custom'
+          AND EventName = 'signup_started'
+        GROUP BY sessionId)
+          AND (replaceRegexpOne(lower(ReferrerHost), '^www\\.', '') IN ('chatgpt.com', 'chat.openai.com', 'com.openai.chatgpt', 'claude.ai', 'com.anthropic.claude', 'gemini.google.com', 'bard.google.com', 'perplexity.ai', 'ai.perplexity.app.android', 'copilot.microsoft.com', 'copilot.cloud.microsoft', 'm365.cloud.microsoft', 'meta.ai', 'doubao.com', 'chat.deepseek.com', 'deepseek.com', 'grok.com', 'chat.mistral.ai', 'kimi.com', 'kimi.moonshot.cn') OR lower(UtmSource) IN ('chatgpt.com', 'chatgpt', 'chat.openai.com', 'openai', 'claude.ai', 'claude', 'gemini.google.com', 'gemini', 'perplexity.ai', 'perplexity', 'copilot.microsoft.com', 'copilot.com', 'copilot', 'meta.ai', 'doubao.com', 'doubao', 'deepseek.com', 'deepseek', 'grok.com', 'grok', 'chat.mistral.ai', 'mistral', 'kimi.com', 'kimi'))
+        GROUP BY bucket, product
+        ORDER BY bucket ASC
         FORMAT JSON
 
 -- builder:web-analytics:webAnalyticsBreakdownsQuery:all-dimensions-filtered  [1f53cf2d]
@@ -6548,7 +8878,7 @@ SELECT
         ORDER BY bucket ASC
         FORMAT JSON
 
--- builder:web-analytics:webAnalyticsSummaryQuery:default  [9a0359fc]
+-- builder:web-analytics:webAnalyticsSummaryQuery:default  [d8e6f91a]
 SELECT
           uniqIf(VisitorId, VisitorId != '') AS visitors,
           uniq(SessionId) AS sessions,
@@ -6556,14 +8886,14 @@ SELECT
           uniqIf(SessionId, VisitorId != '') - uniqIf(SessionId, (PageViews > 1 AND VisitorId != '')) AS bouncedSessions,
           uniqIf(SessionId, VisitorId != '') AS identifiedSessions,
           uniqIf(SessionId, multiSearchAnyCaseInsensitive(UserAgent, ['GPTBot', 'OAI-SearchBot', 'ChatGPT-User', 'ClaudeBot', 'Claude-User', 'PerplexityBot', 'Google-Extended', 'Applebot-Extended', 'meta-externalagent', 'meta-webindexer', 'Bytespider', 'CCBot', 'Amazonbot', 'DuckAssistBot', 'Googlebot', 'GoogleOther', 'AdsBot-Google', 'Google-Read-Aloud', 'bingbot', 'YandexBot', 'Baiduspider', 'DuckDuckBot', 'Applebot', 'Sogou', 'SeznamBot', 'AhrefsSiteAudit', 'AhrefsBot', 'SemrushBot', 'DataForSeoBot', 'DotBot', 'MJ12bot', 'Barkrowler', 'Screaming Frog', 'facebookexternalhit', 'Twitterbot', 'LinkedInBot', 'Slackbot', 'Discordbot', 'TelegramBot', 'Pinterest', 'HubSpot Crawler', 'Stripebot', 'UptimeRobot', 'Pingdom', 'StatusCake', 'Headless', 'bot/', 'bot\x3B', 'bot)', 'crawler', 'spider', '+http'])) AS botSessions,
-          round(ifNotFinite(avgIf(assumeNotNull(DurationMs), DurationMs > 0), 0)) AS avgDurationMs
+          round(ifNull(ifNotFinite(avgIf(assumeNotNull(DurationMs), DurationMs > 0), 0), 0)) AS avgDurationMs
         FROM session_replays
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
         FORMAT JSON
 
--- builder:web-analytics:webAnalyticsSummaryQuery:default-rollup  [9a0359fc]
+-- builder:web-analytics:webAnalyticsSummaryQuery:default-rollup  [d8e6f91a]
 SELECT
           uniqIf(VisitorId, VisitorId != '') AS visitors,
           uniq(SessionId) AS sessions,
@@ -6571,14 +8901,14 @@ SELECT
           uniqIf(SessionId, VisitorId != '') - uniqIf(SessionId, (PageViews > 1 AND VisitorId != '')) AS bouncedSessions,
           uniqIf(SessionId, VisitorId != '') AS identifiedSessions,
           uniqIf(SessionId, multiSearchAnyCaseInsensitive(UserAgent, ['GPTBot', 'OAI-SearchBot', 'ChatGPT-User', 'ClaudeBot', 'Claude-User', 'PerplexityBot', 'Google-Extended', 'Applebot-Extended', 'meta-externalagent', 'meta-webindexer', 'Bytespider', 'CCBot', 'Amazonbot', 'DuckAssistBot', 'Googlebot', 'GoogleOther', 'AdsBot-Google', 'Google-Read-Aloud', 'bingbot', 'YandexBot', 'Baiduspider', 'DuckDuckBot', 'Applebot', 'Sogou', 'SeznamBot', 'AhrefsSiteAudit', 'AhrefsBot', 'SemrushBot', 'DataForSeoBot', 'DotBot', 'MJ12bot', 'Barkrowler', 'Screaming Frog', 'facebookexternalhit', 'Twitterbot', 'LinkedInBot', 'Slackbot', 'Discordbot', 'TelegramBot', 'Pinterest', 'HubSpot Crawler', 'Stripebot', 'UptimeRobot', 'Pingdom', 'StatusCake', 'Headless', 'bot/', 'bot\x3B', 'bot)', 'crawler', 'spider', '+http'])) AS botSessions,
-          round(ifNotFinite(avgIf(assumeNotNull(DurationMs), DurationMs > 0), 0)) AS avgDurationMs
+          round(ifNull(ifNotFinite(avgIf(assumeNotNull(DurationMs), DurationMs > 0), 0), 0)) AS avgDurationMs
         FROM session_replays
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
           AND StartTime <= '2026-01-03 14:15:00'
         FORMAT JSON
 
--- builder:web-analytics:webAnalyticsSummaryQuery:filtered  [72678758]
+-- builder:web-analytics:webAnalyticsSummaryQuery:filtered  [ef629fd2]
 SELECT
           uniqIf(VisitorId, VisitorId != '') AS visitors,
           uniq(SessionId) AS sessions,
@@ -6586,7 +8916,7 @@ SELECT
           uniqIf(SessionId, VisitorId != '') - uniqIf(SessionId, (PageViews > 1 AND VisitorId != '')) AS bouncedSessions,
           uniqIf(SessionId, VisitorId != '') AS identifiedSessions,
           uniqIf(SessionId, multiSearchAnyCaseInsensitive(UserAgent, ['GPTBot', 'OAI-SearchBot', 'ChatGPT-User', 'ClaudeBot', 'Claude-User', 'PerplexityBot', 'Google-Extended', 'Applebot-Extended', 'meta-externalagent', 'meta-webindexer', 'Bytespider', 'CCBot', 'Amazonbot', 'DuckAssistBot', 'Googlebot', 'GoogleOther', 'AdsBot-Google', 'Google-Read-Aloud', 'bingbot', 'YandexBot', 'Baiduspider', 'DuckDuckBot', 'Applebot', 'Sogou', 'SeznamBot', 'AhrefsSiteAudit', 'AhrefsBot', 'SemrushBot', 'DataForSeoBot', 'DotBot', 'MJ12bot', 'Barkrowler', 'Screaming Frog', 'facebookexternalhit', 'Twitterbot', 'LinkedInBot', 'Slackbot', 'Discordbot', 'TelegramBot', 'Pinterest', 'HubSpot Crawler', 'Stripebot', 'UptimeRobot', 'Pingdom', 'StatusCake', 'Headless', 'bot/', 'bot\x3B', 'bot)', 'crawler', 'spider', '+http'])) AS botSessions,
-          round(ifNotFinite(avgIf(assumeNotNull(DurationMs), DurationMs > 0), 0)) AS avgDurationMs
+          round(ifNull(ifNotFinite(avgIf(assumeNotNull(DurationMs), DurationMs > 0), 0), 0)) AS avgDurationMs
         FROM session_replays
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
@@ -6623,7 +8953,7 @@ SELECT
         GROUP BY sessionId)
         FORMAT JSON
 
--- builder:web-analytics:webAnalyticsSummaryQuery:filtered-rollup  [24dd55e5]
+-- builder:web-analytics:webAnalyticsSummaryQuery:filtered-rollup  [fcbbb3c3]
 SELECT
           uniqIf(VisitorId, VisitorId != '') AS visitors,
           uniq(SessionId) AS sessions,
@@ -6631,7 +8961,7 @@ SELECT
           uniqIf(SessionId, VisitorId != '') - uniqIf(SessionId, (PageViews > 1 AND VisitorId != '')) AS bouncedSessions,
           uniqIf(SessionId, VisitorId != '') AS identifiedSessions,
           uniqIf(SessionId, multiSearchAnyCaseInsensitive(UserAgent, ['GPTBot', 'OAI-SearchBot', 'ChatGPT-User', 'ClaudeBot', 'Claude-User', 'PerplexityBot', 'Google-Extended', 'Applebot-Extended', 'meta-externalagent', 'meta-webindexer', 'Bytespider', 'CCBot', 'Amazonbot', 'DuckAssistBot', 'Googlebot', 'GoogleOther', 'AdsBot-Google', 'Google-Read-Aloud', 'bingbot', 'YandexBot', 'Baiduspider', 'DuckDuckBot', 'Applebot', 'Sogou', 'SeznamBot', 'AhrefsSiteAudit', 'AhrefsBot', 'SemrushBot', 'DataForSeoBot', 'DotBot', 'MJ12bot', 'Barkrowler', 'Screaming Frog', 'facebookexternalhit', 'Twitterbot', 'LinkedInBot', 'Slackbot', 'Discordbot', 'TelegramBot', 'Pinterest', 'HubSpot Crawler', 'Stripebot', 'UptimeRobot', 'Pingdom', 'StatusCake', 'Headless', 'bot/', 'bot\x3B', 'bot)', 'crawler', 'spider', '+http'])) AS botSessions,
-          round(ifNotFinite(avgIf(assumeNotNull(DurationMs), DurationMs > 0), 0)) AS avgDurationMs
+          round(ifNull(ifNotFinite(avgIf(assumeNotNull(DurationMs), DurationMs > 0), 0), 0)) AS avgDurationMs
         FROM session_replays
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
@@ -6668,7 +8998,7 @@ SELECT
         GROUP BY sessionId)
         FORMAT JSON
 
--- builder:web-analytics:webAnalyticsTimeseriesQuery:default  [7ac5c3d6]
+-- builder:web-analytics:webAnalyticsTimeseriesQuery:default  [4727ab34]
 SELECT
           toStartOfInterval(StartTime, INTERVAL 3600 SECOND) AS bucket,
           uniqIf(VisitorId, VisitorId != '') AS visitors,
@@ -6676,7 +9006,7 @@ SELECT
           uniqIf(SessionId, VisitorIsNew = 1) AS newSessions,
           uniqIf(SessionId, VisitorId != '') - uniqIf(SessionId, (PageViews > 1 AND VisitorId != '')) AS bouncedSessions,
           uniqIf(SessionId, VisitorId != '') AS identifiedSessions,
-          round(ifNotFinite(avgIf(assumeNotNull(DurationMs), DurationMs > 0), 0)) AS avgDurationMs
+          round(ifNull(ifNotFinite(avgIf(assumeNotNull(DurationMs), DurationMs > 0), 0), 0)) AS avgDurationMs
         FROM session_replays
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
@@ -6685,7 +9015,7 @@ SELECT
         ORDER BY bucket ASC
         FORMAT JSON
 
--- builder:web-analytics:webAnalyticsTimeseriesQuery:default-rollup  [7ac5c3d6]
+-- builder:web-analytics:webAnalyticsTimeseriesQuery:default-rollup  [4727ab34]
 SELECT
           toStartOfInterval(StartTime, INTERVAL 3600 SECOND) AS bucket,
           uniqIf(VisitorId, VisitorId != '') AS visitors,
@@ -6693,7 +9023,7 @@ SELECT
           uniqIf(SessionId, VisitorIsNew = 1) AS newSessions,
           uniqIf(SessionId, VisitorId != '') - uniqIf(SessionId, (PageViews > 1 AND VisitorId != '')) AS bouncedSessions,
           uniqIf(SessionId, VisitorId != '') AS identifiedSessions,
-          round(ifNotFinite(avgIf(assumeNotNull(DurationMs), DurationMs > 0), 0)) AS avgDurationMs
+          round(ifNull(ifNotFinite(avgIf(assumeNotNull(DurationMs), DurationMs > 0), 0), 0)) AS avgDurationMs
         FROM session_replays
         WHERE OrgId = 'org_sql_catalog'
           AND StartTime >= '2026-01-01 10:30:00'
@@ -7088,32 +9418,63 @@ SELECT
         ORDER BY bucket ASC, groupName ASC
         FORMAT JSON
 
--- pipe:error_detail_traces:default:baseline  [99fb32db]
+-- pipe:error_detail_traces:default:baseline  [358e1a30]
 SELECT
-          TraceId AS traceId,
-          min(Timestamp) AS startTime,
-          intDiv(max(Duration), 1000) AS durationMicros,
+          trace_detail_spans.TraceId AS traceId,
+          min(trace_detail_spans.Timestamp) AS startTime,
+          intDiv(max(trace_detail_spans.Duration), 1000) AS durationMicros,
           count() AS spanCount,
-          groupUniqArray(ServiceName) AS services,
-          anyIf(SpanName, ParentSpanId = '') AS rootSpanName,
-          any(StatusMessage) AS errorMessage
+          groupUniqArray(trace_detail_spans.ServiceName) AS services,
+          anyIf(trace_detail_spans.SpanName, trace_detail_spans.ParentSpanId = '') AS rootSpanName,
+          anyIf(trace_detail_spans.StatusMessage, trace_detail_spans.SpanId = occurrence.occurrenceSpanId) AS errorMessage,
+          anyIf(trace_detail_spans.SpanId, trace_detail_spans.SpanId = occurrence.occurrenceSpanId) AS errorSpanId,
+          anyIf(trace_detail_spans.SpanName, trace_detail_spans.SpanId = occurrence.occurrenceSpanId) AS errorSpanName,
+          anyIf(trace_detail_spans.ServiceName, trace_detail_spans.SpanId = occurrence.occurrenceSpanId) AS errorServiceName,
+          anyIf(trace_detail_spans.SpanAttributes['gen_ai.request.model'], trace_detail_spans.SpanId = occurrence.occurrenceSpanId) AS errorModel,
+          anyIf(trace_detail_spans.SpanAttributes['gen_ai.tool.name'], trace_detail_spans.SpanId = occurrence.occurrenceSpanId) AS errorToolName,
+          anyIf(trace_detail_spans.SpanAttributes['http.request.method'], trace_detail_spans.SpanId = occurrence.occurrenceSpanId) AS errorHttpMethod,
+          anyIf(trace_detail_spans.SpanAttributes['http.route'], trace_detail_spans.SpanId = occurrence.occurrenceSpanId) AS errorHttpRoute,
+          anyIf(trace_detail_spans.SpanAttributes['query.context'], trace_detail_spans.SpanId = occurrence.occurrenceSpanId) AS errorQueryContext,
+          anyIf(trace_detail_spans.SpanAttributes['error.type'], trace_detail_spans.SpanId = occurrence.occurrenceSpanId) AS errorType,
+          any(occurrence.occurrenceLabel) AS errorLabel,
+          any(occurrence.occurrenceExceptionType) AS exceptionType,
+          any(occurrence.occurrenceExceptionMessage) AS exceptionMessage
         FROM trace_detail_spans
-        WHERE OrgId = 'org_sql_catalog'
-          AND TraceId IN (SELECT
-          TraceId AS TraceId
-        FROM (SELECT
+        INNER JOIN (SELECT
           TraceId AS TraceId,
-          max(Timestamp) AS lastErrorSeen
+          max(Timestamp) AS lastErrorSeen,
+          argMax(SpanId, Timestamp) AS occurrenceSpanId,
+          argMax(ErrorLabel, Timestamp) AS occurrenceLabel,
+          argMax(ExceptionType, Timestamp) AS occurrenceExceptionType,
+          argMax(ExceptionMessage, Timestamp) AS occurrenceExceptionMessage
         FROM error_events
         WHERE OrgId = 'org_sql_catalog'
           AND FingerprintHash = toUInt64('11640393269246331608')
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
         GROUP BY TraceId
-        ORDER BY lastErrorSeen DESC
-        LIMIT 10) AS matching_traces)
+        ORDER BY lastErrorSeen DESC, TraceId DESC
+        LIMIT 10) AS occurrence ON trace_detail_spans.TraceId = occurrence.TraceId
+        WHERE trace_detail_spans.OrgId = 'org_sql_catalog'
+          AND trace_detail_spans.TraceId IN (SELECT
+          TraceId AS TraceId
+        FROM (SELECT
+          TraceId AS TraceId,
+          max(Timestamp) AS lastErrorSeen,
+          argMax(SpanId, Timestamp) AS occurrenceSpanId,
+          argMax(ErrorLabel, Timestamp) AS occurrenceLabel,
+          argMax(ExceptionType, Timestamp) AS occurrenceExceptionType,
+          argMax(ExceptionMessage, Timestamp) AS occurrenceExceptionMessage
+        FROM error_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND FingerprintHash = toUInt64('11640393269246331608')
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
+        GROUP BY TraceId
+        ORDER BY lastErrorSeen DESC, TraceId DESC
+        LIMIT 10) AS matching_traces)
+          AND trace_detail_spans.Timestamp >= '2026-01-01 10:30:00'
+          AND trace_detail_spans.Timestamp <= '2026-01-03 14:15:00'
         GROUP BY traceId
         ORDER BY startTime DESC
         FORMAT JSON
@@ -7183,12 +9544,12 @@ SELECT
         LIMIT 50
         FORMAT JSON
 
--- pipe:error_rate_by_service:default:baseline  [915de03d]
+-- pipe:error_rate_by_service:default:baseline  [210e22cc]
 SELECT
           serviceName AS serviceName,
           sum(bucketTotalLogs) AS totalLogs,
           sum(bucketErrorLogs) AS errorLogs,
-          round(sum(bucketErrorLogs) / sum(bucketTotalLogs), 6) AS errorRate
+          ifNull(ifNotFinite(round(sum(bucketErrorLogs) / sum(bucketTotalLogs), 6), 0), 0) AS errorRate
         FROM (
 SELECT
           ServiceName AS serviceName,
@@ -7219,13 +9580,14 @@ SELECT
         ORDER BY errorRate DESC
         FORMAT JSON
 
--- pipe:errors_by_type:default:baseline  [155d011e]
+-- pipe:errors_by_type:default:baseline  [910e3e1b]
 SELECT
           toString(FingerprintHash) AS fingerprintHash,
           any(ErrorLabel) AS errorLabel,
           any(StatusMessage) AS sampleMessage,
           count() AS count,
           uniq(ServiceName) AS affectedServicesCount,
+          arraySort(groupUniqArrayIf(3)(ServiceName, ServiceName != '')) AS serviceNames,
           min(Timestamp) AS firstSeen,
           max(Timestamp) AS lastSeen
         FROM error_events_by_time
@@ -7237,13 +9599,14 @@ SELECT
         LIMIT 50
         FORMAT JSON
 
--- pipe:errors_by_type:fingerprint-scoped:baseline  [79e53181]
+-- pipe:errors_by_type:fingerprint-scoped:baseline  [b003aaf4]
 SELECT
           toString(FingerprintHash) AS fingerprintHash,
           any(ErrorLabel) AS errorLabel,
           any(StatusMessage) AS sampleMessage,
           count() AS count,
           uniq(ServiceName) AS affectedServicesCount,
+          arraySort(groupUniqArrayIf(3)(ServiceName, ServiceName != '')) AS serviceNames,
           min(Timestamp) AS firstSeen,
           max(Timestamp) AS lastSeen
         FROM error_events
@@ -7255,6 +9618,26 @@ SELECT
         GROUP BY fingerprintHash
         ORDER BY count DESC
         LIMIT 1
+        FORMAT JSON
+
+-- pipe:errors_by_type:unexpected-identity:baseline  [fc6bbd41]
+SELECT
+          toString(FingerprintHash) AS fingerprintHash,
+          any(ErrorLabel) AS errorLabel,
+          any(StatusMessage) AS sampleMessage,
+          count() AS count,
+          uniq(ServiceName) AS affectedServicesCount,
+          arraySort(groupUniqArrayIf(3)(ServiceName, ServiceName != '')) AS serviceNames,
+          min(Timestamp) AS firstSeen,
+          max(Timestamp) AS lastSeen
+        FROM error_events_by_time
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND (ErrorLabel NOT LIKE '@maple/%' OR ErrorLabel IN ('HttpServerErrorResponse', '@maple/api/http/Http5xxResponseError', '@maple/http/v2/UnexpectedError', '@maple/http/v1/V1UnexpectedError'))
+        GROUP BY fingerprintHash
+        ORDER BY count DESC
+        LIMIT 50
         FORMAT JSON
 
 -- pipe:errors_facets:default:baseline  [89fabd83]
@@ -7308,11 +9691,11 @@ SELECT
         LIMIT 50
 FORMAT JSON
 
--- pipe:errors_summary:default:baseline  [e28ab64c]
+-- pipe:errors_summary:default:baseline  [dc269b0f]
 SELECT
           e.totalErrors AS totalErrors,
           s.totalSpans AS totalSpans,
-          if(s.totalSpans > 0, round(e.totalErrors / s.totalSpans, 6), 0) AS errorRate,
+          ifNull(ifNotFinite(round(e.totalErrors / s.totalSpans, 6), 0), 0) AS errorRate,
           e.affectedServicesCount AS affectedServicesCount,
           e.affectedTracesCount AS affectedTracesCount
         FROM (SELECT
@@ -7324,11 +9707,23 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00') AS e
         CROSS JOIN (SELECT
-          sum(TraceCount) AS totalSpans
+          sum(bucketSpans) AS totalSpans
+        FROM (
+SELECT
+          sum(TraceCount) AS bucketSpans
         FROM service_usage
         WHERE OrgId = 'org_sql_catalog'
-          AND Hour >= '2026-01-01 10:30:00'
-          AND Hour <= '2026-01-03 14:15:00') AS s
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+UNION ALL
+SELECT
+          count() AS bucketSpans
+        FROM traces
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
+) AS usage) AS s
         FORMAT JSON
 
 -- pipe:errors_timeseries:default:baseline  [8ea53a5e]
@@ -7594,7 +9989,7 @@ SELECT
         LIMIT 50
         FORMAT JSON
 
--- pipe:list_logs:searched:baseline  [f4e5cc5d]
+-- pipe:list_logs:searched:baseline  [af6a1e45]
 SELECT
           Timestamp AS timestamp,
           SeverityText AS severityText,
@@ -7613,9 +10008,9 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND SeverityText = 'ERROR'
+          AND SeverityText IN ('ERROR', 'Error', 'error')
           AND TraceId = '0af7651916cd43dd8448eb211c80319c'
-          AND Body ILIKE '%connection refused%'
+          AND Body ILIKE '%upstream connection refused by peer%'
           AND Timestamp >= (SELECT min(ts) FROM (SELECT
           Timestamp AS ts
         FROM logs
@@ -7625,16 +10020,16 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND SeverityText = 'ERROR'
+          AND SeverityText IN ('ERROR', 'Error', 'error')
           AND TraceId = '0af7651916cd43dd8448eb211c80319c'
-          AND Body ILIKE '%connection refused%'
+          AND Body ILIKE '%upstream connection refused by peer%'
         ORDER BY ts DESC
         LIMIT 50))
         ORDER BY timestamp DESC, serviceName ASC, traceId ASC, spanId ASC, recordIdentity ASC
         LIMIT 50
         FORMAT JSON
 
--- pipe:list_logs:searched:bloom  [efc50db5]
+-- pipe:list_logs:searched:bloom  [49bc0599]
 SELECT
           Timestamp AS timestamp,
           SeverityText AS severityText,
@@ -7653,9 +10048,9 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND SeverityText = 'ERROR'
+          AND SeverityText IN ('ERROR', 'Error', 'error')
           AND TraceId = '0af7651916cd43dd8448eb211c80319c'
-          AND ((hasToken(lower(Body), 'connection') AND hasToken(lower(Body), 'refused')) AND Body ILIKE '%connection refused%')
+          AND (((hasToken(lower(Body), 'connection') AND hasToken(lower(Body), 'refused')) AND hasToken(lower(Body), 'by')) AND Body ILIKE '%upstream connection refused by peer%')
           AND Timestamp >= (SELECT min(ts) FROM (SELECT
           Timestamp AS ts
         FROM logs
@@ -7665,16 +10060,16 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND SeverityText = 'ERROR'
+          AND SeverityText IN ('ERROR', 'Error', 'error')
           AND TraceId = '0af7651916cd43dd8448eb211c80319c'
-          AND ((hasToken(lower(Body), 'connection') AND hasToken(lower(Body), 'refused')) AND Body ILIKE '%connection refused%')
+          AND (((hasToken(lower(Body), 'connection') AND hasToken(lower(Body), 'refused')) AND hasToken(lower(Body), 'by')) AND Body ILIKE '%upstream connection refused by peer%')
         ORDER BY ts DESC
         LIMIT 50))
         ORDER BY timestamp DESC, serviceName ASC, traceId ASC, spanId ASC, recordIdentity ASC
         LIMIT 50
         FORMAT JSON
 
--- pipe:list_logs:searched:text  [fad2e4f1]
+-- pipe:list_logs:searched:text  [7eef92d1]
 SELECT
           Timestamp AS timestamp,
           SeverityText AS severityText,
@@ -7693,9 +10088,9 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND SeverityText = 'ERROR'
+          AND SeverityText IN ('ERROR', 'Error', 'error')
           AND TraceId = '0af7651916cd43dd8448eb211c80319c'
-          AND (hasAllTokens(lower(Body), 'connection refused') AND Body ILIKE '%connection refused%')
+          AND (hasAllTokens(lower(Body), 'connection refused by') AND Body ILIKE '%upstream connection refused by peer%')
           AND Timestamp >= (SELECT min(ts) FROM (SELECT
           Timestamp AS ts
         FROM logs
@@ -7705,9 +10100,9 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
-          AND SeverityText = 'ERROR'
+          AND SeverityText IN ('ERROR', 'Error', 'error')
           AND TraceId = '0af7651916cd43dd8448eb211c80319c'
-          AND (hasAllTokens(lower(Body), 'connection refused') AND Body ILIKE '%connection refused%')
+          AND (hasAllTokens(lower(Body), 'connection refused by') AND Body ILIKE '%upstream connection refused by peer%')
         ORDER BY ts DESC
         LIMIT 50))
         ORDER BY timestamp DESC, serviceName ASC, traceId ASC, spanId ASC, recordIdentity ASC
@@ -7735,7 +10130,7 @@ SELECT
         OFFSET 0
         FORMAT JSON
 
--- pipe:list_traces:contains-match:baseline  [15600e4e]
+-- pipe:list_traces:contains-match:baseline  [e1c7d3ae]
 SELECT
           TraceId AS traceId,
           Timestamp AS startTime,
@@ -7743,12 +10138,14 @@ SELECT
           intDiv(Duration, 1000) AS durationMicros,
           toUInt64(1) AS spanCount,
           [ServiceName] AS services,
+          SpanId AS rootSpanId,
           SpanName AS rootSpanName,
           SpanKind AS rootSpanKind,
           StatusCode AS rootSpanStatusCode,
-          SpanAttributes['http.method'] AS rootHttpMethod,
+          StatusMessage AS rootSpanStatusMessage,
+          if(SpanAttributes['http.method'] != '', SpanAttributes['http.method'], SpanAttributes['http.request.method']) AS rootHttpMethod,
           SpanAttributes['http.route'] AS rootHttpRoute,
-          SpanAttributes['http.status_code'] AS rootHttpStatusCode,
+          if(SpanAttributes['http.status_code'] != '', SpanAttributes['http.status_code'], SpanAttributes['http.response.status_code']) AS rootHttpStatusCode,
           toJSONString(map('http.method', SpanAttributes['http.method'], 'http.request.method', SpanAttributes['http.request.method'], 'http.route', SpanAttributes['http.route'], 'http.target', SpanAttributes['http.target'], 'http.status_code', SpanAttributes['http.status_code'], 'http.response.status_code', SpanAttributes['http.response.status_code'], 'http.url', SpanAttributes['http.url'], 'url.full', SpanAttributes['url.full'], 'url.path', SpanAttributes['url.path'], 'server.address', SpanAttributes['server.address'], 'net.peer.name', SpanAttributes['net.peer.name'], 'screen.name', SpanAttributes['screen.name'])) AS rootSpanAttributes,
           if(StatusCode = 'Error', 1, 0) AS hasError
         FROM traces
@@ -7757,7 +10154,6 @@ SELECT
           AND Timestamp <= '2026-01-03 14:15:00'
           AND positionCaseInsensitive(ServiceName, 'ap') > 0
           AND (SpanKind IN ('Server', 'Consumer') OR ParentSpanId = '')
-          AND StatusCode != 'Error'
           AND Timestamp >= (SELECT min(ts) FROM (SELECT
           Timestamp AS ts
         FROM traces
@@ -7766,14 +10162,13 @@ SELECT
           AND Timestamp <= '2026-01-03 14:15:00'
           AND positionCaseInsensitive(ServiceName, 'ap') > 0
           AND (SpanKind IN ('Server', 'Consumer') OR ParentSpanId = '')
-          AND StatusCode != 'Error'
         ORDER BY ts DESC
         LIMIT 100))
         ORDER BY startTime DESC
         LIMIT 100
         FORMAT JSON
 
--- pipe:list_traces:contains-match:bloom  [15600e4e]
+-- pipe:list_traces:contains-match:bloom  [e1c7d3ae]
 SELECT
           TraceId AS traceId,
           Timestamp AS startTime,
@@ -7781,12 +10176,14 @@ SELECT
           intDiv(Duration, 1000) AS durationMicros,
           toUInt64(1) AS spanCount,
           [ServiceName] AS services,
+          SpanId AS rootSpanId,
           SpanName AS rootSpanName,
           SpanKind AS rootSpanKind,
           StatusCode AS rootSpanStatusCode,
-          SpanAttributes['http.method'] AS rootHttpMethod,
+          StatusMessage AS rootSpanStatusMessage,
+          if(SpanAttributes['http.method'] != '', SpanAttributes['http.method'], SpanAttributes['http.request.method']) AS rootHttpMethod,
           SpanAttributes['http.route'] AS rootHttpRoute,
-          SpanAttributes['http.status_code'] AS rootHttpStatusCode,
+          if(SpanAttributes['http.status_code'] != '', SpanAttributes['http.status_code'], SpanAttributes['http.response.status_code']) AS rootHttpStatusCode,
           toJSONString(map('http.method', SpanAttributes['http.method'], 'http.request.method', SpanAttributes['http.request.method'], 'http.route', SpanAttributes['http.route'], 'http.target', SpanAttributes['http.target'], 'http.status_code', SpanAttributes['http.status_code'], 'http.response.status_code', SpanAttributes['http.response.status_code'], 'http.url', SpanAttributes['http.url'], 'url.full', SpanAttributes['url.full'], 'url.path', SpanAttributes['url.path'], 'server.address', SpanAttributes['server.address'], 'net.peer.name', SpanAttributes['net.peer.name'], 'screen.name', SpanAttributes['screen.name'])) AS rootSpanAttributes,
           if(StatusCode = 'Error', 1, 0) AS hasError
         FROM traces
@@ -7795,7 +10192,6 @@ SELECT
           AND Timestamp <= '2026-01-03 14:15:00'
           AND positionCaseInsensitive(ServiceName, 'ap') > 0
           AND (SpanKind IN ('Server', 'Consumer') OR ParentSpanId = '')
-          AND StatusCode != 'Error'
           AND Timestamp >= (SELECT min(ts) FROM (SELECT
           Timestamp AS ts
         FROM traces
@@ -7804,14 +10200,13 @@ SELECT
           AND Timestamp <= '2026-01-03 14:15:00'
           AND positionCaseInsensitive(ServiceName, 'ap') > 0
           AND (SpanKind IN ('Server', 'Consumer') OR ParentSpanId = '')
-          AND StatusCode != 'Error'
         ORDER BY ts DESC
         LIMIT 100))
         ORDER BY startTime DESC
         LIMIT 100
         FORMAT JSON
 
--- pipe:list_traces:contains-match:text  [15600e4e]
+-- pipe:list_traces:contains-match:text  [e1c7d3ae]
 SELECT
           TraceId AS traceId,
           Timestamp AS startTime,
@@ -7819,12 +10214,14 @@ SELECT
           intDiv(Duration, 1000) AS durationMicros,
           toUInt64(1) AS spanCount,
           [ServiceName] AS services,
+          SpanId AS rootSpanId,
           SpanName AS rootSpanName,
           SpanKind AS rootSpanKind,
           StatusCode AS rootSpanStatusCode,
-          SpanAttributes['http.method'] AS rootHttpMethod,
+          StatusMessage AS rootSpanStatusMessage,
+          if(SpanAttributes['http.method'] != '', SpanAttributes['http.method'], SpanAttributes['http.request.method']) AS rootHttpMethod,
           SpanAttributes['http.route'] AS rootHttpRoute,
-          SpanAttributes['http.status_code'] AS rootHttpStatusCode,
+          if(SpanAttributes['http.status_code'] != '', SpanAttributes['http.status_code'], SpanAttributes['http.response.status_code']) AS rootHttpStatusCode,
           toJSONString(map('http.method', SpanAttributes['http.method'], 'http.request.method', SpanAttributes['http.request.method'], 'http.route', SpanAttributes['http.route'], 'http.target', SpanAttributes['http.target'], 'http.status_code', SpanAttributes['http.status_code'], 'http.response.status_code', SpanAttributes['http.response.status_code'], 'http.url', SpanAttributes['http.url'], 'url.full', SpanAttributes['url.full'], 'url.path', SpanAttributes['url.path'], 'server.address', SpanAttributes['server.address'], 'net.peer.name', SpanAttributes['net.peer.name'], 'screen.name', SpanAttributes['screen.name'])) AS rootSpanAttributes,
           if(StatusCode = 'Error', 1, 0) AS hasError
         FROM traces
@@ -7833,7 +10230,6 @@ SELECT
           AND Timestamp <= '2026-01-03 14:15:00'
           AND positionCaseInsensitive(ServiceName, 'ap') > 0
           AND (SpanKind IN ('Server', 'Consumer') OR ParentSpanId = '')
-          AND StatusCode != 'Error'
           AND Timestamp >= (SELECT min(ts) FROM (SELECT
           Timestamp AS ts
         FROM traces
@@ -7842,14 +10238,13 @@ SELECT
           AND Timestamp <= '2026-01-03 14:15:00'
           AND positionCaseInsensitive(ServiceName, 'ap') > 0
           AND (SpanKind IN ('Server', 'Consumer') OR ParentSpanId = '')
-          AND StatusCode != 'Error'
         ORDER BY ts DESC
         LIMIT 100))
         ORDER BY startTime DESC
         LIMIT 100
         FORMAT JSON
 
--- pipe:list_traces:default:baseline  [845d8dde]
+-- pipe:list_traces:default:baseline  [5b987fa2]
 SELECT
           TraceId AS traceId,
           Timestamp AS startTime,
@@ -7857,12 +10252,14 @@ SELECT
           intDiv(Duration, 1000) AS durationMicros,
           toUInt64(1) AS spanCount,
           [ServiceName] AS services,
+          SpanId AS rootSpanId,
           SpanName AS rootSpanName,
           SpanKind AS rootSpanKind,
           StatusCode AS rootSpanStatusCode,
-          SpanAttributes['http.method'] AS rootHttpMethod,
+          StatusMessage AS rootSpanStatusMessage,
+          if(SpanAttributes['http.method'] != '', SpanAttributes['http.method'], SpanAttributes['http.request.method']) AS rootHttpMethod,
           SpanAttributes['http.route'] AS rootHttpRoute,
-          SpanAttributes['http.status_code'] AS rootHttpStatusCode,
+          if(SpanAttributes['http.status_code'] != '', SpanAttributes['http.status_code'], SpanAttributes['http.response.status_code']) AS rootHttpStatusCode,
           toJSONString(map('http.method', SpanAttributes['http.method'], 'http.request.method', SpanAttributes['http.request.method'], 'http.route', SpanAttributes['http.route'], 'http.target', SpanAttributes['http.target'], 'http.status_code', SpanAttributes['http.status_code'], 'http.response.status_code', SpanAttributes['http.response.status_code'], 'http.url', SpanAttributes['http.url'], 'url.full', SpanAttributes['url.full'], 'url.path', SpanAttributes['url.path'], 'server.address', SpanAttributes['server.address'], 'net.peer.name', SpanAttributes['net.peer.name'], 'screen.name', SpanAttributes['screen.name'])) AS rootSpanAttributes,
           if(StatusCode = 'Error', 1, 0) AS hasError
         FROM traces
@@ -7870,7 +10267,6 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND (SpanKind IN ('Server', 'Consumer') OR ParentSpanId = '')
-          AND StatusCode != 'Error'
           AND Timestamp >= (SELECT min(ts) FROM (SELECT
           Timestamp AS ts
         FROM traces
@@ -7878,14 +10274,13 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND (SpanKind IN ('Server', 'Consumer') OR ParentSpanId = '')
-          AND StatusCode != 'Error'
         ORDER BY ts DESC
         LIMIT 100))
         ORDER BY startTime DESC
         LIMIT 100
         FORMAT JSON
 
--- pipe:list_traces:default:bloom  [845d8dde]
+-- pipe:list_traces:default:bloom  [5b987fa2]
 SELECT
           TraceId AS traceId,
           Timestamp AS startTime,
@@ -7893,12 +10288,14 @@ SELECT
           intDiv(Duration, 1000) AS durationMicros,
           toUInt64(1) AS spanCount,
           [ServiceName] AS services,
+          SpanId AS rootSpanId,
           SpanName AS rootSpanName,
           SpanKind AS rootSpanKind,
           StatusCode AS rootSpanStatusCode,
-          SpanAttributes['http.method'] AS rootHttpMethod,
+          StatusMessage AS rootSpanStatusMessage,
+          if(SpanAttributes['http.method'] != '', SpanAttributes['http.method'], SpanAttributes['http.request.method']) AS rootHttpMethod,
           SpanAttributes['http.route'] AS rootHttpRoute,
-          SpanAttributes['http.status_code'] AS rootHttpStatusCode,
+          if(SpanAttributes['http.status_code'] != '', SpanAttributes['http.status_code'], SpanAttributes['http.response.status_code']) AS rootHttpStatusCode,
           toJSONString(map('http.method', SpanAttributes['http.method'], 'http.request.method', SpanAttributes['http.request.method'], 'http.route', SpanAttributes['http.route'], 'http.target', SpanAttributes['http.target'], 'http.status_code', SpanAttributes['http.status_code'], 'http.response.status_code', SpanAttributes['http.response.status_code'], 'http.url', SpanAttributes['http.url'], 'url.full', SpanAttributes['url.full'], 'url.path', SpanAttributes['url.path'], 'server.address', SpanAttributes['server.address'], 'net.peer.name', SpanAttributes['net.peer.name'], 'screen.name', SpanAttributes['screen.name'])) AS rootSpanAttributes,
           if(StatusCode = 'Error', 1, 0) AS hasError
         FROM traces
@@ -7906,7 +10303,6 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND (SpanKind IN ('Server', 'Consumer') OR ParentSpanId = '')
-          AND StatusCode != 'Error'
           AND Timestamp >= (SELECT min(ts) FROM (SELECT
           Timestamp AS ts
         FROM traces
@@ -7914,14 +10310,13 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND (SpanKind IN ('Server', 'Consumer') OR ParentSpanId = '')
-          AND StatusCode != 'Error'
         ORDER BY ts DESC
         LIMIT 100))
         ORDER BY startTime DESC
         LIMIT 100
         FORMAT JSON
 
--- pipe:list_traces:default:text  [845d8dde]
+-- pipe:list_traces:default:text  [5b987fa2]
 SELECT
           TraceId AS traceId,
           Timestamp AS startTime,
@@ -7929,12 +10324,14 @@ SELECT
           intDiv(Duration, 1000) AS durationMicros,
           toUInt64(1) AS spanCount,
           [ServiceName] AS services,
+          SpanId AS rootSpanId,
           SpanName AS rootSpanName,
           SpanKind AS rootSpanKind,
           StatusCode AS rootSpanStatusCode,
-          SpanAttributes['http.method'] AS rootHttpMethod,
+          StatusMessage AS rootSpanStatusMessage,
+          if(SpanAttributes['http.method'] != '', SpanAttributes['http.method'], SpanAttributes['http.request.method']) AS rootHttpMethod,
           SpanAttributes['http.route'] AS rootHttpRoute,
-          SpanAttributes['http.status_code'] AS rootHttpStatusCode,
+          if(SpanAttributes['http.status_code'] != '', SpanAttributes['http.status_code'], SpanAttributes['http.response.status_code']) AS rootHttpStatusCode,
           toJSONString(map('http.method', SpanAttributes['http.method'], 'http.request.method', SpanAttributes['http.request.method'], 'http.route', SpanAttributes['http.route'], 'http.target', SpanAttributes['http.target'], 'http.status_code', SpanAttributes['http.status_code'], 'http.response.status_code', SpanAttributes['http.response.status_code'], 'http.url', SpanAttributes['http.url'], 'url.full', SpanAttributes['url.full'], 'url.path', SpanAttributes['url.path'], 'server.address', SpanAttributes['server.address'], 'net.peer.name', SpanAttributes['net.peer.name'], 'screen.name', SpanAttributes['screen.name'])) AS rootSpanAttributes,
           if(StatusCode = 'Error', 1, 0) AS hasError
         FROM traces
@@ -7942,7 +10339,6 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND (SpanKind IN ('Server', 'Consumer') OR ParentSpanId = '')
-          AND StatusCode != 'Error'
           AND Timestamp >= (SELECT min(ts) FROM (SELECT
           Timestamp AS ts
         FROM traces
@@ -7950,14 +10346,13 @@ SELECT
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND (SpanKind IN ('Server', 'Consumer') OR ParentSpanId = '')
-          AND StatusCode != 'Error'
         ORDER BY ts DESC
         LIMIT 100))
         ORDER BY startTime DESC
         LIMIT 100
         FORMAT JSON
 
--- pipe:list_traces:filtered:baseline  [7087488a]
+-- pipe:list_traces:filtered:baseline  [7adba7ac]
 SELECT
           TraceId AS traceId,
           Timestamp AS startTime,
@@ -7965,12 +10360,14 @@ SELECT
           intDiv(Duration, 1000) AS durationMicros,
           toUInt64(1) AS spanCount,
           [ServiceName] AS services,
+          SpanId AS rootSpanId,
           SpanName AS rootSpanName,
           SpanKind AS rootSpanKind,
           StatusCode AS rootSpanStatusCode,
-          SpanAttributes['http.method'] AS rootHttpMethod,
+          StatusMessage AS rootSpanStatusMessage,
+          if(SpanAttributes['http.method'] != '', SpanAttributes['http.method'], SpanAttributes['http.request.method']) AS rootHttpMethod,
           SpanAttributes['http.route'] AS rootHttpRoute,
-          SpanAttributes['http.status_code'] AS rootHttpStatusCode,
+          if(SpanAttributes['http.status_code'] != '', SpanAttributes['http.status_code'], SpanAttributes['http.response.status_code']) AS rootHttpStatusCode,
           toJSONString(map('http.method', SpanAttributes['http.method'], 'http.request.method', SpanAttributes['http.request.method'], 'http.route', SpanAttributes['http.route'], 'http.target', SpanAttributes['http.target'], 'http.status_code', SpanAttributes['http.status_code'], 'http.response.status_code', SpanAttributes['http.response.status_code'], 'http.url', SpanAttributes['http.url'], 'url.full', SpanAttributes['url.full'], 'url.path', SpanAttributes['url.path'], 'server.address', SpanAttributes['server.address'], 'net.peer.name', SpanAttributes['net.peer.name'], 'screen.name', SpanAttributes['screen.name'])) AS rootSpanAttributes,
           if(StatusCode = 'Error', 1, 0) AS hasError
         FROM traces
@@ -8007,7 +10404,7 @@ SELECT
         LIMIT 25
         FORMAT JSON
 
--- pipe:list_traces:filtered:bloom  [fe0c8228]
+-- pipe:list_traces:filtered:bloom  [59075292]
 SELECT
           TraceId AS traceId,
           Timestamp AS startTime,
@@ -8015,12 +10412,14 @@ SELECT
           intDiv(Duration, 1000) AS durationMicros,
           toUInt64(1) AS spanCount,
           [ServiceName] AS services,
+          SpanId AS rootSpanId,
           SpanName AS rootSpanName,
           SpanKind AS rootSpanKind,
           StatusCode AS rootSpanStatusCode,
-          SpanAttributes['http.method'] AS rootHttpMethod,
+          StatusMessage AS rootSpanStatusMessage,
+          if(SpanAttributes['http.method'] != '', SpanAttributes['http.method'], SpanAttributes['http.request.method']) AS rootHttpMethod,
           SpanAttributes['http.route'] AS rootHttpRoute,
-          SpanAttributes['http.status_code'] AS rootHttpStatusCode,
+          if(SpanAttributes['http.status_code'] != '', SpanAttributes['http.status_code'], SpanAttributes['http.response.status_code']) AS rootHttpStatusCode,
           toJSONString(map('http.method', SpanAttributes['http.method'], 'http.request.method', SpanAttributes['http.request.method'], 'http.route', SpanAttributes['http.route'], 'http.target', SpanAttributes['http.target'], 'http.status_code', SpanAttributes['http.status_code'], 'http.response.status_code', SpanAttributes['http.response.status_code'], 'http.url', SpanAttributes['http.url'], 'url.full', SpanAttributes['url.full'], 'url.path', SpanAttributes['url.path'], 'server.address', SpanAttributes['server.address'], 'net.peer.name', SpanAttributes['net.peer.name'], 'screen.name', SpanAttributes['screen.name'])) AS rootSpanAttributes,
           if(StatusCode = 'Error', 1, 0) AS hasError
         FROM traces
@@ -8057,7 +10456,7 @@ SELECT
         LIMIT 25
         FORMAT JSON
 
--- pipe:list_traces:filtered:text  [4c662966]
+-- pipe:list_traces:filtered:text  [ed6394e8]
 SELECT
           TraceId AS traceId,
           Timestamp AS startTime,
@@ -8065,12 +10464,14 @@ SELECT
           intDiv(Duration, 1000) AS durationMicros,
           toUInt64(1) AS spanCount,
           [ServiceName] AS services,
+          SpanId AS rootSpanId,
           SpanName AS rootSpanName,
           SpanKind AS rootSpanKind,
           StatusCode AS rootSpanStatusCode,
-          SpanAttributes['http.method'] AS rootHttpMethod,
+          StatusMessage AS rootSpanStatusMessage,
+          if(SpanAttributes['http.method'] != '', SpanAttributes['http.method'], SpanAttributes['http.request.method']) AS rootHttpMethod,
           SpanAttributes['http.route'] AS rootHttpRoute,
-          SpanAttributes['http.status_code'] AS rootHttpStatusCode,
+          if(SpanAttributes['http.status_code'] != '', SpanAttributes['http.status_code'], SpanAttributes['http.response.status_code']) AS rootHttpStatusCode,
           toJSONString(map('http.method', SpanAttributes['http.method'], 'http.request.method', SpanAttributes['http.request.method'], 'http.route', SpanAttributes['http.route'], 'http.target', SpanAttributes['http.target'], 'http.status_code', SpanAttributes['http.status_code'], 'http.response.status_code', SpanAttributes['http.response.status_code'], 'http.url', SpanAttributes['http.url'], 'url.full', SpanAttributes['url.full'], 'url.path', SpanAttributes['url.path'], 'server.address', SpanAttributes['server.address'], 'net.peer.name', SpanAttributes['net.peer.name'], 'screen.name', SpanAttributes['screen.name'])) AS rootSpanAttributes,
           if(StatusCode = 'Error', 1, 0) AS hasError
         FROM traces
@@ -8619,13 +11020,13 @@ SELECT
         ORDER BY bucket ASC
         FORMAT JSON
 
--- pipe:service_dependencies:default:baseline  [04bb09d7]
+-- pipe:service_dependencies:default:baseline  [43be6b84]
 SELECT
           sourceService AS sourceService,
           targetService AS targetService,
           sum(bucketCallCount) AS callCount,
           sum(bucketErrorCount) AS errorCount,
-          sum(bucketDurationSumMs) / nullIf(sum(bucketCallCount), 0) AS avgDurationMs,
+          ifNull(ifNotFinite(sum(bucketDurationSumMs) / nullIf(sum(bucketCallCount), 0), 0), 0) AS avgDurationMs,
           max(bucketMaxDurationMs) AS maxDurationMs,
           sum(bucketEstimatedSpanCount) AS estimatedSpanCount
         FROM (
@@ -9662,7 +12063,7 @@ SELECT
         LIMIT 5000
         FORMAT JSON
 
--- pipe:span_search:default:baseline  [bfce1ab3]
+-- pipe:span_search:default:baseline  [2a040c47]
 SELECT
           TraceId AS traceId,
           SpanId AS spanId,
@@ -9678,21 +12079,19 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-          AND StatusCode != 'Error'
           AND Timestamp >= (SELECT min(ts) FROM (SELECT
           Timestamp AS ts
         FROM traces
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-          AND StatusCode != 'Error'
         ORDER BY ts DESC
         LIMIT 20))
         ORDER BY timestamp DESC
         LIMIT 20
         FORMAT JSON
 
--- pipe:span_search:default:bloom  [bfce1ab3]
+-- pipe:span_search:default:bloom  [2a040c47]
 SELECT
           TraceId AS traceId,
           SpanId AS spanId,
@@ -9708,21 +12107,19 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-          AND StatusCode != 'Error'
           AND Timestamp >= (SELECT min(ts) FROM (SELECT
           Timestamp AS ts
         FROM traces
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-          AND StatusCode != 'Error'
         ORDER BY ts DESC
         LIMIT 20))
         ORDER BY timestamp DESC
         LIMIT 20
         FORMAT JSON
 
--- pipe:span_search:default:text  [bfce1ab3]
+-- pipe:span_search:default:text  [2a040c47]
 SELECT
           TraceId AS traceId,
           SpanId AS spanId,
@@ -9738,24 +12135,22 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-          AND StatusCode != 'Error'
           AND Timestamp >= (SELECT min(ts) FROM (SELECT
           Timestamp AS ts
         FROM traces
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-          AND StatusCode != 'Error'
         ORDER BY ts DESC
         LIMIT 20))
         ORDER BY timestamp DESC
         LIMIT 20
         FORMAT JSON
 
--- pipe:top_operations:default:baseline  [af24600b]
+-- pipe:top_operations:default:baseline  [6284a616]
 SELECT
           SpanName AS name,
-          quantile(0.95)(Duration) / 1000000 AS value
+          ifNull(ifNotFinite(quantile(0.95)(Duration) / 1000000, 0), 0) AS value
         FROM traces
         WHERE OrgId = 'org_sql_catalog'
           AND ServiceName = 'api'
@@ -9766,23 +12161,34 @@ SELECT
         LIMIT 20
         FORMAT JSON
 
--- pipe:traces_duration_stats:default:baseline  [cc9afeb5]
+-- pipe:traces_duration_stats:default:baseline  [379189b9]
 SELECT
-          min(Duration) / 1000000 AS minDurationMs,
-          max(Duration) / 1000000 AS maxDurationMs,
-          quantile(0.5)(Duration) / 1000000 AS p50DurationMs,
-          quantile(0.95)(Duration) / 1000000 AS p95DurationMs
+          minIf(durationMin, traceCount > 0) / 1000000 AS minDurationMs,
+          maxIf(durationMax, traceCount > 0) / 1000000 AS maxDurationMs,
+          ifNull(ifNotFinite(arrayElement(quantilesTDigestMerge(0.5, 0.95)(durationQuantiles), 1) / 1000000, 0), 0) AS p50DurationMs,
+          ifNull(ifNotFinite(arrayElement(quantilesTDigestMerge(0.5, 0.95)(durationQuantiles), 2) / 1000000, 0), 0) AS p95DurationMs
+        FROM (
+SELECT
+          count() AS traceCount,
+          min(Duration) AS durationMin,
+          max(Duration) AS durationMax,
+          quantilesTDigestState(0.5, 0.95)(Duration) AS durationQuantiles
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
+) AS duration_tiers
         FORMAT JSON
 
--- pipe:traces_facets:attribute-filtered:baseline  [40d7b9a8]
+-- pipe:traces_facets:attribute-filtered:baseline  [ae8fd611]
+SELECT
+          name AS name,
+          sum(count) AS count,
+          'service' AS facetType
+        FROM (
 SELECT
           ServiceName AS name,
-          count() AS count,
-          'service' AS facetType
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
@@ -9804,13 +12210,19 @@ SELECT
           AND t_res.Timestamp <= '2026-01-03 14:15:00'
           AND t_res.ResourceAttributes['host.name'] = 'web')
         GROUP BY name
+) AS service_tiers
+        GROUP BY name
         ORDER BY count DESC
         LIMIT 50
 UNION ALL
 SELECT
-          SpanName AS name,
-          count() AS count,
+          name AS name,
+          sum(count) AS count,
           'spanName' AS facetType
+        FROM (
+SELECT
+          SpanName AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
@@ -9833,13 +12245,19 @@ SELECT
           AND t_res.ResourceAttributes['host.name'] = 'web')
           AND SpanName != ''
         GROUP BY name
+) AS spanName_tiers
+        GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
-          HttpMethod AS name,
-          count() AS count,
+          name AS name,
+          sum(count) AS count,
           'httpMethod' AS facetType
+        FROM (
+SELECT
+          HttpMethod AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
@@ -9862,13 +12280,19 @@ SELECT
           AND t_res.ResourceAttributes['host.name'] = 'web')
           AND HttpMethod != ''
         GROUP BY name
+) AS httpMethod_tiers
+        GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
-          HttpStatusCode AS name,
-          count() AS count,
+          name AS name,
+          sum(count) AS count,
           'httpStatus' AS facetType
+        FROM (
+SELECT
+          HttpStatusCode AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
@@ -9891,13 +12315,19 @@ SELECT
           AND t_res.ResourceAttributes['host.name'] = 'web')
           AND HttpStatusCode != ''
         GROUP BY name
+) AS httpStatus_tiers
+        GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
-          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
-          count() AS count,
+          name AS name,
+          sum(count) AS count,
           'deploymentEnv' AS facetType
+        FROM (
+SELECT
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
@@ -9919,13 +12349,19 @@ SELECT
           AND t_res.Timestamp <= '2026-01-03 14:15:00'
           AND t_res.ResourceAttributes['host.name'] = 'web')
         GROUP BY name
+) AS deploymentEnv_tiers
+        GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
-          ServiceNamespace AS name,
-          count() AS count,
+          name AS name,
+          sum(count) AS count,
           'serviceNamespace' AS facetType
+        FROM (
+SELECT
+          ServiceNamespace AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
@@ -9948,13 +12384,18 @@ SELECT
           AND t_res.ResourceAttributes['host.name'] = 'web')
           AND ServiceNamespace != ''
         GROUP BY name
+) AS serviceNamespace_tiers
+        GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
           'error' AS name,
-          count() AS count,
+          sum(count) AS count,
           'errorCount' AS facetType
+        FROM (
+SELECT
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
@@ -9976,13 +12417,18 @@ SELECT
           AND t_res.Timestamp <= '2026-01-03 14:15:00'
           AND t_res.ResourceAttributes['host.name'] = 'web')
           AND HasError = 1
+) AS errorCount_tiers
 FORMAT JSON
 
--- pipe:traces_facets:attribute-filtered:bloom  [40d7b9a8]
+-- pipe:traces_facets:attribute-filtered:bloom  [ae8fd611]
+SELECT
+          name AS name,
+          sum(count) AS count,
+          'service' AS facetType
+        FROM (
 SELECT
           ServiceName AS name,
-          count() AS count,
-          'service' AS facetType
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
@@ -10004,13 +12450,19 @@ SELECT
           AND t_res.Timestamp <= '2026-01-03 14:15:00'
           AND t_res.ResourceAttributes['host.name'] = 'web')
         GROUP BY name
+) AS service_tiers
+        GROUP BY name
         ORDER BY count DESC
         LIMIT 50
 UNION ALL
 SELECT
-          SpanName AS name,
-          count() AS count,
+          name AS name,
+          sum(count) AS count,
           'spanName' AS facetType
+        FROM (
+SELECT
+          SpanName AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
@@ -10033,13 +12485,19 @@ SELECT
           AND t_res.ResourceAttributes['host.name'] = 'web')
           AND SpanName != ''
         GROUP BY name
+) AS spanName_tiers
+        GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
-          HttpMethod AS name,
-          count() AS count,
+          name AS name,
+          sum(count) AS count,
           'httpMethod' AS facetType
+        FROM (
+SELECT
+          HttpMethod AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
@@ -10062,13 +12520,19 @@ SELECT
           AND t_res.ResourceAttributes['host.name'] = 'web')
           AND HttpMethod != ''
         GROUP BY name
+) AS httpMethod_tiers
+        GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
-          HttpStatusCode AS name,
-          count() AS count,
+          name AS name,
+          sum(count) AS count,
           'httpStatus' AS facetType
+        FROM (
+SELECT
+          HttpStatusCode AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
@@ -10091,13 +12555,19 @@ SELECT
           AND t_res.ResourceAttributes['host.name'] = 'web')
           AND HttpStatusCode != ''
         GROUP BY name
+) AS httpStatus_tiers
+        GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
-          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
-          count() AS count,
+          name AS name,
+          sum(count) AS count,
           'deploymentEnv' AS facetType
+        FROM (
+SELECT
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
@@ -10119,13 +12589,19 @@ SELECT
           AND t_res.Timestamp <= '2026-01-03 14:15:00'
           AND t_res.ResourceAttributes['host.name'] = 'web')
         GROUP BY name
+) AS deploymentEnv_tiers
+        GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
-          ServiceNamespace AS name,
-          count() AS count,
+          name AS name,
+          sum(count) AS count,
           'serviceNamespace' AS facetType
+        FROM (
+SELECT
+          ServiceNamespace AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
@@ -10148,13 +12624,18 @@ SELECT
           AND t_res.ResourceAttributes['host.name'] = 'web')
           AND ServiceNamespace != ''
         GROUP BY name
+) AS serviceNamespace_tiers
+        GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
           'error' AS name,
-          count() AS count,
+          sum(count) AS count,
           'errorCount' AS facetType
+        FROM (
+SELECT
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
@@ -10176,13 +12657,18 @@ SELECT
           AND t_res.Timestamp <= '2026-01-03 14:15:00'
           AND t_res.ResourceAttributes['host.name'] = 'web')
           AND HasError = 1
+) AS errorCount_tiers
 FORMAT JSON
 
--- pipe:traces_facets:attribute-filtered:text  [40d7b9a8]
+-- pipe:traces_facets:attribute-filtered:text  [ae8fd611]
+SELECT
+          name AS name,
+          sum(count) AS count,
+          'service' AS facetType
+        FROM (
 SELECT
           ServiceName AS name,
-          count() AS count,
-          'service' AS facetType
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
@@ -10204,13 +12690,19 @@ SELECT
           AND t_res.Timestamp <= '2026-01-03 14:15:00'
           AND t_res.ResourceAttributes['host.name'] = 'web')
         GROUP BY name
+) AS service_tiers
+        GROUP BY name
         ORDER BY count DESC
         LIMIT 50
 UNION ALL
 SELECT
-          SpanName AS name,
-          count() AS count,
+          name AS name,
+          sum(count) AS count,
           'spanName' AS facetType
+        FROM (
+SELECT
+          SpanName AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
@@ -10233,13 +12725,19 @@ SELECT
           AND t_res.ResourceAttributes['host.name'] = 'web')
           AND SpanName != ''
         GROUP BY name
+) AS spanName_tiers
+        GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
-          HttpMethod AS name,
-          count() AS count,
+          name AS name,
+          sum(count) AS count,
           'httpMethod' AS facetType
+        FROM (
+SELECT
+          HttpMethod AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
@@ -10262,13 +12760,19 @@ SELECT
           AND t_res.ResourceAttributes['host.name'] = 'web')
           AND HttpMethod != ''
         GROUP BY name
+) AS httpMethod_tiers
+        GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
-          HttpStatusCode AS name,
-          count() AS count,
+          name AS name,
+          sum(count) AS count,
           'httpStatus' AS facetType
+        FROM (
+SELECT
+          HttpStatusCode AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
@@ -10291,13 +12795,19 @@ SELECT
           AND t_res.ResourceAttributes['host.name'] = 'web')
           AND HttpStatusCode != ''
         GROUP BY name
+) AS httpStatus_tiers
+        GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
-          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
-          count() AS count,
+          name AS name,
+          sum(count) AS count,
           'deploymentEnv' AS facetType
+        FROM (
+SELECT
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
@@ -10319,13 +12829,19 @@ SELECT
           AND t_res.Timestamp <= '2026-01-03 14:15:00'
           AND t_res.ResourceAttributes['host.name'] = 'web')
         GROUP BY name
+) AS deploymentEnv_tiers
+        GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
-          ServiceNamespace AS name,
-          count() AS count,
+          name AS name,
+          sum(count) AS count,
           'serviceNamespace' AS facetType
+        FROM (
+SELECT
+          ServiceNamespace AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
@@ -10348,13 +12864,18 @@ SELECT
           AND t_res.ResourceAttributes['host.name'] = 'web')
           AND ServiceNamespace != ''
         GROUP BY name
+) AS serviceNamespace_tiers
+        GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
           'error' AS name,
-          count() AS count,
+          sum(count) AS count,
           'errorCount' AS facetType
+        FROM (
+SELECT
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
@@ -10376,270 +12897,391 @@ SELECT
           AND t_res.Timestamp <= '2026-01-03 14:15:00'
           AND t_res.ResourceAttributes['host.name'] = 'web')
           AND HasError = 1
+) AS errorCount_tiers
 FORMAT JSON
 
--- pipe:traces_facets:default:baseline  [156680f5]
+-- pipe:traces_facets:default:baseline  [792a8bc0]
+SELECT
+          name AS name,
+          sum(count) AS count,
+          'service' AS facetType
+        FROM (
 SELECT
           ServiceName AS name,
-          count() AS count,
-          'service' AS facetType
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
         GROUP BY name
+) AS service_tiers
+        GROUP BY name
         ORDER BY count DESC
         LIMIT 50
 UNION ALL
 SELECT
-          SpanName AS name,
-          count() AS count,
+          name AS name,
+          sum(count) AS count,
           'spanName' AS facetType
+        FROM (
+SELECT
+          SpanName AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND SpanName != ''
         GROUP BY name
+) AS spanName_tiers
+        GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
-          HttpMethod AS name,
-          count() AS count,
+          name AS name,
+          sum(count) AS count,
           'httpMethod' AS facetType
+        FROM (
+SELECT
+          HttpMethod AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND HttpMethod != ''
         GROUP BY name
+) AS httpMethod_tiers
+        GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
-          HttpStatusCode AS name,
-          count() AS count,
+          name AS name,
+          sum(count) AS count,
           'httpStatus' AS facetType
+        FROM (
+SELECT
+          HttpStatusCode AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND HttpStatusCode != ''
         GROUP BY name
-        ORDER BY count DESC
-        LIMIT 20
-UNION ALL
-SELECT
-          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
-          count() AS count,
-          'deploymentEnv' AS facetType
-        FROM trace_list_mv
-        WHERE OrgId = 'org_sql_catalog'
-          AND Timestamp >= '2026-01-01 10:30:00'
-          AND Timestamp <= '2026-01-03 14:15:00'
+) AS httpStatus_tiers
         GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
-          ServiceNamespace AS name,
-          count() AS count,
+          name AS name,
+          sum(count) AS count,
+          'deploymentEnv' AS facetType
+        FROM (
+SELECT
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
+          count() AS count
+        FROM trace_list_mv
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+        GROUP BY name
+) AS deploymentEnv_tiers
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 20
+UNION ALL
+SELECT
+          name AS name,
+          sum(count) AS count,
           'serviceNamespace' AS facetType
+        FROM (
+SELECT
+          ServiceNamespace AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceNamespace != ''
         GROUP BY name
+) AS serviceNamespace_tiers
+        GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
           'error' AS name,
-          count() AS count,
+          sum(count) AS count,
           'errorCount' AS facetType
+        FROM (
+SELECT
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND HasError = 1
+) AS errorCount_tiers
 FORMAT JSON
 
--- pipe:traces_facets:default:bloom  [156680f5]
+-- pipe:traces_facets:default:bloom  [792a8bc0]
+SELECT
+          name AS name,
+          sum(count) AS count,
+          'service' AS facetType
+        FROM (
 SELECT
           ServiceName AS name,
-          count() AS count,
-          'service' AS facetType
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
         GROUP BY name
+) AS service_tiers
+        GROUP BY name
         ORDER BY count DESC
         LIMIT 50
 UNION ALL
 SELECT
-          SpanName AS name,
-          count() AS count,
+          name AS name,
+          sum(count) AS count,
           'spanName' AS facetType
+        FROM (
+SELECT
+          SpanName AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND SpanName != ''
         GROUP BY name
+) AS spanName_tiers
+        GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
-          HttpMethod AS name,
-          count() AS count,
+          name AS name,
+          sum(count) AS count,
           'httpMethod' AS facetType
+        FROM (
+SELECT
+          HttpMethod AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND HttpMethod != ''
         GROUP BY name
+) AS httpMethod_tiers
+        GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
-          HttpStatusCode AS name,
-          count() AS count,
+          name AS name,
+          sum(count) AS count,
           'httpStatus' AS facetType
+        FROM (
+SELECT
+          HttpStatusCode AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND HttpStatusCode != ''
         GROUP BY name
-        ORDER BY count DESC
-        LIMIT 20
-UNION ALL
-SELECT
-          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
-          count() AS count,
-          'deploymentEnv' AS facetType
-        FROM trace_list_mv
-        WHERE OrgId = 'org_sql_catalog'
-          AND Timestamp >= '2026-01-01 10:30:00'
-          AND Timestamp <= '2026-01-03 14:15:00'
+) AS httpStatus_tiers
         GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
-          ServiceNamespace AS name,
-          count() AS count,
+          name AS name,
+          sum(count) AS count,
+          'deploymentEnv' AS facetType
+        FROM (
+SELECT
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
+          count() AS count
+        FROM trace_list_mv
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+        GROUP BY name
+) AS deploymentEnv_tiers
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 20
+UNION ALL
+SELECT
+          name AS name,
+          sum(count) AS count,
           'serviceNamespace' AS facetType
+        FROM (
+SELECT
+          ServiceNamespace AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceNamespace != ''
         GROUP BY name
+) AS serviceNamespace_tiers
+        GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
           'error' AS name,
-          count() AS count,
+          sum(count) AS count,
           'errorCount' AS facetType
+        FROM (
+SELECT
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND HasError = 1
+) AS errorCount_tiers
 FORMAT JSON
 
--- pipe:traces_facets:default:text  [156680f5]
+-- pipe:traces_facets:default:text  [792a8bc0]
+SELECT
+          name AS name,
+          sum(count) AS count,
+          'service' AS facetType
+        FROM (
 SELECT
           ServiceName AS name,
-          count() AS count,
-          'service' AS facetType
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
         GROUP BY name
+) AS service_tiers
+        GROUP BY name
         ORDER BY count DESC
         LIMIT 50
 UNION ALL
 SELECT
-          SpanName AS name,
-          count() AS count,
+          name AS name,
+          sum(count) AS count,
           'spanName' AS facetType
+        FROM (
+SELECT
+          SpanName AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND SpanName != ''
         GROUP BY name
+) AS spanName_tiers
+        GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
-          HttpMethod AS name,
-          count() AS count,
+          name AS name,
+          sum(count) AS count,
           'httpMethod' AS facetType
+        FROM (
+SELECT
+          HttpMethod AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND HttpMethod != ''
         GROUP BY name
+) AS httpMethod_tiers
+        GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
-          HttpStatusCode AS name,
-          count() AS count,
+          name AS name,
+          sum(count) AS count,
           'httpStatus' AS facetType
+        FROM (
+SELECT
+          HttpStatusCode AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND HttpStatusCode != ''
         GROUP BY name
-        ORDER BY count DESC
-        LIMIT 20
-UNION ALL
-SELECT
-          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
-          count() AS count,
-          'deploymentEnv' AS facetType
-        FROM trace_list_mv
-        WHERE OrgId = 'org_sql_catalog'
-          AND Timestamp >= '2026-01-01 10:30:00'
-          AND Timestamp <= '2026-01-03 14:15:00'
+) AS httpStatus_tiers
         GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
-          ServiceNamespace AS name,
-          count() AS count,
+          name AS name,
+          sum(count) AS count,
+          'deploymentEnv' AS facetType
+        FROM (
+SELECT
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
+          count() AS count
+        FROM trace_list_mv
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+        GROUP BY name
+) AS deploymentEnv_tiers
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 20
+UNION ALL
+SELECT
+          name AS name,
+          sum(count) AS count,
           'serviceNamespace' AS facetType
+        FROM (
+SELECT
+          ServiceNamespace AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceNamespace != ''
         GROUP BY name
+) AS serviceNamespace_tiers
+        GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
           'error' AS name,
-          count() AS count,
+          sum(count) AS count,
           'errorCount' AS facetType
+        FROM (
+SELECT
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND HasError = 1
+) AS errorCount_tiers
 FORMAT JSON
 
 -- spec:attribute-keys-logs:baseline  [f2e10453]
@@ -10679,6 +13321,19 @@ SELECT
           AND Hour >= '2026-01-01 10:30:00'
           AND Hour <= '2026-01-03 14:15:00'
           AND AttributeScope = 'metric'
+        GROUP BY attributeKey
+        ORDER BY usageCount DESC
+        LIMIT 200
+        FORMAT JSON
+
+-- spec:attribute-keys-product-events:baseline  [f7da3259]
+SELECT
+          arrayJoin(mapKeys(Attributes)) AS attributeKey,
+          count() AS usageCount
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
         GROUP BY attributeKey
         ORDER BY usageCount DESC
         LIMIT 200
@@ -10780,6 +13435,20 @@ SELECT
           AND Hour <= '2026-01-03 14:15:00'
           AND AttributeScope = 'metric'
           AND AttributeKey = 'http.route'
+        GROUP BY attributeValue
+        ORDER BY usageCount DESC
+        LIMIT 50
+        FORMAT JSON
+
+-- spec:attribute-values-product-events:baseline  [8f896fc0]
+SELECT
+          Attributes['plan'] AS attributeValue,
+          count() AS usageCount
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND has(mapKeys(Attributes), 'plan')
         GROUP BY attributeValue
         ORDER BY usageCount DESC
         LIMIT 50
@@ -11071,9 +13740,22 @@ ORDER BY count DESC
 LIMIT 500
 FORMAT JSON
 
--- spec:logs-timeseries-grouped:baseline  [f594ac7f]
-WITH __series_base AS (
+-- spec:logs-timeseries-grouped:baseline  [3a5fc636]
 SELECT
+          bucket AS bucket,
+          groupName AS groupName,
+          count AS count
+        FROM (SELECT
+          bucket AS bucket,
+          groupName AS groupName,
+          count AS count,
+          dense_rank() OVER (ORDER BY __series_peak DESC, groupName ASC) AS __series_rank
+        FROM (SELECT
+          bucket AS bucket,
+          groupName AS groupName,
+          count AS count,
+          max(count) OVER (PARTITION BY groupName) AS __series_peak
+        FROM (SELECT
           toStartOfInterval(Timestamp, INTERVAL 60 SECOND) AS bucket,
           coalesce(nullIf(toString(SeverityText), ''), 'all') AS groupName,
           count() AS count
@@ -11083,23 +13765,8 @@ SELECT
           AND TimestampTime <= '2026-01-03 14:15:00'
           AND Timestamp >= '2026-01-03 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
-        GROUP BY bucket, groupName
-        ORDER BY bucket ASC, groupName ASC
-)
-SELECT
-          bucket AS bucket,
-          groupName AS groupName,
-          count AS count
-        FROM __series_base
-        WHERE groupName IN (SELECT
-          groupName AS groupName
-        FROM (SELECT
-          groupName AS groupName,
-          max(count) AS rank
-        FROM __series_base
-        GROUP BY groupName
-        ORDER BY rank DESC
-        LIMIT 5) AS ranked)
+        GROUP BY bucket, groupName) AS __series_base) AS __series_peaks) AS __series_ranked
+        WHERE __series_rank <= 5
         ORDER BY bucket ASC, groupName ASC
         FORMAT JSON
 
@@ -11145,10 +13812,10 @@ SELECT
         ORDER BY bucket ASC, groupName ASC
         FORMAT JSON
 
--- spec:metrics-breakdown:baseline  [35b2dc2d]
+-- spec:metrics-breakdown:baseline  [a0c39163]
 SELECT
           ServiceName AS name,
-          if(sum(Count) > 0, sum(Sum) / sum(Count), 0) AS avgValue,
+          ifNull(ifNotFinite(sum(Sum) / sum(Count), 0), 0) AS avgValue,
           sum(Sum) AS sumValue,
           sum(Count) AS count
         FROM metrics_histogram
@@ -11161,11 +13828,11 @@ SELECT
         LIMIT 10
         FORMAT JSON
 
--- spec:metrics-sparklines:baseline  [377afd48]
+-- spec:metrics-sparklines:baseline  [8e54e769]
 SELECT
           toStartOfInterval(TimeUnix, INTERVAL 3600 SECOND) AS bucket,
           MetricName AS metricName,
-          avg(Value) AS avgValue,
+          ifNull(ifNotFinite(avg(Value), 0), 0) AS avgValue,
           sum(Value) AS sumValue,
           count() AS dataPointCount
         FROM metrics_sum
@@ -11177,13 +13844,13 @@ SELECT
         ORDER BY bucket ASC
         FORMAT JSON
 
--- spec:metrics-timeseries-grouped-by-attribute:baseline  [7f18f69a]
+-- spec:metrics-timeseries-grouped-by-attribute:baseline  [e9d0e250]
 SELECT
           toStartOfInterval(TimeUnix, INTERVAL 300 SECOND) AS bucket,
           ServiceName AS serviceName,
           Attributes['http.route'] AS attributeValue,
           Attributes['http.route'] AS groupName,
-          if(sum(Count) > 0, sum(Sum) / sum(Count), 0) AS avgValue,
+          ifNull(ifNotFinite(sum(Sum) / sum(Count), 0), 0) AS avgValue,
           ifNull(min(Min), 0) AS minValue,
           ifNull(max(Max), 0) AS maxValue,
           sum(Sum) AS sumValue,
@@ -11198,13 +13865,13 @@ SELECT
         ORDER BY bucket ASC
         FORMAT JSON
 
--- spec:metrics-timeseries-grouped-by-resource:baseline  [c0ea8282]
+-- spec:metrics-timeseries-grouped-by-resource:baseline  [aba4d1c8]
 SELECT
           toStartOfInterval(TimeUnix, INTERVAL 300 SECOND) AS bucket,
           ServiceName AS serviceName,
           ResourceAttributes['host.name'] AS attributeValue,
           ResourceAttributes['host.name'] AS groupName,
-          if(sum(Count) > 0, sum(Sum) / sum(Count), 0) AS avgValue,
+          ifNull(ifNotFinite(sum(Sum) / sum(Count), 0), 0) AS avgValue,
           ifNull(min(Min), 0) AS minValue,
           ifNull(max(Max), 0) AS maxValue,
           sum(Sum) AS sumValue,
@@ -11219,7 +13886,7 @@ SELECT
         ORDER BY bucket ASC
         FORMAT JSON
 
--- spec:metrics-timeseries-rate:baseline  [bc6c3438]
+-- spec:metrics-timeseries-rate:baseline  [2197c241]
 WITH with_deltas AS (
 SELECT
           TimeUnix AS TimeUnix,
@@ -11241,7 +13908,7 @@ SELECT
           ServiceName AS serviceName,
           '' AS attributeValue,
           ServiceName AS groupName,
-          sumIf(delta / time_delta, (delta >= 0 AND time_delta > 0)) AS rateValue,
+          ifNull(ifNotFinite(sumIf(delta / time_delta, (delta >= 0 AND time_delta > 0)), 0), 0) AS rateValue,
           sumIf(delta, delta >= 0) AS increaseValue,
           count() AS dataPointCount
         FROM with_deltas
@@ -11250,13 +13917,13 @@ SELECT
         ORDER BY bucket ASC
         FORMAT JSON
 
--- spec:metrics-timeseries:baseline  [8a2c3b82]
+-- spec:metrics-timeseries:baseline  [e0eb6444]
 SELECT
           toStartOfInterval(TimeUnix, INTERVAL 3600 SECOND) AS bucket,
           ServiceName AS serviceName,
           '' AS attributeValue,
           ServiceName AS groupName,
-          if(sum(Count) > 0, sum(Sum) / sum(Count), 0) AS avgValue,
+          ifNull(ifNotFinite(sum(Sum) / sum(Count), 0), 0) AS avgValue,
           ifNull(min(Min), 0) AS minValue,
           ifNull(max(Max), 0) AS maxValue,
           sum(Sum) AS sumValue,
@@ -11269,6 +13936,102 @@ SELECT
           AND ServiceName = 'api'
         GROUP BY bucket, serviceName
         ORDER BY bucket ASC
+        FORMAT JSON
+
+-- spec:product-events-breakdown:baseline  [747efb4d]
+SELECT
+          PagePath AS name,
+          uniqIf(SessionId, SessionId != '') AS value
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Host IN ('maple.dev')
+        GROUP BY name
+        ORDER BY value DESC, name ASC
+        LIMIT 25
+        FORMAT JSON
+
+-- spec:product-events-list:baseline  [e832cab5]
+SELECT
+          Timestamp AS timestamp,
+          EventName AS eventName,
+          Kind AS kind,
+          Source AS source,
+          Host AS host,
+          PagePath AS pagePath,
+          Url AS url,
+          ServiceName AS serviceName,
+          UserId AS userId,
+          GroupId AS groupId,
+          VisitorId AS visitorId,
+          SessionId AS sessionId,
+          TraceId AS traceId,
+          SpanId AS spanId,
+          Attributes AS attributes,
+          Seq AS seq
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND Kind IN ('custom')
+        ORDER BY timestamp DESC, seq DESC
+        LIMIT 50
+        FORMAT JSON
+
+-- spec:product-events-timeseries-grouped:baseline  [95396e8d]
+SELECT
+          bucket AS bucket,
+          groupName AS groupName,
+          value AS value,
+          eventCount AS eventCount
+        FROM (SELECT
+          bucket AS bucket,
+          groupName AS groupName,
+          value AS value,
+          eventCount AS eventCount,
+          dense_rank() OVER (ORDER BY __series_peak DESC, groupName ASC) AS __series_rank
+        FROM (SELECT
+          bucket AS bucket,
+          groupName AS groupName,
+          value AS value,
+          eventCount AS eventCount,
+          max(value) OVER (PARTITION BY groupName) AS __series_peak
+        FROM (SELECT
+          toStartOfInterval(Timestamp, INTERVAL 60 SECOND) AS bucket,
+          arrayStringConcat([coalesce(nullIf(EventName, ''), '(none)'), coalesce(nullIf(Attributes['plan'], ''), '(none)')], ' · ') AS groupName,
+          uniqIf(if(UserId != '', UserId, VisitorId), (UserId != '' OR VisitorId != '')) AS value,
+          count() AS eventCount
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-03 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND SessionId IN (SELECT
+          SessionId AS sessionId
+        FROM session_replays
+        WHERE OrgId = 'org_sql_catalog'
+          AND StartTime >= '2026-01-03 10:30:00'
+          AND StartTime <= '2026-01-03 14:15:00'
+          AND Country = 'DE'
+        GROUP BY sessionId)
+        GROUP BY bucket, groupName) AS __series_base) AS __series_peaks) AS __series_ranked
+        WHERE __series_rank <= 5
+        ORDER BY bucket ASC, groupName ASC
+        FORMAT JSON
+
+-- spec:product-events-timeseries:baseline  [03adb16e]
+SELECT
+          toStartOfInterval(Timestamp, INTERVAL 3600 SECOND) AS bucket,
+          'all' AS groupName,
+          count() AS value,
+          count() AS eventCount
+        FROM product_events
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND EventName IN ('signup_completed')
+        GROUP BY bucket, groupName
+        ORDER BY bucket ASC, groupName ASC
         FORMAT JSON
 
 -- spec:services-facets:baseline  [b4a2da9c]
@@ -11581,333 +14344,734 @@ SELECT
         LIMIT 10
         FORMAT JSON
 
--- spec:traces-facets-single-dimension:baseline  [7660bccf]
+-- spec:traces-facets-single-dimension:baseline  [ef78e2bf]
+SELECT
+          name AS name,
+          sum(count) AS count,
+          'spanName' AS facetType
+        FROM (
 SELECT
           SpanName AS name,
-          count() AS count,
-          'spanName' AS facetType
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
           AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
           AND SpanName != ''
+        GROUP BY name
+UNION ALL
+SELECT
+          SpanName AS name,
+          sum(TraceCount) AS count
+        FROM trace_facets_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+          AND ServiceName = 'api'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+          AND SpanName != ''
+        GROUP BY name
+) AS spanName_tiers
         GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 FORMAT JSON
 
--- spec:traces-facets:baseline  [8f831500]
+-- spec:traces-facets:baseline  [af6b8130]
+SELECT
+          name AS name,
+          sum(count) AS count,
+          'service' AS facetType
+        FROM (
 SELECT
           ServiceName AS name,
-          count() AS count,
-          'service' AS facetType
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
           AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
+        GROUP BY name
+UNION ALL
+SELECT
+          ServiceName AS name,
+          sum(TraceCount) AS count
+        FROM trace_facets_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+          AND ServiceName = 'api'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+        GROUP BY name
+) AS service_tiers
         GROUP BY name
         ORDER BY count DESC
         LIMIT 50
 UNION ALL
 SELECT
-          SpanName AS name,
-          count() AS count,
+          name AS name,
+          sum(count) AS count,
           'spanName' AS facetType
+        FROM (
+SELECT
+          SpanName AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
+          AND ServiceName = 'api'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
+          AND SpanName != ''
+        GROUP BY name
+UNION ALL
+SELECT
+          SpanName AS name,
+          sum(TraceCount) AS count
+        FROM trace_facets_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
           AND ServiceName = 'api'
           AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
           AND SpanName != ''
         GROUP BY name
+) AS spanName_tiers
+        GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
-          HttpMethod AS name,
-          count() AS count,
+          name AS name,
+          sum(count) AS count,
           'httpMethod' AS facetType
+        FROM (
+SELECT
+          HttpMethod AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
+          AND ServiceName = 'api'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
+          AND HttpMethod != ''
+        GROUP BY name
+UNION ALL
+SELECT
+          HttpMethod AS name,
+          sum(TraceCount) AS count
+        FROM trace_facets_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
           AND ServiceName = 'api'
           AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
           AND HttpMethod != ''
         GROUP BY name
+) AS httpMethod_tiers
+        GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
-          HttpStatusCode AS name,
-          count() AS count,
+          name AS name,
+          sum(count) AS count,
           'httpStatus' AS facetType
+        FROM (
+SELECT
+          HttpStatusCode AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
+          AND ServiceName = 'api'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
+          AND HttpStatusCode != ''
+        GROUP BY name
+UNION ALL
+SELECT
+          HttpStatusCode AS name,
+          sum(TraceCount) AS count
+        FROM trace_facets_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
           AND ServiceName = 'api'
           AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
           AND HttpStatusCode != ''
         GROUP BY name
-        ORDER BY count DESC
-        LIMIT 20
-UNION ALL
-SELECT
-          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
-          count() AS count,
-          'deploymentEnv' AS facetType
-        FROM trace_list_mv
-        WHERE OrgId = 'org_sql_catalog'
-          AND Timestamp >= '2026-01-01 10:30:00'
-          AND Timestamp <= '2026-01-03 14:15:00'
-          AND ServiceName = 'api'
-          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+) AS httpStatus_tiers
         GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
-          ServiceNamespace AS name,
-          count() AS count,
-          'serviceNamespace' AS facetType
+          name AS name,
+          sum(count) AS count,
+          'deploymentEnv' AS facetType
+        FROM (
+SELECT
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
           AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
+        GROUP BY name
+UNION ALL
+SELECT
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
+          sum(TraceCount) AS count
+        FROM trace_facets_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+          AND ServiceName = 'api'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+        GROUP BY name
+) AS deploymentEnv_tiers
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 20
+UNION ALL
+SELECT
+          name AS name,
+          sum(count) AS count,
+          'serviceNamespace' AS facetType
+        FROM (
+SELECT
+          ServiceNamespace AS name,
+          count() AS count
+        FROM trace_list_mv
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND ServiceName = 'api'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
           AND ServiceNamespace != ''
+        GROUP BY name
+UNION ALL
+SELECT
+          ServiceNamespace AS name,
+          sum(TraceCount) AS count
+        FROM trace_facets_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+          AND ServiceName = 'api'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+          AND ServiceNamespace != ''
+        GROUP BY name
+) AS serviceNamespace_tiers
         GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
           'error' AS name,
-          count() AS count,
+          sum(count) AS count,
           'errorCount' AS facetType
+        FROM (
+SELECT
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
+          AND ServiceName = 'api'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
+          AND HasError = 1
+UNION ALL
+SELECT
+          sum(TraceCount) AS count
+        FROM trace_facets_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
           AND ServiceName = 'api'
           AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
           AND HasError = 1
+) AS errorCount_tiers
 FORMAT JSON
 
--- spec:traces-facets:bloom  [8f831500]
+-- spec:traces-facets:bloom  [af6b8130]
+SELECT
+          name AS name,
+          sum(count) AS count,
+          'service' AS facetType
+        FROM (
 SELECT
           ServiceName AS name,
-          count() AS count,
-          'service' AS facetType
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
           AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
+        GROUP BY name
+UNION ALL
+SELECT
+          ServiceName AS name,
+          sum(TraceCount) AS count
+        FROM trace_facets_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+          AND ServiceName = 'api'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+        GROUP BY name
+) AS service_tiers
         GROUP BY name
         ORDER BY count DESC
         LIMIT 50
 UNION ALL
 SELECT
-          SpanName AS name,
-          count() AS count,
+          name AS name,
+          sum(count) AS count,
           'spanName' AS facetType
+        FROM (
+SELECT
+          SpanName AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
+          AND ServiceName = 'api'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
+          AND SpanName != ''
+        GROUP BY name
+UNION ALL
+SELECT
+          SpanName AS name,
+          sum(TraceCount) AS count
+        FROM trace_facets_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
           AND ServiceName = 'api'
           AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
           AND SpanName != ''
         GROUP BY name
+) AS spanName_tiers
+        GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
-          HttpMethod AS name,
-          count() AS count,
+          name AS name,
+          sum(count) AS count,
           'httpMethod' AS facetType
+        FROM (
+SELECT
+          HttpMethod AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
+          AND ServiceName = 'api'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
+          AND HttpMethod != ''
+        GROUP BY name
+UNION ALL
+SELECT
+          HttpMethod AS name,
+          sum(TraceCount) AS count
+        FROM trace_facets_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
           AND ServiceName = 'api'
           AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
           AND HttpMethod != ''
         GROUP BY name
+) AS httpMethod_tiers
+        GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
-          HttpStatusCode AS name,
-          count() AS count,
+          name AS name,
+          sum(count) AS count,
           'httpStatus' AS facetType
+        FROM (
+SELECT
+          HttpStatusCode AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
+          AND ServiceName = 'api'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
+          AND HttpStatusCode != ''
+        GROUP BY name
+UNION ALL
+SELECT
+          HttpStatusCode AS name,
+          sum(TraceCount) AS count
+        FROM trace_facets_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
           AND ServiceName = 'api'
           AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
           AND HttpStatusCode != ''
         GROUP BY name
-        ORDER BY count DESC
-        LIMIT 20
-UNION ALL
-SELECT
-          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
-          count() AS count,
-          'deploymentEnv' AS facetType
-        FROM trace_list_mv
-        WHERE OrgId = 'org_sql_catalog'
-          AND Timestamp >= '2026-01-01 10:30:00'
-          AND Timestamp <= '2026-01-03 14:15:00'
-          AND ServiceName = 'api'
-          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+) AS httpStatus_tiers
         GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
-          ServiceNamespace AS name,
-          count() AS count,
-          'serviceNamespace' AS facetType
+          name AS name,
+          sum(count) AS count,
+          'deploymentEnv' AS facetType
+        FROM (
+SELECT
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
           AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
+        GROUP BY name
+UNION ALL
+SELECT
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
+          sum(TraceCount) AS count
+        FROM trace_facets_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+          AND ServiceName = 'api'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+        GROUP BY name
+) AS deploymentEnv_tiers
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 20
+UNION ALL
+SELECT
+          name AS name,
+          sum(count) AS count,
+          'serviceNamespace' AS facetType
+        FROM (
+SELECT
+          ServiceNamespace AS name,
+          count() AS count
+        FROM trace_list_mv
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND ServiceName = 'api'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
           AND ServiceNamespace != ''
+        GROUP BY name
+UNION ALL
+SELECT
+          ServiceNamespace AS name,
+          sum(TraceCount) AS count
+        FROM trace_facets_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+          AND ServiceName = 'api'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+          AND ServiceNamespace != ''
+        GROUP BY name
+) AS serviceNamespace_tiers
         GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
           'error' AS name,
-          count() AS count,
+          sum(count) AS count,
           'errorCount' AS facetType
+        FROM (
+SELECT
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
+          AND ServiceName = 'api'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
+          AND HasError = 1
+UNION ALL
+SELECT
+          sum(TraceCount) AS count
+        FROM trace_facets_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
           AND ServiceName = 'api'
           AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
           AND HasError = 1
+) AS errorCount_tiers
 FORMAT JSON
 
--- spec:traces-facets:text  [8f831500]
+-- spec:traces-facets:text  [af6b8130]
+SELECT
+          name AS name,
+          sum(count) AS count,
+          'service' AS facetType
+        FROM (
 SELECT
           ServiceName AS name,
-          count() AS count,
-          'service' AS facetType
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
           AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
+        GROUP BY name
+UNION ALL
+SELECT
+          ServiceName AS name,
+          sum(TraceCount) AS count
+        FROM trace_facets_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+          AND ServiceName = 'api'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+        GROUP BY name
+) AS service_tiers
         GROUP BY name
         ORDER BY count DESC
         LIMIT 50
 UNION ALL
 SELECT
-          SpanName AS name,
-          count() AS count,
+          name AS name,
+          sum(count) AS count,
           'spanName' AS facetType
+        FROM (
+SELECT
+          SpanName AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
+          AND ServiceName = 'api'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
+          AND SpanName != ''
+        GROUP BY name
+UNION ALL
+SELECT
+          SpanName AS name,
+          sum(TraceCount) AS count
+        FROM trace_facets_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
           AND ServiceName = 'api'
           AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
           AND SpanName != ''
         GROUP BY name
+) AS spanName_tiers
+        GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
-          HttpMethod AS name,
-          count() AS count,
+          name AS name,
+          sum(count) AS count,
           'httpMethod' AS facetType
+        FROM (
+SELECT
+          HttpMethod AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
+          AND ServiceName = 'api'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
+          AND HttpMethod != ''
+        GROUP BY name
+UNION ALL
+SELECT
+          HttpMethod AS name,
+          sum(TraceCount) AS count
+        FROM trace_facets_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
           AND ServiceName = 'api'
           AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
           AND HttpMethod != ''
         GROUP BY name
+) AS httpMethod_tiers
+        GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
-          HttpStatusCode AS name,
-          count() AS count,
+          name AS name,
+          sum(count) AS count,
           'httpStatus' AS facetType
+        FROM (
+SELECT
+          HttpStatusCode AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
+          AND ServiceName = 'api'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
+          AND HttpStatusCode != ''
+        GROUP BY name
+UNION ALL
+SELECT
+          HttpStatusCode AS name,
+          sum(TraceCount) AS count
+        FROM trace_facets_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
           AND ServiceName = 'api'
           AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
           AND HttpStatusCode != ''
         GROUP BY name
-        ORDER BY count DESC
-        LIMIT 20
-UNION ALL
-SELECT
-          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
-          count() AS count,
-          'deploymentEnv' AS facetType
-        FROM trace_list_mv
-        WHERE OrgId = 'org_sql_catalog'
-          AND Timestamp >= '2026-01-01 10:30:00'
-          AND Timestamp <= '2026-01-03 14:15:00'
-          AND ServiceName = 'api'
-          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+) AS httpStatus_tiers
         GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
-          ServiceNamespace AS name,
-          count() AS count,
-          'serviceNamespace' AS facetType
+          name AS name,
+          sum(count) AS count,
+          'deploymentEnv' AS facetType
+        FROM (
+SELECT
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
           AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
+        GROUP BY name
+UNION ALL
+SELECT
+          coalesce(nullIf(DeploymentEnv, ''), 'unknown') AS name,
+          sum(TraceCount) AS count
+        FROM trace_facets_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+          AND ServiceName = 'api'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+        GROUP BY name
+) AS deploymentEnv_tiers
+        GROUP BY name
+        ORDER BY count DESC
+        LIMIT 20
+UNION ALL
+SELECT
+          name AS name,
+          sum(count) AS count,
+          'serviceNamespace' AS facetType
+        FROM (
+SELECT
+          ServiceNamespace AS name,
+          count() AS count
+        FROM trace_list_mv
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-01 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND ServiceName = 'api'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
           AND ServiceNamespace != ''
+        GROUP BY name
+UNION ALL
+SELECT
+          ServiceNamespace AS name,
+          sum(TraceCount) AS count
+        FROM trace_facets_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+          AND ServiceName = 'api'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+          AND ServiceNamespace != ''
+        GROUP BY name
+) AS serviceNamespace_tiers
         GROUP BY name
         ORDER BY count DESC
         LIMIT 20
 UNION ALL
 SELECT
           'error' AS name,
-          count() AS count,
+          sum(count) AS count,
           'errorCount' AS facetType
+        FROM (
+SELECT
+          count() AS count
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
           AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
           AND HasError = 1
+UNION ALL
+SELECT
+          sum(TraceCount) AS count
+        FROM trace_facets_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+          AND ServiceName = 'api'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+          AND HasError = 1
+) AS errorCount_tiers
 FORMAT JSON
 
--- spec:traces-list-grouped-attr-fallback:baseline  [45bcd782]
+-- spec:traces-list-grouped-attr-fallback:baseline  [8fe7ec8e]
 SELECT
           TraceId AS traceId,
           argMin(Timestamp, (if(ParentSpanId = '', 0, 1), Timestamp)) AS startTime,
+          toDateTime(argMin(Timestamp, (if(ParentSpanId = '', 0, 1), Timestamp))) AS startSecond,
           fromUnixTimestamp64Nano(max(toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS endTime,
           intDiv(max(toUnixTimestamp64Nano(Timestamp) + toInt64(Duration)) - min(toUnixTimestamp64Nano(Timestamp)), 1000) AS durationMicros,
           intDiv(argMin(Duration, (if(ParentSpanId = '', 0, 1), Timestamp)), 1000) AS rootDurationMicros,
@@ -11916,9 +15080,9 @@ SELECT
           argMin(SpanName, (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanName,
           argMin(SpanKind, (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanKind,
           argMin(StatusCode, (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanStatusCode,
-          argMin(SpanAttributes['http.method'], (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpMethod,
+          argMin(if(SpanAttributes['http.method'] != '', SpanAttributes['http.method'], SpanAttributes['http.request.method']), (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpMethod,
           argMin(SpanAttributes['http.route'], (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpRoute,
-          argMin(SpanAttributes['http.status_code'], (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpStatusCode,
+          argMin(if(SpanAttributes['http.status_code'] != '', SpanAttributes['http.status_code'], SpanAttributes['http.response.status_code']), (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpStatusCode,
           argMin(toJSONString(map('http.method', SpanAttributes['http.method'], 'http.request.method', SpanAttributes['http.request.method'], 'http.route', SpanAttributes['http.route'], 'http.target', SpanAttributes['http.target'], 'http.status_code', SpanAttributes['http.status_code'], 'http.response.status_code', SpanAttributes['http.response.status_code'], 'http.url', SpanAttributes['http.url'], 'url.full', SpanAttributes['url.full'], 'url.path', SpanAttributes['url.path'], 'server.address', SpanAttributes['server.address'], 'net.peer.name', SpanAttributes['net.peer.name'], 'screen.name', SpanAttributes['screen.name'])), (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanAttributes,
           if(argMin(StatusCode, (if(ParentSpanId = '', 0, 1), Timestamp)) = 'Error', 1, 0) AS hasError
         FROM trace_detail_spans
@@ -11944,10 +15108,11 @@ SELECT
         LIMIT 50
         FORMAT JSON
 
--- spec:traces-list-grouped-attr-fallback:bloom  [c043eae4]
+-- spec:traces-list-grouped-attr-fallback:bloom  [4f15f638]
 SELECT
           TraceId AS traceId,
           argMin(Timestamp, (if(ParentSpanId = '', 0, 1), Timestamp)) AS startTime,
+          toDateTime(argMin(Timestamp, (if(ParentSpanId = '', 0, 1), Timestamp))) AS startSecond,
           fromUnixTimestamp64Nano(max(toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS endTime,
           intDiv(max(toUnixTimestamp64Nano(Timestamp) + toInt64(Duration)) - min(toUnixTimestamp64Nano(Timestamp)), 1000) AS durationMicros,
           intDiv(argMin(Duration, (if(ParentSpanId = '', 0, 1), Timestamp)), 1000) AS rootDurationMicros,
@@ -11956,9 +15121,9 @@ SELECT
           argMin(SpanName, (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanName,
           argMin(SpanKind, (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanKind,
           argMin(StatusCode, (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanStatusCode,
-          argMin(SpanAttributes['http.method'], (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpMethod,
+          argMin(if(SpanAttributes['http.method'] != '', SpanAttributes['http.method'], SpanAttributes['http.request.method']), (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpMethod,
           argMin(SpanAttributes['http.route'], (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpRoute,
-          argMin(SpanAttributes['http.status_code'], (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpStatusCode,
+          argMin(if(SpanAttributes['http.status_code'] != '', SpanAttributes['http.status_code'], SpanAttributes['http.response.status_code']), (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpStatusCode,
           argMin(toJSONString(map('http.method', SpanAttributes['http.method'], 'http.request.method', SpanAttributes['http.request.method'], 'http.route', SpanAttributes['http.route'], 'http.target', SpanAttributes['http.target'], 'http.status_code', SpanAttributes['http.status_code'], 'http.response.status_code', SpanAttributes['http.response.status_code'], 'http.url', SpanAttributes['http.url'], 'url.full', SpanAttributes['url.full'], 'url.path', SpanAttributes['url.path'], 'server.address', SpanAttributes['server.address'], 'net.peer.name', SpanAttributes['net.peer.name'], 'screen.name', SpanAttributes['screen.name'])), (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanAttributes,
           if(argMin(StatusCode, (if(ParentSpanId = '', 0, 1), Timestamp)) = 'Error', 1, 0) AS hasError
         FROM trace_detail_spans
@@ -11984,10 +15149,11 @@ SELECT
         LIMIT 50
         FORMAT JSON
 
--- spec:traces-list-grouped-attr-fallback:text  [a5d87146]
+-- spec:traces-list-grouped-attr-fallback:text  [82a16dba]
 SELECT
           TraceId AS traceId,
           argMin(Timestamp, (if(ParentSpanId = '', 0, 1), Timestamp)) AS startTime,
+          toDateTime(argMin(Timestamp, (if(ParentSpanId = '', 0, 1), Timestamp))) AS startSecond,
           fromUnixTimestamp64Nano(max(toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS endTime,
           intDiv(max(toUnixTimestamp64Nano(Timestamp) + toInt64(Duration)) - min(toUnixTimestamp64Nano(Timestamp)), 1000) AS durationMicros,
           intDiv(argMin(Duration, (if(ParentSpanId = '', 0, 1), Timestamp)), 1000) AS rootDurationMicros,
@@ -11996,9 +15162,9 @@ SELECT
           argMin(SpanName, (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanName,
           argMin(SpanKind, (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanKind,
           argMin(StatusCode, (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanStatusCode,
-          argMin(SpanAttributes['http.method'], (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpMethod,
+          argMin(if(SpanAttributes['http.method'] != '', SpanAttributes['http.method'], SpanAttributes['http.request.method']), (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpMethod,
           argMin(SpanAttributes['http.route'], (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpRoute,
-          argMin(SpanAttributes['http.status_code'], (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpStatusCode,
+          argMin(if(SpanAttributes['http.status_code'] != '', SpanAttributes['http.status_code'], SpanAttributes['http.response.status_code']), (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpStatusCode,
           argMin(toJSONString(map('http.method', SpanAttributes['http.method'], 'http.request.method', SpanAttributes['http.request.method'], 'http.route', SpanAttributes['http.route'], 'http.target', SpanAttributes['http.target'], 'http.status_code', SpanAttributes['http.status_code'], 'http.response.status_code', SpanAttributes['http.response.status_code'], 'http.url', SpanAttributes['http.url'], 'url.full', SpanAttributes['url.full'], 'url.path', SpanAttributes['url.path'], 'server.address', SpanAttributes['server.address'], 'net.peer.name', SpanAttributes['net.peer.name'], 'screen.name', SpanAttributes['screen.name'])), (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanAttributes,
           if(argMin(StatusCode, (if(ParentSpanId = '', 0, 1), Timestamp)) = 'Error', 1, 0) AS hasError
         FROM trace_detail_spans
@@ -12024,10 +15190,11 @@ SELECT
         LIMIT 50
         FORMAT JSON
 
--- spec:traces-list-grouped-duration-sort:baseline  [48e106e7]
+-- spec:traces-list-grouped-duration-sort:baseline  [90721238]
 SELECT
           TraceId AS traceId,
           argMin(Timestamp, (if(ParentSpanId = '', 0, 1), Timestamp)) AS startTime,
+          toDateTime(argMin(Timestamp, (if(ParentSpanId = '', 0, 1), Timestamp))) AS startSecond,
           fromUnixTimestamp64Nano(max(toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS endTime,
           intDiv(max(toUnixTimestamp64Nano(Timestamp) + toInt64(Duration)) - min(toUnixTimestamp64Nano(Timestamp)), 1000) AS durationMicros,
           intDiv(argMin(Duration, (if(ParentSpanId = '', 0, 1), Timestamp)), 1000) AS rootDurationMicros,
@@ -12036,9 +15203,9 @@ SELECT
           argMin(SpanName, (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanName,
           argMin(SpanKind, (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanKind,
           argMin(StatusCode, (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanStatusCode,
-          argMin(SpanAttributes['http.method'], (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpMethod,
+          argMin(if(SpanAttributes['http.method'] != '', SpanAttributes['http.method'], SpanAttributes['http.request.method']), (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpMethod,
           argMin(SpanAttributes['http.route'], (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpRoute,
-          argMin(SpanAttributes['http.status_code'], (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpStatusCode,
+          argMin(if(SpanAttributes['http.status_code'] != '', SpanAttributes['http.status_code'], SpanAttributes['http.response.status_code']), (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpStatusCode,
           argMin(toJSONString(map('http.method', SpanAttributes['http.method'], 'http.request.method', SpanAttributes['http.request.method'], 'http.route', SpanAttributes['http.route'], 'http.target', SpanAttributes['http.target'], 'http.status_code', SpanAttributes['http.status_code'], 'http.response.status_code', SpanAttributes['http.response.status_code'], 'http.url', SpanAttributes['http.url'], 'url.full', SpanAttributes['url.full'], 'url.path', SpanAttributes['url.path'], 'server.address', SpanAttributes['server.address'], 'net.peer.name', SpanAttributes['net.peer.name'], 'screen.name', SpanAttributes['screen.name'])), (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanAttributes,
           if(argMin(StatusCode, (if(ParentSpanId = '', 0, 1), Timestamp)) = 'Error', 1, 0) AS hasError
         FROM trace_detail_spans
@@ -12059,14 +15226,15 @@ SELECT
         LIMIT 50
         OFFSET 100))
         GROUP BY traceId
-        ORDER BY rootDurationMicros DESC, startTime DESC, traceId DESC
+        ORDER BY rootDurationMicros DESC, startSecond DESC, traceId DESC
         LIMIT 50
         FORMAT JSON
 
--- spec:traces-list-grouped:baseline  [7b187ee6]
+-- spec:traces-list-grouped:baseline  [baa60269]
 SELECT
           TraceId AS traceId,
           argMin(Timestamp, (if(ParentSpanId = '', 0, 1), Timestamp)) AS startTime,
+          toDateTime(argMin(Timestamp, (if(ParentSpanId = '', 0, 1), Timestamp))) AS startSecond,
           fromUnixTimestamp64Nano(max(toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS endTime,
           intDiv(max(toUnixTimestamp64Nano(Timestamp) + toInt64(Duration)) - min(toUnixTimestamp64Nano(Timestamp)), 1000) AS durationMicros,
           intDiv(argMin(Duration, (if(ParentSpanId = '', 0, 1), Timestamp)), 1000) AS rootDurationMicros,
@@ -12075,9 +15243,9 @@ SELECT
           argMin(SpanName, (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanName,
           argMin(SpanKind, (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanKind,
           argMin(StatusCode, (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanStatusCode,
-          argMin(SpanAttributes['http.method'], (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpMethod,
+          argMin(if(SpanAttributes['http.method'] != '', SpanAttributes['http.method'], SpanAttributes['http.request.method']), (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpMethod,
           argMin(SpanAttributes['http.route'], (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpRoute,
-          argMin(SpanAttributes['http.status_code'], (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpStatusCode,
+          argMin(if(SpanAttributes['http.status_code'] != '', SpanAttributes['http.status_code'], SpanAttributes['http.response.status_code']), (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpStatusCode,
           argMin(toJSONString(map('http.method', SpanAttributes['http.method'], 'http.request.method', SpanAttributes['http.request.method'], 'http.route', SpanAttributes['http.route'], 'http.target', SpanAttributes['http.target'], 'http.status_code', SpanAttributes['http.status_code'], 'http.response.status_code', SpanAttributes['http.response.status_code'], 'http.url', SpanAttributes['http.url'], 'url.full', SpanAttributes['url.full'], 'url.path', SpanAttributes['url.path'], 'server.address', SpanAttributes['server.address'], 'net.peer.name', SpanAttributes['net.peer.name'], 'screen.name', SpanAttributes['screen.name'])), (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanAttributes,
           if(argMin(StatusCode, (if(ParentSpanId = '', 0, 1), Timestamp)) = 'Error', 1, 0) AS hasError
         FROM trace_detail_spans
@@ -12097,14 +15265,15 @@ SELECT
         ORDER BY ts DESC, traceId DESC
         LIMIT 50))
         GROUP BY traceId
-        ORDER BY startTime DESC, traceId DESC
+        ORDER BY startSecond DESC, traceId DESC
         LIMIT 50
         FORMAT JSON
 
--- spec:traces-list-grouped:bloom  [7b187ee6]
+-- spec:traces-list-grouped:bloom  [baa60269]
 SELECT
           TraceId AS traceId,
           argMin(Timestamp, (if(ParentSpanId = '', 0, 1), Timestamp)) AS startTime,
+          toDateTime(argMin(Timestamp, (if(ParentSpanId = '', 0, 1), Timestamp))) AS startSecond,
           fromUnixTimestamp64Nano(max(toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS endTime,
           intDiv(max(toUnixTimestamp64Nano(Timestamp) + toInt64(Duration)) - min(toUnixTimestamp64Nano(Timestamp)), 1000) AS durationMicros,
           intDiv(argMin(Duration, (if(ParentSpanId = '', 0, 1), Timestamp)), 1000) AS rootDurationMicros,
@@ -12113,9 +15282,9 @@ SELECT
           argMin(SpanName, (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanName,
           argMin(SpanKind, (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanKind,
           argMin(StatusCode, (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanStatusCode,
-          argMin(SpanAttributes['http.method'], (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpMethod,
+          argMin(if(SpanAttributes['http.method'] != '', SpanAttributes['http.method'], SpanAttributes['http.request.method']), (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpMethod,
           argMin(SpanAttributes['http.route'], (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpRoute,
-          argMin(SpanAttributes['http.status_code'], (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpStatusCode,
+          argMin(if(SpanAttributes['http.status_code'] != '', SpanAttributes['http.status_code'], SpanAttributes['http.response.status_code']), (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpStatusCode,
           argMin(toJSONString(map('http.method', SpanAttributes['http.method'], 'http.request.method', SpanAttributes['http.request.method'], 'http.route', SpanAttributes['http.route'], 'http.target', SpanAttributes['http.target'], 'http.status_code', SpanAttributes['http.status_code'], 'http.response.status_code', SpanAttributes['http.response.status_code'], 'http.url', SpanAttributes['http.url'], 'url.full', SpanAttributes['url.full'], 'url.path', SpanAttributes['url.path'], 'server.address', SpanAttributes['server.address'], 'net.peer.name', SpanAttributes['net.peer.name'], 'screen.name', SpanAttributes['screen.name'])), (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanAttributes,
           if(argMin(StatusCode, (if(ParentSpanId = '', 0, 1), Timestamp)) = 'Error', 1, 0) AS hasError
         FROM trace_detail_spans
@@ -12135,14 +15304,15 @@ SELECT
         ORDER BY ts DESC, traceId DESC
         LIMIT 50))
         GROUP BY traceId
-        ORDER BY startTime DESC, traceId DESC
+        ORDER BY startSecond DESC, traceId DESC
         LIMIT 50
         FORMAT JSON
 
--- spec:traces-list-grouped:text  [7b187ee6]
+-- spec:traces-list-grouped:text  [baa60269]
 SELECT
           TraceId AS traceId,
           argMin(Timestamp, (if(ParentSpanId = '', 0, 1), Timestamp)) AS startTime,
+          toDateTime(argMin(Timestamp, (if(ParentSpanId = '', 0, 1), Timestamp))) AS startSecond,
           fromUnixTimestamp64Nano(max(toUnixTimestamp64Nano(Timestamp) + toInt64(Duration))) AS endTime,
           intDiv(max(toUnixTimestamp64Nano(Timestamp) + toInt64(Duration)) - min(toUnixTimestamp64Nano(Timestamp)), 1000) AS durationMicros,
           intDiv(argMin(Duration, (if(ParentSpanId = '', 0, 1), Timestamp)), 1000) AS rootDurationMicros,
@@ -12151,9 +15321,9 @@ SELECT
           argMin(SpanName, (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanName,
           argMin(SpanKind, (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanKind,
           argMin(StatusCode, (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanStatusCode,
-          argMin(SpanAttributes['http.method'], (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpMethod,
+          argMin(if(SpanAttributes['http.method'] != '', SpanAttributes['http.method'], SpanAttributes['http.request.method']), (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpMethod,
           argMin(SpanAttributes['http.route'], (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpRoute,
-          argMin(SpanAttributes['http.status_code'], (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpStatusCode,
+          argMin(if(SpanAttributes['http.status_code'] != '', SpanAttributes['http.status_code'], SpanAttributes['http.response.status_code']), (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootHttpStatusCode,
           argMin(toJSONString(map('http.method', SpanAttributes['http.method'], 'http.request.method', SpanAttributes['http.request.method'], 'http.route', SpanAttributes['http.route'], 'http.target', SpanAttributes['http.target'], 'http.status_code', SpanAttributes['http.status_code'], 'http.response.status_code', SpanAttributes['http.response.status_code'], 'http.url', SpanAttributes['http.url'], 'url.full', SpanAttributes['url.full'], 'url.path', SpanAttributes['url.path'], 'server.address', SpanAttributes['server.address'], 'net.peer.name', SpanAttributes['net.peer.name'], 'screen.name', SpanAttributes['screen.name'])), (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanAttributes,
           if(argMin(StatusCode, (if(ParentSpanId = '', 0, 1), Timestamp)) = 'Error', 1, 0) AS hasError
         FROM trace_detail_spans
@@ -12173,7 +15343,7 @@ SELECT
         ORDER BY ts DESC, traceId DESC
         LIMIT 50))
         GROUP BY traceId
-        ORDER BY startTime DESC, traceId DESC
+        ORDER BY startSecond DESC, traceId DESC
         LIMIT 50
         FORMAT JSON
 
@@ -12279,18 +15449,38 @@ SELECT
         LIMIT 50
         FORMAT JSON
 
--- spec:traces-stats:baseline  [59c633f8]
+-- spec:traces-stats:baseline  [0b9beacb]
 SELECT
-          min(Duration) / 1000000 AS minDurationMs,
-          max(Duration) / 1000000 AS maxDurationMs,
-          quantile(0.5)(Duration) / 1000000 AS p50DurationMs,
-          quantile(0.95)(Duration) / 1000000 AS p95DurationMs
+          minIf(durationMin, traceCount > 0) / 1000000 AS minDurationMs,
+          maxIf(durationMax, traceCount > 0) / 1000000 AS maxDurationMs,
+          ifNull(ifNotFinite(arrayElement(quantilesTDigestMerge(0.5, 0.95)(durationQuantiles), 1) / 1000000, 0), 0) AS p50DurationMs,
+          ifNull(ifNotFinite(arrayElement(quantilesTDigestMerge(0.5, 0.95)(durationQuantiles), 2) / 1000000, 0), 0) AS p95DurationMs
+        FROM (
+SELECT
+          count() AS traceCount,
+          min(Duration) AS durationMin,
+          max(Duration) AS durationMax,
+          quantilesTDigestState(0.5, 0.95)(Duration) AS durationQuantiles
         FROM trace_list_mv
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
           AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+          AND (Timestamp < if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR) OR Timestamp >= toStartOfHour(toDateTime('2026-01-03 14:15:00')))
+UNION ALL
+SELECT
+          sum(TraceCount) AS traceCount,
+          min(DurationMin) AS durationMin,
+          max(DurationMax) AS durationMax,
+          quantilesTDigestMergeState(0.5, 0.95)(DurationQuantiles) AS durationQuantiles
+        FROM trace_facets_hourly
+        WHERE OrgId = 'org_sql_catalog'
+          AND Hour >= if(toDateTime('2026-01-01 10:30:00') = toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')), toStartOfHour(toDateTime('2026-01-01 10:30:00')) + INTERVAL 1 HOUR)
+          AND Hour < toStartOfHour(toDateTime('2026-01-03 14:15:00'))
+          AND ServiceName = 'api'
+          AND coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'production'
+) AS duration_tiers
         FORMAT JSON
 
 -- spec:traces-timeseries-aggregates-mv:baseline  [31cc4494]
@@ -12511,9 +15701,52 @@ SELECT
         ORDER BY bucket ASC, groupName ASC
         FORMAT JSON
 
--- spec:traces-timeseries-annual-grouped-series-cap:baseline  [a922eaa3]
-WITH __series_base AS (
+-- spec:traces-timeseries-annual-grouped-series-cap:baseline  [f959448e]
 SELECT
+          bucket AS bucket,
+          groupName AS groupName,
+          count AS count,
+          spanCount AS spanCount,
+          avgDuration AS avgDuration,
+          p50Duration AS p50Duration,
+          p95Duration AS p95Duration,
+          p99Duration AS p99Duration,
+          errorRate AS errorRate,
+          satisfiedCount AS satisfiedCount,
+          toleratingCount AS toleratingCount,
+          apdexScore AS apdexScore,
+          estimatedSpanCount AS estimatedSpanCount
+        FROM (SELECT
+          bucket AS bucket,
+          groupName AS groupName,
+          count AS count,
+          spanCount AS spanCount,
+          avgDuration AS avgDuration,
+          p50Duration AS p50Duration,
+          p95Duration AS p95Duration,
+          p99Duration AS p99Duration,
+          errorRate AS errorRate,
+          satisfiedCount AS satisfiedCount,
+          toleratingCount AS toleratingCount,
+          apdexScore AS apdexScore,
+          estimatedSpanCount AS estimatedSpanCount,
+          dense_rank() OVER (ORDER BY __series_peak DESC, groupName ASC) AS __series_rank
+        FROM (SELECT
+          bucket AS bucket,
+          groupName AS groupName,
+          count AS count,
+          spanCount AS spanCount,
+          avgDuration AS avgDuration,
+          p50Duration AS p50Duration,
+          p95Duration AS p95Duration,
+          p99Duration AS p99Duration,
+          errorRate AS errorRate,
+          satisfiedCount AS satisfiedCount,
+          toleratingCount AS toleratingCount,
+          apdexScore AS apdexScore,
+          estimatedSpanCount AS estimatedSpanCount,
+          max(count) OVER (PARTITION BY groupName) AS __series_peak
+        FROM (SELECT
           bucket AS bucket,
           groupName AS groupName,
           if(sum(bEstimatedSpanCount) > 0, sum(bEstimatedSpanCount), toFloat64(sum(bCount))) AS count,
@@ -12561,33 +15794,8 @@ SELECT
           AND Minute < toStartOfMinute(toDateTime('2026-01-03 14:15:00'))
         GROUP BY bucket, groupName
 ) AS service_metric_windows
-        GROUP BY bucket, groupName
-        ORDER BY bucket ASC, groupName ASC
-)
-SELECT
-          bucket AS bucket,
-          groupName AS groupName,
-          count AS count,
-          spanCount AS spanCount,
-          avgDuration AS avgDuration,
-          p50Duration AS p50Duration,
-          p95Duration AS p95Duration,
-          p99Duration AS p99Duration,
-          errorRate AS errorRate,
-          satisfiedCount AS satisfiedCount,
-          toleratingCount AS toleratingCount,
-          apdexScore AS apdexScore,
-          estimatedSpanCount AS estimatedSpanCount
-        FROM __series_base
-        WHERE groupName IN (SELECT
-          groupName AS groupName
-        FROM (SELECT
-          groupName AS groupName,
-          max(count) AS rank
-        FROM __series_base
-        GROUP BY groupName
-        ORDER BY rank DESC
-        LIMIT 10) AS ranked)
+        GROUP BY bucket, groupName) AS __series_base) AS __series_peaks) AS __series_ranked
+        WHERE __series_rank <= 10
         ORDER BY bucket ASC, groupName ASC
         FORMAT JSON
 
@@ -12667,6 +15875,377 @@ SELECT
         WHERE OrgId = 'org_sql_catalog'
           AND Timestamp >= '2026-01-01 10:30:00'
           AND Timestamp <= '2026-01-03 14:15:00'
+        GROUP BY bucket, groupName
+        ORDER BY bucket ASC, groupName ASC
+        FORMAT JSON
+
+-- spec:traces-timeseries-annual-single-apdex:baseline  [2678aa93]
+SELECT
+          bucket AS bucket,
+          groupName AS groupName,
+          if(sum(bEstimatedSpanCount) > 0, sum(bEstimatedSpanCount), toFloat64(sum(bCount))) AS count,
+          sum(bCount) AS spanCount,
+          0 AS avgDuration,
+          0 AS p50Duration,
+          0 AS p95Duration,
+          0 AS p99Duration,
+          0 AS errorRate,
+          sum(bSatisfiedCount) AS satisfiedCount,
+          sum(bToleratingCount) AS toleratingCount,
+          if(sum(bCount) > 0, round(sum(bSatisfiedCount) / sum(bCount) + sum(bToleratingCount) * 0.5 / sum(bCount), 4), 0) AS apdexScore,
+          if(sum(bEstimatedSpanCount) > 0, sum(bEstimatedSpanCount), toFloat64(sum(bCount))) AS estimatedSpanCount
+        FROM (
+SELECT
+          toStartOfInterval(Timestamp, INTERVAL 300 SECOND) AS bucket,
+          coalesce(nullIf(toString(ServiceName), ''), 'all') AS groupName,
+          count() AS bCount,
+          sum(SampleRate) AS bEstimatedSpanCount,
+          0 AS bErrorCount,
+          0 AS bDurationSum,
+          '' AS bDurationQuantiles,
+          countIf((StatusCode != 'Error' AND Duration < 500000000)) AS bSatisfiedCount,
+          countIf(((StatusCode != 'Error' AND Duration >= 500000000) AND Duration < 2000000000)) AS bToleratingCount
+        FROM service_overview_spans
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-03 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND (Timestamp < if(toDateTime('2026-01-03 10:30:00') = toStartOfMinute(toDateTime('2026-01-03 10:30:00')), toStartOfMinute(toDateTime('2026-01-03 10:30:00')), toStartOfMinute(toDateTime('2026-01-03 10:30:00')) + INTERVAL 1 MINUTE) OR Timestamp >= toStartOfMinute(toDateTime('2026-01-03 14:15:00')))
+        GROUP BY bucket, groupName
+UNION ALL
+SELECT
+          toStartOfInterval(Minute, INTERVAL 300 SECOND) AS bucket,
+          coalesce(nullIf(toString(ServiceName), ''), 'all') AS groupName,
+          sum(SpanCount) AS bCount,
+          sum(EstimatedSpanCount) AS bEstimatedSpanCount,
+          0 AS bErrorCount,
+          0 AS bDurationSum,
+          '' AS bDurationQuantiles,
+          sum(ApdexSatisfiedCount) AS bSatisfiedCount,
+          sum(ApdexToleratingCount) AS bToleratingCount
+        FROM service_overview_minutely
+        WHERE OrgId = 'org_sql_catalog'
+          AND Minute >= if(toDateTime('2026-01-03 10:30:00') = toStartOfMinute(toDateTime('2026-01-03 10:30:00')), toStartOfMinute(toDateTime('2026-01-03 10:30:00')), toStartOfMinute(toDateTime('2026-01-03 10:30:00')) + INTERVAL 1 MINUTE)
+          AND Minute < toStartOfMinute(toDateTime('2026-01-03 14:15:00'))
+        GROUP BY bucket, groupName
+) AS service_metric_windows
+        GROUP BY bucket, groupName
+        ORDER BY bucket ASC, groupName ASC
+        FORMAT JSON
+
+-- spec:traces-timeseries-annual-single-avg_duration:baseline  [f9bb60d3]
+SELECT
+          bucket AS bucket,
+          groupName AS groupName,
+          if(sum(bEstimatedSpanCount) > 0, sum(bEstimatedSpanCount), toFloat64(sum(bCount))) AS count,
+          sum(bCount) AS spanCount,
+          if(sum(bCount) > 0, sum(bDurationSum) / sum(bCount) / 1000000, 0) AS avgDuration,
+          0 AS p50Duration,
+          0 AS p95Duration,
+          0 AS p99Duration,
+          0 AS errorRate,
+          0 AS satisfiedCount,
+          0 AS toleratingCount,
+          0 AS apdexScore,
+          if(sum(bEstimatedSpanCount) > 0, sum(bEstimatedSpanCount), toFloat64(sum(bCount))) AS estimatedSpanCount
+        FROM (
+SELECT
+          toStartOfInterval(Timestamp, INTERVAL 300 SECOND) AS bucket,
+          coalesce(nullIf(toString(ServiceName), ''), 'all') AS groupName,
+          count() AS bCount,
+          sum(SampleRate) AS bEstimatedSpanCount,
+          0 AS bErrorCount,
+          sum(toFloat64(Duration)) AS bDurationSum,
+          '' AS bDurationQuantiles,
+          0 AS bSatisfiedCount,
+          0 AS bToleratingCount
+        FROM service_overview_spans
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-03 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND (Timestamp < if(toDateTime('2026-01-03 10:30:00') = toStartOfMinute(toDateTime('2026-01-03 10:30:00')), toStartOfMinute(toDateTime('2026-01-03 10:30:00')), toStartOfMinute(toDateTime('2026-01-03 10:30:00')) + INTERVAL 1 MINUTE) OR Timestamp >= toStartOfMinute(toDateTime('2026-01-03 14:15:00')))
+        GROUP BY bucket, groupName
+UNION ALL
+SELECT
+          toStartOfInterval(Minute, INTERVAL 300 SECOND) AS bucket,
+          coalesce(nullIf(toString(ServiceName), ''), 'all') AS groupName,
+          sum(SpanCount) AS bCount,
+          sum(EstimatedSpanCount) AS bEstimatedSpanCount,
+          0 AS bErrorCount,
+          sum(DurationSum) AS bDurationSum,
+          '' AS bDurationQuantiles,
+          0 AS bSatisfiedCount,
+          0 AS bToleratingCount
+        FROM service_overview_minutely
+        WHERE OrgId = 'org_sql_catalog'
+          AND Minute >= if(toDateTime('2026-01-03 10:30:00') = toStartOfMinute(toDateTime('2026-01-03 10:30:00')), toStartOfMinute(toDateTime('2026-01-03 10:30:00')), toStartOfMinute(toDateTime('2026-01-03 10:30:00')) + INTERVAL 1 MINUTE)
+          AND Minute < toStartOfMinute(toDateTime('2026-01-03 14:15:00'))
+        GROUP BY bucket, groupName
+) AS service_metric_windows
+        GROUP BY bucket, groupName
+        ORDER BY bucket ASC, groupName ASC
+        FORMAT JSON
+
+-- spec:traces-timeseries-annual-single-count:baseline  [4df914fd]
+SELECT
+          bucket AS bucket,
+          groupName AS groupName,
+          if(sum(bEstimatedSpanCount) > 0, sum(bEstimatedSpanCount), toFloat64(sum(bCount))) AS count,
+          sum(bCount) AS spanCount,
+          0 AS avgDuration,
+          0 AS p50Duration,
+          0 AS p95Duration,
+          0 AS p99Duration,
+          0 AS errorRate,
+          0 AS satisfiedCount,
+          0 AS toleratingCount,
+          0 AS apdexScore,
+          if(sum(bEstimatedSpanCount) > 0, sum(bEstimatedSpanCount), toFloat64(sum(bCount))) AS estimatedSpanCount
+        FROM (
+SELECT
+          toStartOfInterval(Timestamp, INTERVAL 300 SECOND) AS bucket,
+          coalesce(nullIf(toString(ServiceName), ''), 'all') AS groupName,
+          count() AS bCount,
+          sum(SampleRate) AS bEstimatedSpanCount,
+          0 AS bErrorCount,
+          0 AS bDurationSum,
+          '' AS bDurationQuantiles,
+          0 AS bSatisfiedCount,
+          0 AS bToleratingCount
+        FROM service_overview_spans
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-03 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND (Timestamp < if(toDateTime('2026-01-03 10:30:00') = toStartOfMinute(toDateTime('2026-01-03 10:30:00')), toStartOfMinute(toDateTime('2026-01-03 10:30:00')), toStartOfMinute(toDateTime('2026-01-03 10:30:00')) + INTERVAL 1 MINUTE) OR Timestamp >= toStartOfMinute(toDateTime('2026-01-03 14:15:00')))
+        GROUP BY bucket, groupName
+UNION ALL
+SELECT
+          toStartOfInterval(Minute, INTERVAL 300 SECOND) AS bucket,
+          coalesce(nullIf(toString(ServiceName), ''), 'all') AS groupName,
+          sum(SpanCount) AS bCount,
+          sum(EstimatedSpanCount) AS bEstimatedSpanCount,
+          0 AS bErrorCount,
+          0 AS bDurationSum,
+          '' AS bDurationQuantiles,
+          0 AS bSatisfiedCount,
+          0 AS bToleratingCount
+        FROM service_overview_minutely
+        WHERE OrgId = 'org_sql_catalog'
+          AND Minute >= if(toDateTime('2026-01-03 10:30:00') = toStartOfMinute(toDateTime('2026-01-03 10:30:00')), toStartOfMinute(toDateTime('2026-01-03 10:30:00')), toStartOfMinute(toDateTime('2026-01-03 10:30:00')) + INTERVAL 1 MINUTE)
+          AND Minute < toStartOfMinute(toDateTime('2026-01-03 14:15:00'))
+        GROUP BY bucket, groupName
+) AS service_metric_windows
+        GROUP BY bucket, groupName
+        ORDER BY bucket ASC, groupName ASC
+        FORMAT JSON
+
+-- spec:traces-timeseries-annual-single-error_rate:baseline  [b4049ee7]
+SELECT
+          bucket AS bucket,
+          groupName AS groupName,
+          if(sum(bEstimatedSpanCount) > 0, sum(bEstimatedSpanCount), toFloat64(sum(bCount))) AS count,
+          sum(bCount) AS spanCount,
+          0 AS avgDuration,
+          0 AS p50Duration,
+          0 AS p95Duration,
+          0 AS p99Duration,
+          if(sum(bCount) > 0, sum(bErrorCount) / sum(bCount), 0) AS errorRate,
+          0 AS satisfiedCount,
+          0 AS toleratingCount,
+          0 AS apdexScore,
+          if(sum(bEstimatedSpanCount) > 0, sum(bEstimatedSpanCount), toFloat64(sum(bCount))) AS estimatedSpanCount
+        FROM (
+SELECT
+          toStartOfInterval(Timestamp, INTERVAL 300 SECOND) AS bucket,
+          coalesce(nullIf(toString(ServiceName), ''), 'all') AS groupName,
+          count() AS bCount,
+          sum(SampleRate) AS bEstimatedSpanCount,
+          countIf(StatusCode = 'Error') AS bErrorCount,
+          0 AS bDurationSum,
+          '' AS bDurationQuantiles,
+          0 AS bSatisfiedCount,
+          0 AS bToleratingCount
+        FROM service_overview_spans
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-03 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND (Timestamp < if(toDateTime('2026-01-03 10:30:00') = toStartOfMinute(toDateTime('2026-01-03 10:30:00')), toStartOfMinute(toDateTime('2026-01-03 10:30:00')), toStartOfMinute(toDateTime('2026-01-03 10:30:00')) + INTERVAL 1 MINUTE) OR Timestamp >= toStartOfMinute(toDateTime('2026-01-03 14:15:00')))
+        GROUP BY bucket, groupName
+UNION ALL
+SELECT
+          toStartOfInterval(Minute, INTERVAL 300 SECOND) AS bucket,
+          coalesce(nullIf(toString(ServiceName), ''), 'all') AS groupName,
+          sum(SpanCount) AS bCount,
+          sum(EstimatedSpanCount) AS bEstimatedSpanCount,
+          sum(ErrorCount) AS bErrorCount,
+          0 AS bDurationSum,
+          '' AS bDurationQuantiles,
+          0 AS bSatisfiedCount,
+          0 AS bToleratingCount
+        FROM service_overview_minutely
+        WHERE OrgId = 'org_sql_catalog'
+          AND Minute >= if(toDateTime('2026-01-03 10:30:00') = toStartOfMinute(toDateTime('2026-01-03 10:30:00')), toStartOfMinute(toDateTime('2026-01-03 10:30:00')), toStartOfMinute(toDateTime('2026-01-03 10:30:00')) + INTERVAL 1 MINUTE)
+          AND Minute < toStartOfMinute(toDateTime('2026-01-03 14:15:00'))
+        GROUP BY bucket, groupName
+) AS service_metric_windows
+        GROUP BY bucket, groupName
+        ORDER BY bucket ASC, groupName ASC
+        FORMAT JSON
+
+-- spec:traces-timeseries-annual-single-p50_duration:baseline  [35581d65]
+SELECT
+          bucket AS bucket,
+          groupName AS groupName,
+          if(sum(bEstimatedSpanCount) > 0, sum(bEstimatedSpanCount), toFloat64(sum(bCount))) AS count,
+          sum(bCount) AS spanCount,
+          0 AS avgDuration,
+          arrayElement(quantilesTDigestMerge(0.5, 0.95, 0.99)(bDurationQuantiles), 1) / 1000000 AS p50Duration,
+          arrayElement(quantilesTDigestMerge(0.5, 0.95, 0.99)(bDurationQuantiles), 2) / 1000000 AS p95Duration,
+          arrayElement(quantilesTDigestMerge(0.5, 0.95, 0.99)(bDurationQuantiles), 3) / 1000000 AS p99Duration,
+          0 AS errorRate,
+          0 AS satisfiedCount,
+          0 AS toleratingCount,
+          0 AS apdexScore,
+          if(sum(bEstimatedSpanCount) > 0, sum(bEstimatedSpanCount), toFloat64(sum(bCount))) AS estimatedSpanCount
+        FROM (
+SELECT
+          toStartOfInterval(Timestamp, INTERVAL 300 SECOND) AS bucket,
+          coalesce(nullIf(toString(ServiceName), ''), 'all') AS groupName,
+          count() AS bCount,
+          sum(SampleRate) AS bEstimatedSpanCount,
+          0 AS bErrorCount,
+          0 AS bDurationSum,
+          quantilesTDigestState(0.5, 0.95, 0.99)(Duration) AS bDurationQuantiles,
+          0 AS bSatisfiedCount,
+          0 AS bToleratingCount
+        FROM service_overview_spans
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-03 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND (Timestamp < if(toDateTime('2026-01-03 10:30:00') = toStartOfMinute(toDateTime('2026-01-03 10:30:00')), toStartOfMinute(toDateTime('2026-01-03 10:30:00')), toStartOfMinute(toDateTime('2026-01-03 10:30:00')) + INTERVAL 1 MINUTE) OR Timestamp >= toStartOfMinute(toDateTime('2026-01-03 14:15:00')))
+        GROUP BY bucket, groupName
+UNION ALL
+SELECT
+          toStartOfInterval(Minute, INTERVAL 300 SECOND) AS bucket,
+          coalesce(nullIf(toString(ServiceName), ''), 'all') AS groupName,
+          sum(SpanCount) AS bCount,
+          sum(EstimatedSpanCount) AS bEstimatedSpanCount,
+          0 AS bErrorCount,
+          0 AS bDurationSum,
+          quantilesTDigestMergeState(0.5, 0.95, 0.99)(DurationQuantiles) AS bDurationQuantiles,
+          0 AS bSatisfiedCount,
+          0 AS bToleratingCount
+        FROM service_overview_minutely
+        WHERE OrgId = 'org_sql_catalog'
+          AND Minute >= if(toDateTime('2026-01-03 10:30:00') = toStartOfMinute(toDateTime('2026-01-03 10:30:00')), toStartOfMinute(toDateTime('2026-01-03 10:30:00')), toStartOfMinute(toDateTime('2026-01-03 10:30:00')) + INTERVAL 1 MINUTE)
+          AND Minute < toStartOfMinute(toDateTime('2026-01-03 14:15:00'))
+        GROUP BY bucket, groupName
+) AS service_metric_windows
+        GROUP BY bucket, groupName
+        ORDER BY bucket ASC, groupName ASC
+        FORMAT JSON
+
+-- spec:traces-timeseries-annual-single-p95_duration:baseline  [35581d65]
+SELECT
+          bucket AS bucket,
+          groupName AS groupName,
+          if(sum(bEstimatedSpanCount) > 0, sum(bEstimatedSpanCount), toFloat64(sum(bCount))) AS count,
+          sum(bCount) AS spanCount,
+          0 AS avgDuration,
+          arrayElement(quantilesTDigestMerge(0.5, 0.95, 0.99)(bDurationQuantiles), 1) / 1000000 AS p50Duration,
+          arrayElement(quantilesTDigestMerge(0.5, 0.95, 0.99)(bDurationQuantiles), 2) / 1000000 AS p95Duration,
+          arrayElement(quantilesTDigestMerge(0.5, 0.95, 0.99)(bDurationQuantiles), 3) / 1000000 AS p99Duration,
+          0 AS errorRate,
+          0 AS satisfiedCount,
+          0 AS toleratingCount,
+          0 AS apdexScore,
+          if(sum(bEstimatedSpanCount) > 0, sum(bEstimatedSpanCount), toFloat64(sum(bCount))) AS estimatedSpanCount
+        FROM (
+SELECT
+          toStartOfInterval(Timestamp, INTERVAL 300 SECOND) AS bucket,
+          coalesce(nullIf(toString(ServiceName), ''), 'all') AS groupName,
+          count() AS bCount,
+          sum(SampleRate) AS bEstimatedSpanCount,
+          0 AS bErrorCount,
+          0 AS bDurationSum,
+          quantilesTDigestState(0.5, 0.95, 0.99)(Duration) AS bDurationQuantiles,
+          0 AS bSatisfiedCount,
+          0 AS bToleratingCount
+        FROM service_overview_spans
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-03 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND (Timestamp < if(toDateTime('2026-01-03 10:30:00') = toStartOfMinute(toDateTime('2026-01-03 10:30:00')), toStartOfMinute(toDateTime('2026-01-03 10:30:00')), toStartOfMinute(toDateTime('2026-01-03 10:30:00')) + INTERVAL 1 MINUTE) OR Timestamp >= toStartOfMinute(toDateTime('2026-01-03 14:15:00')))
+        GROUP BY bucket, groupName
+UNION ALL
+SELECT
+          toStartOfInterval(Minute, INTERVAL 300 SECOND) AS bucket,
+          coalesce(nullIf(toString(ServiceName), ''), 'all') AS groupName,
+          sum(SpanCount) AS bCount,
+          sum(EstimatedSpanCount) AS bEstimatedSpanCount,
+          0 AS bErrorCount,
+          0 AS bDurationSum,
+          quantilesTDigestMergeState(0.5, 0.95, 0.99)(DurationQuantiles) AS bDurationQuantiles,
+          0 AS bSatisfiedCount,
+          0 AS bToleratingCount
+        FROM service_overview_minutely
+        WHERE OrgId = 'org_sql_catalog'
+          AND Minute >= if(toDateTime('2026-01-03 10:30:00') = toStartOfMinute(toDateTime('2026-01-03 10:30:00')), toStartOfMinute(toDateTime('2026-01-03 10:30:00')), toStartOfMinute(toDateTime('2026-01-03 10:30:00')) + INTERVAL 1 MINUTE)
+          AND Minute < toStartOfMinute(toDateTime('2026-01-03 14:15:00'))
+        GROUP BY bucket, groupName
+) AS service_metric_windows
+        GROUP BY bucket, groupName
+        ORDER BY bucket ASC, groupName ASC
+        FORMAT JSON
+
+-- spec:traces-timeseries-annual-single-p99_duration:baseline  [35581d65]
+SELECT
+          bucket AS bucket,
+          groupName AS groupName,
+          if(sum(bEstimatedSpanCount) > 0, sum(bEstimatedSpanCount), toFloat64(sum(bCount))) AS count,
+          sum(bCount) AS spanCount,
+          0 AS avgDuration,
+          arrayElement(quantilesTDigestMerge(0.5, 0.95, 0.99)(bDurationQuantiles), 1) / 1000000 AS p50Duration,
+          arrayElement(quantilesTDigestMerge(0.5, 0.95, 0.99)(bDurationQuantiles), 2) / 1000000 AS p95Duration,
+          arrayElement(quantilesTDigestMerge(0.5, 0.95, 0.99)(bDurationQuantiles), 3) / 1000000 AS p99Duration,
+          0 AS errorRate,
+          0 AS satisfiedCount,
+          0 AS toleratingCount,
+          0 AS apdexScore,
+          if(sum(bEstimatedSpanCount) > 0, sum(bEstimatedSpanCount), toFloat64(sum(bCount))) AS estimatedSpanCount
+        FROM (
+SELECT
+          toStartOfInterval(Timestamp, INTERVAL 300 SECOND) AS bucket,
+          coalesce(nullIf(toString(ServiceName), ''), 'all') AS groupName,
+          count() AS bCount,
+          sum(SampleRate) AS bEstimatedSpanCount,
+          0 AS bErrorCount,
+          0 AS bDurationSum,
+          quantilesTDigestState(0.5, 0.95, 0.99)(Duration) AS bDurationQuantiles,
+          0 AS bSatisfiedCount,
+          0 AS bToleratingCount
+        FROM service_overview_spans
+        WHERE OrgId = 'org_sql_catalog'
+          AND Timestamp >= '2026-01-03 10:30:00'
+          AND Timestamp <= '2026-01-03 14:15:00'
+          AND (Timestamp < if(toDateTime('2026-01-03 10:30:00') = toStartOfMinute(toDateTime('2026-01-03 10:30:00')), toStartOfMinute(toDateTime('2026-01-03 10:30:00')), toStartOfMinute(toDateTime('2026-01-03 10:30:00')) + INTERVAL 1 MINUTE) OR Timestamp >= toStartOfMinute(toDateTime('2026-01-03 14:15:00')))
+        GROUP BY bucket, groupName
+UNION ALL
+SELECT
+          toStartOfInterval(Minute, INTERVAL 300 SECOND) AS bucket,
+          coalesce(nullIf(toString(ServiceName), ''), 'all') AS groupName,
+          sum(SpanCount) AS bCount,
+          sum(EstimatedSpanCount) AS bEstimatedSpanCount,
+          0 AS bErrorCount,
+          0 AS bDurationSum,
+          quantilesTDigestMergeState(0.5, 0.95, 0.99)(DurationQuantiles) AS bDurationQuantiles,
+          0 AS bSatisfiedCount,
+          0 AS bToleratingCount
+        FROM service_overview_minutely
+        WHERE OrgId = 'org_sql_catalog'
+          AND Minute >= if(toDateTime('2026-01-03 10:30:00') = toStartOfMinute(toDateTime('2026-01-03 10:30:00')), toStartOfMinute(toDateTime('2026-01-03 10:30:00')), toStartOfMinute(toDateTime('2026-01-03 10:30:00')) + INTERVAL 1 MINUTE)
+          AND Minute < toStartOfMinute(toDateTime('2026-01-03 14:15:00'))
+        GROUP BY bucket, groupName
+) AS service_metric_windows
         GROUP BY bucket, groupName
         ORDER BY bucket ASC, groupName ASC
         FORMAT JSON
@@ -12925,9 +16504,52 @@ SELECT
         ORDER BY bucket ASC, groupName ASC
         FORMAT JSON
 
--- spec:traces-timeseries-series-cap:baseline  [7afa52f2]
-WITH __series_base AS (
+-- spec:traces-timeseries-series-cap:baseline  [a25ddf9d]
 SELECT
+          bucket AS bucket,
+          groupName AS groupName,
+          count AS count,
+          spanCount AS spanCount,
+          avgDuration AS avgDuration,
+          p50Duration AS p50Duration,
+          p95Duration AS p95Duration,
+          p99Duration AS p99Duration,
+          errorRate AS errorRate,
+          satisfiedCount AS satisfiedCount,
+          toleratingCount AS toleratingCount,
+          apdexScore AS apdexScore,
+          estimatedSpanCount AS estimatedSpanCount
+        FROM (SELECT
+          bucket AS bucket,
+          groupName AS groupName,
+          count AS count,
+          spanCount AS spanCount,
+          avgDuration AS avgDuration,
+          p50Duration AS p50Duration,
+          p95Duration AS p95Duration,
+          p99Duration AS p99Duration,
+          errorRate AS errorRate,
+          satisfiedCount AS satisfiedCount,
+          toleratingCount AS toleratingCount,
+          apdexScore AS apdexScore,
+          estimatedSpanCount AS estimatedSpanCount,
+          dense_rank() OVER (ORDER BY __series_peak DESC, groupName ASC) AS __series_rank
+        FROM (SELECT
+          bucket AS bucket,
+          groupName AS groupName,
+          count AS count,
+          spanCount AS spanCount,
+          avgDuration AS avgDuration,
+          p50Duration AS p50Duration,
+          p95Duration AS p95Duration,
+          p99Duration AS p99Duration,
+          errorRate AS errorRate,
+          satisfiedCount AS satisfiedCount,
+          toleratingCount AS toleratingCount,
+          apdexScore AS apdexScore,
+          estimatedSpanCount AS estimatedSpanCount,
+          max(count) OVER (PARTITION BY groupName) AS __series_peak
+        FROM (SELECT
           toStartOfInterval(Timestamp, INTERVAL 300 SECOND) AS bucket,
           coalesce(nullIf(toString(SpanName), ''), 'all') AS groupName,
           sum(SampleRate) AS count,
@@ -12947,32 +16569,7 @@ SELECT
           AND Timestamp <= '2026-01-03 14:15:00'
           AND ServiceName = 'api'
           AND coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') IN ('production')
-        GROUP BY bucket, groupName
-        ORDER BY bucket ASC, groupName ASC
-)
-SELECT
-          bucket AS bucket,
-          groupName AS groupName,
-          count AS count,
-          spanCount AS spanCount,
-          avgDuration AS avgDuration,
-          p50Duration AS p50Duration,
-          p95Duration AS p95Duration,
-          p99Duration AS p99Duration,
-          errorRate AS errorRate,
-          satisfiedCount AS satisfiedCount,
-          toleratingCount AS toleratingCount,
-          apdexScore AS apdexScore,
-          estimatedSpanCount AS estimatedSpanCount
-        FROM __series_base
-        WHERE groupName IN (SELECT
-          groupName AS groupName
-        FROM (SELECT
-          groupName AS groupName,
-          max(count) AS rank
-        FROM __series_base
-        GROUP BY groupName
-        ORDER BY rank DESC
-        LIMIT 10) AS ranked)
+        GROUP BY bucket, groupName) AS __series_base) AS __series_peaks) AS __series_ranked
+        WHERE __series_rank <= 10
         ORDER BY bucket ASC, groupName ASC
         FORMAT JSON

@@ -1,7 +1,9 @@
 /** Every app `bun dev` can run. */
 export const DEV_APPS = [
 	"api",
+	"ai",
 	"alerting",
+	"chat-bot",
 	"electric-sync",
 	"web",
 	"landing",
@@ -12,21 +14,13 @@ export const DEV_APPS = [
 
 export type DevApp = (typeof DEV_APPS)[number]
 
-/** Workers are served by alchemy's local runtime; processes run their own `dev` script. */
-export const DEV_APP_KINDS = {
-	api: "worker",
-	alerting: "worker",
-	"electric-sync": "worker",
-	web: "process",
-	landing: "process",
-	ingest: "process",
-	"local-ui": "process",
-	scraper: "process",
-} satisfies Record<DevApp, "worker" | "process">
-
-export const DEV_PROCESS_APPS: ReadonlyArray<DevApp> = DEV_APPS.filter(
-	(app) => DEV_APP_KINDS[app] === "process",
-)
+/** The apps that run their own `dev` script as a child process; the rest are Workers on alchemy's local runtime. */
+export const DEV_PROCESS_APPS = [
+	"landing",
+	"ingest",
+	"local-ui",
+	"scraper",
+] as const satisfies ReadonlyArray<DevApp>
 
 export const isDevApp = (value: string): value is DevApp =>
 	(DEV_APPS as ReadonlyArray<string>).includes(value)

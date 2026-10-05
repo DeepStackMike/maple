@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
-import * as CH from "@maple-dev/clickhouse-builder/expr"
-import { compile } from "@maple-dev/clickhouse-builder/sql"
+import * as CH from "@maple-dev/effect-clickhouse/expr"
+import { compile } from "@maple-dev/effect-clickhouse/sql"
 import { UNKNOWN_ENVIRONMENT, envLabel, resourceEnvLabel } from "./environment"
 
 const render = (expr: CH.Expr<string>) => compile(expr.toFragment())

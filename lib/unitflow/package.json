@@ -21,14 +21,14 @@
 		"test": "vitest run"
 	},
 	"dependencies": {
-		"@tanstack/db": "0.8.5",
+		"@tanstack/db": "0.9.2",
 		"effect": "catalog:effect"
 	},
 	"devDependencies": {
 		"@effect/vitest": "catalog:effect",
 		"@types/react": "catalog:react",
 		"typescript": "catalog:tooling",
-		"vitest": "^4.1.9"
+		"vitest": "catalog:"
 	},
 	"peerDependencies": {
 		"react": "^19.0.0"

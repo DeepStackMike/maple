@@ -11,11 +11,13 @@ import { useAutocompleteValuesContext } from "@/hooks/use-autocomplete-values"
 import type { ValueUnit } from "@/components/dashboard-builder/types"
 import { Switch } from "@maple/ui/components/ui/switch"
 import { getListPerformanceHints } from "@/lib/query-builder/performance-hints"
-import { GripDotsIcon } from "@/components/icons"
+import { CircleWarningIcon, GripDotsIcon } from "@/components/icons"
+import { listWhereClauseWarnings } from "@/lib/query-builder/widget-builder-shared"
 
 import {
-	LOG_DEFAULT_COLUMNS,
-	TRACE_DEFAULT_COLUMNS,
+	DEFAULT_LIST_COLUMNS,
+	LIST_DATA_SOURCES,
+	LIST_DATA_SOURCE_LABEL,
 	type ListColumnDraft,
 	type ListDataSource,
 } from "@/lib/query-builder/list-widget-config"
@@ -37,6 +39,41 @@ const TRACE_FIELDS = [
 ]
 
 const LOG_FIELDS = ["timestamp", "severityText", "severityNumber", "serviceName", "body", "traceId", "spanId"]
+
+const PRODUCT_EVENT_FIELDS = [
+	"timestamp",
+	"eventName",
+	"kind",
+	"source",
+	"host",
+	"pagePath",
+	"url",
+	"serviceName",
+	"userId",
+	"groupId",
+	"visitorId",
+	"sessionId",
+	"traceId",
+]
+
+const KNOWN_FIELDS = {
+	traces: TRACE_FIELDS,
+	logs: LOG_FIELDS,
+	product_events: PRODUCT_EVENT_FIELDS,
+} satisfies Record<ListDataSource, ReadonlyArray<string>>
+
+/** Map-column prefix a dynamic attribute key is suggested under, per source. */
+const ATTRIBUTE_PREFIX = {
+	traces: "spanAttributes.",
+	logs: "logAttributes.",
+	product_events: "attributes.",
+} satisfies Record<ListDataSource, string>
+
+const FILTER_PLACEHOLDER = {
+	traces: 'service.name = "api" AND has_error = true',
+	logs: 'service.name = "api" AND severity = "ERROR"',
+	product_events: 'event.name = "signup_completed" AND country = "DE"',
+} satisfies Record<ListDataSource, string>
 
 // Derived from the shared catalog so a token added there shows up here, and so
 // the picker can never offer one the formatter does not handle.
@@ -224,14 +261,18 @@ export function ListConfigPanel() {
 		setStoredColumnIds(columnIds)
 	}
 
-	const knownFields = listDataSource === "traces" ? TRACE_FIELDS : LOG_FIELDS
-	// Query engine list returns full SpanAttributes/ResourceAttributes maps,
-	// so dynamic attribute key suggestions are valid for both traces and logs.
-	const attributePrefix = listDataSource === "traces" ? "spanAttributes." : "logAttributes."
+	const knownFields = KNOWN_FIELDS[listDataSource]
+	const filterWarnings = useMemo(
+		() => listWhereClauseWarnings(listDataSource, whereClause),
+		[listDataSource, whereClause],
+	)
+	// The query engine list returns the full attribute maps, so dynamic
+	// attribute key suggestions are valid for every source.
+	const attributePrefix = ATTRIBUTE_PREFIX[listDataSource]
 	const resourcePrefix = "resourceAttributes."
 
 	const dynamicAttributeKeys = useMemo(() => {
-		const vals = listDataSource === "traces" ? autocompleteValues.traces : autocompleteValues.logs
+		const vals = autocompleteValues[listDataSource]
 		const keys: string[] = []
 		if (vals && "attributeKeys" in vals && Array.isArray(vals.attributeKeys)) {
 			for (const k of vals.attributeKeys) {
@@ -252,7 +293,7 @@ export function ListConfigPanel() {
 	)
 
 	const handleDataSourceChange = (ds: ListDataSource) => {
-		const newCols = ds === "traces" ? TRACE_DEFAULT_COLUMNS : LOG_DEFAULT_COLUMNS
+		const newCols = DEFAULT_LIST_COLUMNS[ds]
 		setStoredColumnIds(newCols.map(() => crypto.randomUUID()))
 		onChange({
 			listDataSource: ds,
@@ -315,19 +356,19 @@ export function ListConfigPanel() {
 					Data Source
 				</p>
 				<div className="flex h-9 rounded-md border bg-muted/40 p-0.5 w-fit">
-					{(["traces", "logs"] as const).map((ds) => (
+					{LIST_DATA_SOURCES.map((ds) => (
 						<button
 							key={ds}
 							type="button"
 							onClick={() => handleDataSourceChange(ds)}
 							className={cn(
-								"px-4 text-xs rounded-sm transition-colors capitalize",
+								"px-4 text-xs rounded-sm transition-colors",
 								listDataSource === ds
 									? "bg-background text-foreground shadow-sm"
 									: "text-muted-foreground hover:text-foreground",
 							)}
 						>
-							{ds}
+							{LIST_DATA_SOURCE_LABEL[ds]}
 						</button>
 					))}
 				</div>
@@ -361,14 +402,20 @@ export function ListConfigPanel() {
 					value={whereClause}
 					dataSource={listDataSource}
 					onChange={(value) => onChange({ listWhereClause: value })}
-					placeholder={
-						listDataSource === "traces"
-							? 'service.name = "api" AND has_error = true'
-							: 'service.name = "api" AND severity = "ERROR"'
-					}
+					placeholder={FILTER_PLACEHOLDER[listDataSource]}
 					textareaClassName="min-h-[32px] resize-y text-xs"
 					ariaLabel="List filter"
 				/>
+				{filterWarnings.length > 0 && (
+					<div className="flex gap-2 border border-warning/30 bg-warning/10 p-2 text-xs text-warning-foreground">
+						<CircleWarningIcon size={14} className="mt-0.5 shrink-0" />
+						<ul className="space-y-1">
+							{filterWarnings.map((warning) => (
+								<li key={warning}>{warning}</li>
+							))}
+						</ul>
+					</div>
+				)}
 				{(() => {
 					if (listDataSource !== "traces") return null
 					const parsedLimit = Number.parseInt(limit, 10)

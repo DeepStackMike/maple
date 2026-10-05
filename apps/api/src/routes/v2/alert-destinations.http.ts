@@ -1,13 +1,14 @@
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import type { AlertDestinationDocument, AlertDestinationUpdateRequest } from "@maple/domain/http"
+import { auditDiff } from "./audit-changes"
 import {
+	ChatAlertDestinationConfig,
 	CurrentTenant,
 	DiscordAlertDestinationConfig,
 	EmailAlertDestinationConfig,
 	HazelOAuthAlertDestinationConfig,
 	AlertDestinationNotFoundError,
 	PagerDutyAlertDestinationConfig,
-	SlackBotAlertDestinationConfig,
 	TelegramAlertDestinationConfig,
 	WebhookAlertDestinationConfig,
 } from "@maple/domain/http"
@@ -20,7 +21,8 @@ import type {
 } from "@maple/domain/http/v2"
 import { MapleApiV2, paginateArray } from "@maple/domain/http/v2"
 import { Effect } from "effect"
-import { AlertDestinationsService } from "@/services/alerts/AlertDestinationsService"
+import { recordHttpAudit } from "@maple/backend/services/audit/AuditLogService"
+import { AlertDestinationsService } from "@maple/backend/services/alerts/AlertDestinationsService"
 
 const toV2Destination = (doc: AlertDestinationDocument): V2AlertDestination => ({
 	id: doc.id,
@@ -31,6 +33,8 @@ const toV2Destination = (doc: AlertDestinationDocument): V2AlertDestination => (
 	summary: doc.summary,
 	channel_label: doc.channelLabel,
 	member_user_ids: doc.memberUserIds,
+	...(doc.chatConnector === undefined ? undefined : { chat_connector: doc.chatConnector }),
+	...(doc.chatWorkspaceId === undefined ? undefined : { chat_workspace_id: doc.chatWorkspaceId }),
 	last_tested_at: doc.lastTestedAt,
 	last_test_error: doc.lastTestError,
 	created_at: doc.createdAt,
@@ -44,14 +48,6 @@ const toV2DestinationMutation = (doc: AlertDestinationDocument): V2AlertDestinat
 
 const toCreateRequest = (params: V2AlertDestinationCreateParams) => {
 	switch (params.type) {
-		case "slack-bot":
-			return new SlackBotAlertDestinationConfig({
-				type: "slack-bot",
-				name: params.name,
-				channelId: params.channel_id,
-				...(params.channel_name !== undefined ? { channelName: params.channel_name } : undefined),
-				...(params.enabled !== undefined ? { enabled: params.enabled } : undefined),
-			})
 		case "pagerduty":
 			return new PagerDutyAlertDestinationConfig({
 				type: "pagerduty",
@@ -106,6 +102,14 @@ const toCreateRequest = (params: V2AlertDestinationCreateParams) => {
 				memberUserIds: params.member_user_ids,
 				...(params.enabled !== undefined ? { enabled: params.enabled } : undefined),
 			})
+		case "chat":
+			return new ChatAlertDestinationConfig({
+				type: "chat",
+				name: params.name,
+				workspaceId: params.workspace_id,
+				channelId: params.channel_id,
+				...(params.enabled !== undefined ? { enabled: params.enabled } : undefined),
+			})
 	}
 }
 
@@ -115,13 +119,6 @@ const toUpdateRequest = (params: V2AlertDestinationUpdateParams): AlertDestinati
 		...(params.enabled !== undefined ? { enabled: params.enabled } : undefined),
 	}
 	switch (params.type) {
-		case "slack-bot":
-			return {
-				type: "slack-bot",
-				...shared,
-				...(params.channel_id !== undefined ? { channelId: params.channel_id } : undefined),
-				...(params.channel_name !== undefined ? { channelName: params.channel_name } : undefined),
-			}
 		case "pagerduty":
 			return {
 				type: "pagerduty",
@@ -188,8 +185,46 @@ const toUpdateRequest = (params: V2AlertDestinationUpdateParams): AlertDestinati
 					? { memberUserIds: params.member_user_ids }
 					: undefined),
 			}
+		case "chat":
+			return {
+				type: "chat",
+				...shared,
+				...(params.channel_id !== undefined ? { channelId: params.channel_id } : undefined),
+			}
 	}
 }
+
+/** Credential-bearing config keys; their values must never reach the audit row. */
+/**
+ * The three update fields a destination document echoes back. Everything else
+ * an update can carry is either a credential or a provider-side handle the
+ * document never returns, so the diff can only record that it was touched.
+ */
+const destinationAuditView = (doc: AlertDestinationDocument | undefined) => ({
+	name: doc?.name,
+	enabled: doc?.enabled,
+	member_user_ids: doc?.memberUserIds,
+})
+
+export const destinationAuditDiff = auditDiff({
+	fields: ["name", "enabled", "member_user_ids"],
+	// A webhook URL is a credential: Discord's carries the token in the path, and
+	// a plain webhook's can carry one in userinfo or query.
+	writeOnly: ["integration_key", "signing_secret", "url", "webhook_url", "bot_token"],
+	// Provider-side handles. Not secret, but not readable back off the document
+	// either — recorded as touched so the change is not invisible.
+	opaque: [
+		"channel_id",
+		"channel_name",
+		"chat_id",
+		"workspace_id",
+		"hazel_organization_id",
+		"hazel_organization_name",
+		"hazel_organization_logo_url",
+		"hazel_channel_id",
+		"hazel_channel_name",
+	],
+})
 
 export const HttpV2AlertDestinationsLive = HttpApiBuilder.group(MapleApiV2, "alertDestinations", (handlers) =>
 	Effect.gen(function* () {
@@ -241,19 +276,38 @@ export const HttpV2AlertDestinationsLive = HttpApiBuilder.group(MapleApiV2, "ale
 						toCreateRequest(payload),
 					)
 
+					yield* recordHttpAudit("alert_destination.created", {
+						resourceId: created.id,
+						metadata: { name: created.name, type: created.type },
+					})
+
 					return toV2DestinationMutation(created)
 				}),
 			)
 			.handle("update", ({ params, payload }) =>
 				Effect.gen(function* () {
 					const tenant = yield* CurrentTenant.Context
+					const request = toUpdateRequest(payload)
+					const existing = yield* destinations.listDestinations(tenant.orgId)
+					const current = existing.destinations.find((doc) => doc.id === params.id)
 					const updated = yield* destinations.updateDestination(
 						tenant.orgId,
 						tenant.userId,
 						tenant.roles,
 						params.id,
-						toUpdateRequest(payload),
+						request,
 					)
+
+					const changes = destinationAuditDiff(
+						payload,
+						destinationAuditView(current),
+						destinationAuditView(updated),
+					)
+					yield* recordHttpAudit("alert_destination.updated", {
+						resourceId: updated.id,
+						changes,
+						metadata: { name: updated.name, type: updated.type },
+					})
 
 					return toV2DestinationMutation(updated)
 				}),
@@ -266,6 +320,9 @@ export const HttpV2AlertDestinationsLive = HttpApiBuilder.group(MapleApiV2, "ale
 						tenant.roles,
 						params.id,
 					)
+					yield* recordHttpAudit("alert_destination.deleted", {
+						resourceId: deleted.id,
+					})
 
 					return {
 						id: deleted.id,

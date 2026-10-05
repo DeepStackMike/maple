@@ -15,11 +15,12 @@ import { useAtomValue } from "@/lib/effect-atom"
 import { applyWhereClause } from "@/lib/traces/advanced-filter-sync"
 import { getTracesFacetsResultAtom } from "@/lib/services/atoms/warehouse-query-atoms"
 import { TimeRangeSearchFields, applyTimeRangeSearch } from "@/components/time-range-picker/search"
+import { sessionTimeRangeSearchMiddleware } from "@/components/time-range-picker/session-time-range"
 import { PageRefreshProvider } from "@/components/time-range-picker/page-refresh-context"
 import { TimeRangeHeaderControls } from "@/components/time-range-picker/time-range-header-controls"
 import { AutocompleteValuesProvider } from "@/hooks/use-autocomplete-values"
 import { ActiveFilterChips } from "@maple/ui/components/filters/active-filter-chips"
-import { traceFilterChips } from "@/lib/traces/trace-filter-chips"
+import { removeTraceFilterChips, traceFilterChips } from "@/lib/traces/trace-filter-chips"
 import { useGlobalNamespace } from "@/hooks/use-global-namespace"
 
 const ContainsMatchMode = Schema.optional(Schema.Literals(["contains"]))
@@ -27,11 +28,17 @@ const ContainsMatchMode = Schema.optional(Schema.Literals(["contains"]))
 const TraceSortKeyParam = Schema.optional(Schema.Literals(["timestamp", "durationMs"]))
 const SortDirParam = Schema.optional(Schema.Literals(["asc", "desc"]))
 
-const AttributeFilterParam = Schema.Struct({
+const attributeFilterParamFields = {
 	key: Schema.String,
 	value: Schema.String,
-	matchMode: Schema.optional(Schema.Literals(["contains"])),
+	matchMode: Schema.optional(Schema.Literals(["contains", "exists", "gt", "gte", "lt", "lte"])),
 	negated: Schema.optional(Schema.Union([Schema.Boolean, BooleanFromStringParam])),
+}
+
+const AttributeFilterParam = Schema.Struct({
+	...attributeFilterParamFields,
+	/** The other members of an `(a OR b)` where-clause group. */
+	or: Schema.optional(Schema.Array(Schema.Struct(attributeFilterParamFields))),
 })
 
 const tracesSearchSchema = Schema.Struct({
@@ -53,6 +60,14 @@ const tracesSearchSchema = Schema.Struct({
 	whereClause: Schema.optional(Schema.String),
 	attributeFilters: Schema.optional(Schema.Array(AttributeFilterParam)),
 	resourceAttributeFilters: Schema.optional(Schema.Array(AttributeFilterParam)),
+	/** The trace open in the peek sheet. In the URL so it survives a reload and a share. */
+	peek: Schema.optional(Schema.String),
+	/** The row's own span id, only when the list is per-span and rows share a trace. */
+	peekRow: Schema.optional(Schema.String),
+	/** A timestamp inside the peeked trace, so a peek whose row is not loaded still prunes partitions. */
+	peekT: Schema.optional(Schema.String),
+	/** The span selected inside the peek — the page's `spanId`, kept apart so closing the peek clears it. */
+	peekSpan: Schema.optional(Schema.String),
 	serviceMatchMode: ContainsMatchMode,
 	spanNameMatchMode: ContainsMatchMode,
 	deploymentEnvMatchMode: ContainsMatchMode,
@@ -75,6 +90,7 @@ export type TracesSearchParams = Schema.Schema.Type<typeof tracesSearchSchema>
 export const Route = createFileRoute("/traces/")({
 	component: TracesPage,
 	validateSearch: Schema.toStandardSchemaV1(tracesSearchSchema),
+	search: { middlewares: [sessionTimeRangeSearchMiddleware()] },
 	loaderDeps: ({ search }) => search,
 	// Only the facet sidebar is warmed. The trace list is paginated and sorted
 	// from state the route does not own, so rebuilding its input here would risk
@@ -112,24 +128,21 @@ function TracesPage() {
 				.filter(
 					(chip) =>
 						pinnedNamespace === null ||
-						(chip.param !== "namespaces" && chip.param !== "excludedNamespaces"),
+						(chip.id !== "namespaces" && chip.id !== "excludedNamespaces"),
 				)
 				.map((chip) => ({
-					id: chip.param,
+					id: chip.id,
 					label: chip.label,
 					values: chip.values,
 					negated: chip.negated,
-					onRemove: () => navigate({ search: (prev) => ({ ...prev, [chip.param]: undefined }) }),
+					onRemove: () => navigate({ search: (prev) => chip.remove(prev) }),
 				})),
 		[search, navigate, pinnedNamespace],
 	)
 
 	const clearFacetFilters = React.useCallback(() => {
 		navigate({
-			search: (prev) => ({
-				...prev,
-				...Object.fromEntries(traceFilterChips(prev).map((chip) => [chip.param, undefined])),
-			}),
+			search: (prev) => removeTraceFilterChips(prev, traceFilterChips(prev)),
 		})
 	}, [navigate])
 

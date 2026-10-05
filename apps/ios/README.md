@@ -5,8 +5,13 @@ in the order the questions get asked — see [`PRODUCT.md`](PRODUCT.md):
 
 - **Home** — is anything wrong right now? Status headline, open alerts with
   the rule's own last hour, services needing attention, what's new in 24h.
-- **Services** — the list, and a detail with golden-signal sparklines, scoped
-  alerts, issues, and top failing/slowest operations.
+- **Services** — the list, and a detail that leads with a health verdict and
+  its reason, one full-width scrubbable chart per golden signal (throughput,
+  errors, latency percentiles), window aggregates, scoped alerts, the busiest
+  operations re-rankable by failures / p95 / volume, and issues. It paints from
+  one request, `GET /v2/services/{name}/overview`, which composes the summary,
+  an all-signal timeseries and the operations server-side; alerts and issues
+  arrive in a second pass.
 - **Alerts** — the triage hub: incidents (with a "why" detail: what the rule
   saw, what changed on the service, likely cause, timeline), error issues,
   anomalies.
@@ -337,7 +342,7 @@ its own filter.
 
 Both axes travel together as `SessionController.DataScope`, which the list
 screens key `.task(id:)` on and store on their models. The environment is part
-of what a model *is* rather than something pushed at it, because it is not
+of what a model _is_ rather than something pushed at it, because it is not
 always known when a screen first builds: `EnvironmentController.load` restores a
 stored selection and drops one the organization no longer has, and the second of
 those can only happen once the network answers. Making it part of the scope
@@ -356,10 +361,10 @@ The mechanism is where they differ, and the difference is the thing to know:
 
 What it does not reach, and why:
 
-| Read                                | Behaviour                                                         |
-| ----------------------------------- | ----------------------------------------------------------------- |
-| `GET /v2/services/{name}`           | Aggregates across environments by contract — service detail is unfiltered. |
-| `/v2/alerts/*`                      | No filter exists. A rule's `environments` is the scope it fires on, not a filter over rules. |
+| Read                                  | Behaviour                                                                                                                                            |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /v2/services/{name}`             | Aggregates across environments by contract — service detail is unfiltered.                                                                           |
+| `/v2/alerts/*`                        | No filter exists. A rule's `environments` is the scope it fires on, not a filter over rules.                                                         |
 | `GET /v2/error_issues/service_counts` | No parameters at all. **The one visible seam:** with an environment selected, a Services row's metrics are filtered and its open-issue badge is not. |
 
 `GET /v2/anomalies/incidents` spells the parameter **`deployment_env`**, not

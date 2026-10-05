@@ -10,6 +10,7 @@ import { getActiveSink } from "../events/events-sink"
 import type { ResolvedIdentity } from "../identity/identity"
 import { buildSessionMetaRow } from "../events/meta-row"
 import {
+	adoptReplayDecision,
 	entryContextOf,
 	getSession,
 	isSessionExpired,
@@ -17,8 +18,10 @@ import {
 	noteCounts,
 	onSessionRotate,
 	peekSession,
+	resolveBillable,
 	type SessionRecord,
 } from "./session"
+import { claimVisit, touchVisit } from "../identity/visit"
 import { getVisitorId, isVisitorIdPersisted } from "../identity/visitor"
 
 /**
@@ -29,7 +32,7 @@ import { getVisitorId, isVisitorIdPersisted } from "../identity/visitor"
  * posted at session start, whose counters are all zero and therefore read as a
  * bounce. 60s is the floor worth using: the table is a ReplacingMergeTree, so
  * every heartbeat is an unmerged part until the next merge. Billing meters only
- * `version == 1` rows, so heartbeats do not double-bill.
+ * `billable_start == 1 && version == 1` rows, so heartbeats do not double-bill.
  */
 const HEARTBEAT_INTERVAL_MS = 60_000
 
@@ -56,8 +59,13 @@ export interface SessionSuspendOptions {
 
 /** The parts of the lifecycle each capture mode owns. */
 export interface SessionLifecycleHooks {
-	/** Whether the rows this owner posts are accompanied by an rrweb recording. */
-	readonly recorded: boolean
+	/**
+	 * Whether the rows this owner posts are accompanied by an rrweb recording.
+	 * A function when it can change mid-run: a buffered session becomes recorded when an error happens.
+	 */
+	readonly recorded: boolean | (() => boolean)
+	/** Whether this page buffers replay for errors, so a session minted by rotation keeps that decision. */
+	readonly buffered?: (() => boolean) | undefined
 	/** POST one metadata row. Best-effort — must never throw. */
 	readonly post: (row: Record<string, unknown>, keepalive: boolean) => void
 	/**
@@ -80,6 +88,8 @@ export interface SessionLifecycleHooks {
 
 export interface SessionLifecycleHandle {
 	readonly sessionId: string
+	/** Post a fresh `active` row now, e.g. after the session became recorded. */
+	readonly announce: () => void
 	readonly shutdown: (options?: { readonly flush?: boolean }) => Promise<void>
 }
 
@@ -109,6 +119,8 @@ export function startSessionLifecycle(
 	let errorCountBase = 0
 	let sinkClickCountAtStart = 0
 	let sinkErrorCountAtStart = 0
+	const isRecorded = (): boolean =>
+		typeof hooks.recorded === "function" ? hooks.recorded() : hooks.recorded
 
 	/**
 	 * The persisted record of the session this lifecycle owns.
@@ -165,6 +177,12 @@ export function startSessionLifecycle(
 	const post = (status: "active" | "ended", keepalive: boolean): void => {
 		const record = liveRecord()
 		const counts = countsFor(record)
+		const visitorId = getVisitorId()
+		// Tracking off means no visitor id and no persisted claim: billing falls
+		// back to one charge per session record, as before visits existed.
+		const persistVisit = visitorId !== undefined
+		const billableStart = resolveBillable(record.id, () => claimVisit(Date.now(), persistVisit))
+		touchVisit(record.lastActivityAt, persistVisit)
 		hooks.post(
 			buildSessionMetaRow({
 				sessionId: record.id,
@@ -176,7 +194,7 @@ export function startSessionLifecycle(
 				captureUserEmail: options.captureUserEmail,
 				environment: options.environment,
 				serviceVersion: options.serviceVersion,
-				visitorId: getVisitorId(),
+				visitorId,
 				// Off the record being posted rather than re-read from storage: the
 				// record already carries it, and the two can only disagree.
 				visitorIsNew: record.visitorIsNew === true,
@@ -187,7 +205,9 @@ export function startSessionLifecycle(
 				pageViews: counts.pageViews,
 				errorCount: counts.errorCount,
 				traceIds: status === "ended" ? options.getTraceIds?.(record.id) : undefined,
-				recorded: hooks.recorded,
+				recorded: isRecorded(),
+				replayTrigger: record.replayTrigger,
+				billableStart,
 			}),
 			keepalive,
 		)
@@ -203,6 +223,9 @@ export function startSessionLifecycle(
 		if (stopped || running) return
 		running = true
 		const record = liveRecord()
+		// A session minted by idle rotation mid-page has no sampling decision yet;
+		// it takes this page's mode so its later loads agree with it.
+		adoptReplayDecision(record.id, isRecorded(), hooks.buffered?.())
 		rebaseCounts(record)
 		hooks.onStart?.(record)
 		post("active", false)
@@ -287,6 +310,9 @@ export function startSessionLifecycle(
 	return {
 		get sessionId() {
 			return current.id
+		},
+		announce: () => {
+			if (running) post("active", false)
 		},
 		shutdown: async (shutdownOptions) => {
 			if (stopped) return

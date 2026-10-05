@@ -26,8 +26,10 @@ import {
 	errorEventsByTime,
 	errorFingerprintsMinutely,
 	aiTraceIndex,
+	aiCrawlerRequests,
 	traceDetailSpans,
 	traceListMv,
+	traceFacetsHourly,
 	attributeKeysHourly,
 	attributeValuesHourly,
 	tracesAggregatesHourly,
@@ -46,16 +48,35 @@ import {
 	DB_STATEMENT_SQL,
 	DB_SYSTEM_ATTR_SQL,
 } from "./db-query-shape-sql"
-import { MAPLE_AI_SESSION_ID_ATTR, MAPLE_AI_VENDOR_ID_ATTR } from "../gen-ai"
+import { MAPLE_AI_SESSION_ID_ATTR, MAPLE_AI_VENDOR_ID_ATTR, MAPLE_AI_VENDOR_VERSION_ATTR } from "../gen-ai"
+import { PRODUCT_EVENTS_TRACE_FILTER, PRODUCT_EVENTS_TRACE_PROJECTION_SQL } from "./product-event-attributes"
 import { DEPLOYMENT_ENV_SQL, MESSAGING_DESTINATION_SQL } from "./semconv-renames"
 import {
+	AI_CRAWLER_INDEX_SQL,
+	AI_CRAWLER_NAME_SQL,
+	REQUEST_HOST_SQL,
+	REQUEST_PATH_SQL,
+	RESPONSE_STATUS_SQL,
+} from "./ai-crawler-columns"
+import {
 	GENAI_AGENT_NAME_SQL,
+	GENAI_CACHE_READ_TOKENS_SQL,
+	GENAI_CACHE_WRITE_TOKENS_SQL,
 	GENAI_COST_SQL,
+	GENAI_ERROR_FINGERPRINT_SQL,
+	GENAI_ERROR_TYPE_SQL,
+	GENAI_FAILED_TOOL_CALL_RESULT_SQL,
+	GENAI_INPUT_TOKENS_SQL,
 	GENAI_IS_ERROR_SQL,
 	GENAI_IS_LLM_CALL_SQL,
 	GENAI_IS_TOOL_CALL_SQL,
 	GENAI_MODEL_SQL,
+	GENAI_OUTPUT_TOKENS_SQL,
+	GENAI_REASONING_TOKENS_SQL,
+	GENAI_RESPONSE_ID_SQL,
+	GENAI_STATUS_MESSAGE_SQL,
 	GENAI_TOKENS_SQL,
+	GENAI_TOOL_DESCRIPTION_SQL,
 	GENAI_TOOL_NAME_SQL,
 } from "./gen-ai-columns"
 import { NORMALIZED_SPAN_NAME_SQL } from "./span-display-name"
@@ -698,8 +719,9 @@ export const servicePlatformsHourlyMv = defineMaterializedView("service_platform
 
 /**
  * Materialized view populating error_events from traces where StatusCode='Error'.
- * Unwraps the first OTel `exception` event and computes a cityHash64
- * FingerprintHash used to group occurrences into Issues.
+ * Unwraps the first OTel `exception` event. When both the event and StatusMessage
+ * are absent, reads `exception.*` then `error.*` span attributes. Computes a
+ * cityHash64 FingerprintHash used to group occurrences into Issues.
  *
  * Fingerprint inputs: (OrgId, ServiceName, ExceptionType, top-3 normalized frames,
  * message signature).
@@ -744,9 +766,22 @@ export { errorEventsSelectSql as ERROR_EVENTS_MV_SQL }
 const errorEventsSelectSql = `
         WITH
           arrayFirstIndex(n -> n = 'exception', EventsName) AS _ei,
-          if(_ei > 0, EventsAttributes[_ei]['exception.type'], '') AS _exType,
-          if(_ei > 0, EventsAttributes[_ei]['exception.message'], StatusMessage) AS _exMsg,
-          if(_ei > 0, EventsAttributes[_ei]['exception.stacktrace'], '') AS _exStack,
+          -- Only fill the old Unknown Error bucket. Event values (including
+          -- empty fields) and spans with StatusMessage keep every hash input.
+          _ei = 0 AND StatusMessage = '' AS _useAttrs,
+          if(
+            _ei > 0, EventsAttributes[_ei]['exception.type'],
+            if(_useAttrs, coalesce(nullIf(SpanAttributes['exception.type'], ''), SpanAttributes['error.type']), '')
+          ) AS _exType,
+          if(
+            _ei > 0, EventsAttributes[_ei]['exception.message'],
+            if(_useAttrs, coalesce(nullIf(SpanAttributes['exception.message'], ''), SpanAttributes['error.message']), StatusMessage)
+          ) AS _exMsg,
+          if(
+            _ei > 0, EventsAttributes[_ei]['exception.stacktrace'],
+            if(_useAttrs, SpanAttributes['exception.stacktrace'], '')
+          ) AS _exStack,
+          if(_useAttrs, _exMsg, StatusMessage) AS _msgText,
           -- Frame lines are matched by SHAPE, not by "contains :NUMBER". The old
           -- rule accepted any line with a colon-digit, which let non-frame lines
           -- in: Drizzle's \`params: <row values>\` line, and the \`Type: message\`
@@ -779,8 +814,8 @@ const errorEventsSelectSql = `
           if(length(_topFrames) > 0, _topFrames[1], '') AS _topFrame,
           arrayStringConcat(_topFrames, '\\n') AS _fpFrames,
           -- JSON detection for the message signature below.
-          isValidJSON(StatusMessage) AS _isJson,
-          _isJson AND JSONType(StatusMessage) = 'Object' AS _isJsonObj,
+          isValidJSON(_msgText) AS _isJson,
+          _isJson AND JSONType(_msgText) = 'Object' AS _isJsonObj,
           -- General, KEY-NAME-AGNOSTIC canonical signature: iterate ALL top-level
           -- keys, redact volatile tokens (long hex / numbers) in each raw value, then
           -- sort by "key=value" so key order & whitespace don't matter. No assumption
@@ -790,7 +825,7 @@ const errorEventsSelectSql = `
             arraySort(
               arrayMap(
                 kv -> concat(kv.1, '=', ${chRedactChain("kv.2", JSON_VALUE_REDACTIONS)}),
-                JSONExtractKeysAndValuesRaw(StatusMessage)
+                JSONExtractKeysAndValuesRaw(_msgText)
               )
             ),
             '|'
@@ -808,7 +843,7 @@ const errorEventsSelectSql = `
           multiIf(
             _isJsonObj, _jsonSig,
             substringUTF8(
-              ${chRedactChain(`substringUTF8(StatusMessage, 1, ${MSG_SCAN_CHARS})`, MSG_TEXT_REDACTIONS)},
+              ${chRedactChain(`substringUTF8(_msgText, 1, ${MSG_SCAN_CHARS})`, MSG_TEXT_REDACTIONS)},
               1, ${MSG_SIGNATURE_CHARS}
             )
           ) AS _msgSig,
@@ -816,29 +851,29 @@ const errorEventsSelectSql = `
           -- many labels may map to one hash). The broad key list here is a DISPLAY
           -- heuristic only; the fingerprint above makes no key-name assumption.
           multiIf(
-            JSONExtractString(StatusMessage, 'title')   != '', JSONExtractString(StatusMessage, 'title'),
-            JSONExtractString(StatusMessage, 'message') != '', JSONExtractString(StatusMessage, 'message'),
-            JSONExtractString(StatusMessage, 'error')   != '', JSONExtractString(StatusMessage, 'error'),
-            JSONExtractString(StatusMessage, '_tag')    != '', JSONExtractString(StatusMessage, '_tag'),
-            JSONExtractString(StatusMessage, 'reason')  != '', JSONExtractString(StatusMessage, 'reason'),
-            JSONExtractString(StatusMessage, 'name')    != '', JSONExtractString(StatusMessage, 'name'),
-            JSONExtractString(StatusMessage, 'type')    != '', extract(JSONExtractString(StatusMessage, 'type'), '([^/]+)$'),
+            JSONExtractString(_msgText, 'title')   != '', JSONExtractString(_msgText, 'title'),
+            JSONExtractString(_msgText, 'message') != '', JSONExtractString(_msgText, 'message'),
+            JSONExtractString(_msgText, 'error')   != '', JSONExtractString(_msgText, 'error'),
+            JSONExtractString(_msgText, '_tag')    != '', JSONExtractString(_msgText, '_tag'),
+            JSONExtractString(_msgText, 'reason')  != '', JSONExtractString(_msgText, 'reason'),
+            JSONExtractString(_msgText, 'name')    != '', JSONExtractString(_msgText, 'name'),
+            JSONExtractString(_msgText, 'type')    != '', extract(JSONExtractString(_msgText, 'type'), '([^/]+)$'),
             'JSON error'
           ) AS _jsonLabel,
           multiIf(
-            StatusMessage = '', 'Unknown Error',
-            position(StatusMessage, '{ readonly') = 1 OR position(StatusMessage, '└─') > 0,
+            _msgText = '', 'Unknown Error',
+            position(_msgText, '{ readonly') = 1 OR position(_msgText, '└─') > 0,
               if(
-                extract(StatusMessage, 'readonly (\\\\w+)') != '',
-                concat('Schema parse error: ', extract(StatusMessage, 'readonly (\\\\w+)')),
+                extract(_msgText, 'readonly (\\\\w+)') != '',
+                concat('Schema parse error: ', extract(_msgText, 'readonly (\\\\w+)')),
                 'Schema parse error'
               ),
-            _isJsonObj OR position(StatusMessage, '[') = 1, _jsonLabel,
-            left(StatusMessage, multiIf(
-              position(StatusMessage, ': ')  > 3, toInt64(position(StatusMessage, ': '))  - 1,
-              position(StatusMessage, ' (')  > 3, toInt64(position(StatusMessage, ' (')) - 1,
-              position(StatusMessage, '\\n') > 3, toInt64(position(StatusMessage, '\\n')) - 1,
-              least(toInt64(length(StatusMessage)), 150)
+            _isJsonObj OR position(_msgText, '[') = 1, _jsonLabel,
+            left(_msgText, multiIf(
+              position(_msgText, ': ')  > 3, toInt64(position(_msgText, ': '))  - 1,
+              position(_msgText, ' (')  > 3, toInt64(position(_msgText, ' (')) - 1,
+              position(_msgText, '\\n') > 3, toInt64(position(_msgText, '\\n')) - 1,
+              least(toInt64(length(_msgText)), 150)
             ))
           ) AS _statusLabel,
           if(_exType != '', _exType, _statusLabel) AS _errorLabel,
@@ -872,20 +907,27 @@ const errorEventsSelectSql = `
           -- Client-side runtimes (notably the native Cloudflare Workers
           -- observability) mark ANY non-2xx fetch span as Error, so 404s from bot
           -- traffic arrived here as unlabelled "Unknown Error" issues. Drop a
-          -- span only when all three hold: 4xx, no exception event, and no
-          -- exception type. 5xx and anything carrying an exception still count,
-          -- and SpanKind is deliberately not consulted — these are Client spans.
+          -- span only when all hold: 4xx, no exception event, no exception.type
+          -- attribute, and no error.type beyond the status code itself (HTTP
+          -- semconv sets error.type to the bare status on a non-2xx response,
+          -- which carries no exception). 5xx and anything carrying a real
+          -- exception still count, and SpanKind is deliberately not consulted —
+          -- these are Client spans.
           AND NOT (
             _httpStatus >= 400 AND _httpStatus < 500
             AND _ei = 0
-            AND _exType = ''
+            AND SpanAttributes['exception.type'] = ''
+            AND (SpanAttributes['error.type'] = '' OR SpanAttributes['error.type'] = toString(_httpStatus))
           )
       `
 
 export const errorEventsMv = defineMaterializedView("error_events_mv", {
 	description:
-		"Materializes per-occurrence error events from traces. Unwraps the first OTel exception event and computes a cityHash64 FingerprintHash for issue grouping.",
+		"Materializes per-occurrence error events from traces. Unwraps the first OTel exception event (falling back to exception.* / error.* span attributes) and computes a cityHash64 FingerprintHash for issue grouping.",
 	datasource: errorEvents,
+	// Preserve the target's 90d history; replaying traces would retain only 30d
+	// and recompute stored fingerprints. Change the SELECT for future inserts.
+	deploymentMethod: "alter",
 	nodes: [
 		node({
 			name: "error_events_mv_node",
@@ -906,6 +948,8 @@ export const errorEventsByTimeMv = defineMaterializedView("error_events_by_time_
 	description:
 		"Time-ordered copy of error_events_mv's projection, written to error_events_by_time (sorted by OrgId, Timestamp, FingerprintHash) for recent-window error scans.",
 	datasource: errorEventsByTime,
+	// Keep both projections forward-only, with the same retained history.
+	deploymentMethod: "alter",
 	nodes: [
 		node({
 			name: "error_events_by_time_mv_node",
@@ -986,16 +1030,36 @@ export const traceDetailSpansMv = defineMaterializedView("trace_detail_spans_mv"
  * A missing Map key reads back as `''`, so the single `!= ''` comparison is
  * both the presence check and the non-empty check.
  *
- * The GenAI columns coalesce the dialects and classify the span at insert —
- * the SQL comes from `gen-ai-columns.ts`, so a raw-table read of the same fact
- * is the same expression. Migration 0026 added them; rows materialized before
+ * Every other GenAI column is a projection of the facts the gateway decided
+ * for the span and stamped on it (`MAPLE_AI_STAMP_ATTRS`, SQL from
+ * `gen-ai-columns.ts`) since migration 0035: the view holds no vendor rule,
+ * and a dialect is taught to the gateway instead. Rows materialized before it
+ * keep the values the view's own rules gave them until the 30-day TTL. Before
+ * 0035 the view coalesced the dialects and classified the span itself.
+ * Migration 0026 added the columns; rows materialized before
  * it carry `''`/0 throughout, which the facets drop, the filters never match
- * and the sums count as nothing.
+ * and the sums count as nothing. Migration 0027 changed `Tokens` to count a
+ * nested cache or reasoning bucket once, under the reporter's usage
+ * convention; rows materialized between the two keep the over-count.
+ * Migration 0031 added the vendor version and the five token buckets, which
+ * is what lets the list render a row without touching `trace_detail_spans`;
+ * rows materialized before it carry `''`/0 for those too. Migration 0032 added
+ * the failure's type, the status message, the tool's description, a failed tool
+ * call's result and the failure's fingerprint, which does the same for the tool
+ * detail page; rows before it read `''`/0 there, so a failure older than the
+ * migration groups under `unknown` and a tool whose only calls predate it shows
+ * no description.
  */
 export const aiTraceIndexMv = defineMaterializedView("ai_trace_index_mv", {
 	description:
-		"Populates ai_trace_index with GenAI agent spans (maple_ai.vendor.id stamped), pre-extracting the maple_ai.* identity, the environment, the GenAI model/agent/tool and the span's kind, failure and usage to plain columns.",
+		"Populates ai_trace_index with GenAI agent spans (maple_ai.vendor.id stamped), projecting the facts the ingest gateway stamped on each (maple_ai.*: identity, model/agent/tool, kind, usage, failure, a failed tool call's result, the tool's description) plus the environment, the error.type, the status message and the failure's fingerprint, to plain columns.",
 	datasource: aiTraceIndex,
+	// Migration 0026's columns are additive, and the rows already in the target
+	// are explicitly allowed to carry ''/0 for them (see above). Without this,
+	// Tinybird migrates the target by replaying `traces` through this pipe — the
+	// backfill that crashed the maple_us deploy with an internal error. `alter`
+	// adds the columns at promotion with no data movement.
+	deploymentMethod: "alter",
 	nodes: [
 		node({
 			name: "ai_trace_index_mv_node",
@@ -1018,9 +1082,52 @@ export const aiTraceIndexMv = defineMaterializedView("ai_trace_index_mv", {
           ${GENAI_IS_LLM_CALL_SQL} AS IsLlmCall,
           ${GENAI_IS_TOOL_CALL_SQL} AS IsToolCall,
           ${GENAI_TOKENS_SQL} AS Tokens,
-          ${GENAI_COST_SQL} AS Cost
+          ${GENAI_COST_SQL} AS Cost,
+          ${GENAI_RESPONSE_ID_SQL} AS ResponseId,
+          SpanAttributes['${MAPLE_AI_VENDOR_VERSION_ATTR}'] AS VendorVersion,
+          ${GENAI_INPUT_TOKENS_SQL} AS InputTokens,
+          ${GENAI_CACHE_READ_TOKENS_SQL} AS CacheReadTokens,
+          ${GENAI_CACHE_WRITE_TOKENS_SQL} AS CacheWriteTokens,
+          ${GENAI_OUTPUT_TOKENS_SQL} AS OutputTokens,
+          ${GENAI_REASONING_TOKENS_SQL} AS ReasoningTokens,
+          ${GENAI_ERROR_TYPE_SQL} AS ErrorType,
+          ${GENAI_STATUS_MESSAGE_SQL} AS StatusMessage,
+          ${GENAI_TOOL_DESCRIPTION_SQL} AS ToolDescription,
+          ${GENAI_FAILED_TOOL_CALL_RESULT_SQL} AS FailedToolCallResult,
+          ${GENAI_ERROR_FINGERPRINT_SQL} AS ErrorFingerprint
         FROM traces
         WHERE SpanAttributes['${MAPLE_AI_VENDOR_ID_ATTR}'] != ''
+      `,
+		}),
+	],
+})
+
+/**
+ * Populates `ai_crawler_requests` with Server spans whose user agent names an AI
+ * crawler from `AI_CRAWLERS`. Spans without a request path are skipped: they
+ * cannot be attributed to a page (the ingest gateway's own spans are the bulk).
+ */
+export const aiCrawlerRequestsMv = defineMaterializedView("ai_crawler_requests_mv", {
+	description:
+		"Populates ai_crawler_requests with Server spans whose user agent names an AI crawler, pre-extracting the crawler, request host, path and HTTP status.",
+	datasource: aiCrawlerRequests,
+	nodes: [
+		node({
+			name: "ai_crawler_requests_mv_node",
+			sql: `
+        SELECT
+          OrgId,
+          Timestamp,
+          TraceId,
+          ServiceName,
+          ${AI_CRAWLER_NAME_SQL} AS Crawler,
+          ${REQUEST_HOST_SQL} AS Host,
+          ${REQUEST_PATH_SQL} AS Path,
+          ${RESPONSE_STATUS_SQL} AS HttpStatus
+        FROM traces
+        WHERE SpanKind = 'Server'
+          AND ${AI_CRAWLER_INDEX_SQL} > 0
+          AND ${REQUEST_PATH_SQL} != ''
       `,
 		}),
 	],
@@ -1065,6 +1172,36 @@ export const traceListMvMv = defineMaterializedView("trace_list_mv_mv", {
           ResourceAttributes['service.namespace'] AS ServiceNamespace
         FROM traces
         WHERE ParentSpanId = ''
+      `,
+		}),
+	],
+})
+
+/** Cascaded off `trace_list_mv`, so it groups by the values the trace list filters on. */
+export const traceFacetsHourlyMv = defineMaterializedView("trace_facets_hourly_mv", {
+	description:
+		"Rolls trace_list_mv up hourly by the traces sidebar facet dimensions, with root-span counts and duration state.",
+	datasource: traceFacetsHourly,
+	nodes: [
+		node({
+			name: "trace_facets_hourly_mv_node",
+			sql: `
+        SELECT
+          OrgId,
+          toStartOfHour(Timestamp) AS Hour,
+          ServiceName,
+          SpanName,
+          HttpMethod,
+          HttpStatusCode,
+          DeploymentEnv,
+          ServiceNamespace,
+          HasError,
+          count() AS TraceCount,
+          min(Duration) AS DurationMin,
+          max(Duration) AS DurationMax,
+          quantilesTDigestState(0.5, 0.95)(Duration) AS DurationQuantiles
+        FROM trace_list_mv
+        GROUP BY OrgId, Hour, ServiceName, SpanName, HttpMethod, HttpStatusCode, DeploymentEnv, ServiceNamespace, HasError
       `,
 		}),
 	],
@@ -1647,9 +1784,35 @@ export const productEventsMv = defineMaterializedView("product_events_mv", {
           path(Url) AS PagePath,
           Url,
           '' AS ServiceName,
-          Attributes
+          Attributes,
+          '' AS TraceId,
+          '' AS SpanId
         FROM session_events
         WHERE Type IN ('navigation', 'custom')
+      `,
+		}),
+	],
+})
+
+/**
+ * Populates `product_events` from spans carrying `maple.product_event.name` —
+ * the only feed that carries `TraceId`. The predicate is one map lookup per
+ * incoming span (an MV sees the insert block, so no skip index helps). Column
+ * order must match the `product_events` SCHEMA order, enforced by
+ * `materialized-projection-order.test.ts`.
+ */
+export const productEventsTracesMv = defineMaterializedView("product_events_traces_mv", {
+	description:
+		"Populates product_events from spans carrying the maple.product_event.name attribute, projecting the span's identity, attributes (narrowed by maple.product_event.include, merged with maple.product_event.prop.*), service and TraceId/SpanId so the event links back to the trace that produced it.",
+	datasource: productEvents,
+	nodes: [
+		node({
+			name: "product_events_traces_mv_node",
+			sql: `
+        SELECT
+          ${PRODUCT_EVENTS_TRACE_PROJECTION_SQL}
+        FROM traces
+        WHERE ${PRODUCT_EVENTS_TRACE_FILTER}
       `,
 		}),
 	],

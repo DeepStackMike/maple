@@ -5,12 +5,12 @@ import { formatDuration } from "@maple/ui/lib/format"
 import { HttpSpanLabel } from "@maple/ui/components/traces/http-span-label"
 
 interface TraceListProps {
-	traces: Array<{
+	traces: ReadonlyArray<{
 		traceId: string
 		rootSpanName: string
 		durationMs: number
 		spanCount: number
-		services: string[]
+		services: ReadonlyArray<string>
 		hasError: boolean
 		startTime?: string
 		errorMessage?: string
@@ -57,6 +57,8 @@ export function TraceList({ props }: RendererComponentProps<TraceListProps>) {
 								<td className="py-1 pr-2">
 									<a
 										href={`/traces/${trace.traceId}${trace.startTime ? `?t=${encodeURIComponent(trace.startTime)}` : ""}`}
+										target="_blank"
+										rel="noreferrer"
 										className="font-mono text-primary hover:underline"
 									>
 										{trace.traceId.slice(0, 12)}

@@ -1,5 +1,6 @@
-import { Array as Arr, Effect, pipe } from "effect"
-import type { ErrorDetailTracesOutput, ErrorsTimeseriesOutput, ListLogsOutput } from "@maple/domain/tinybird"
+import { Array as Arr, Effect, Option, pipe } from "effect"
+import type { ErrorsTimeseriesOutput, ListLogsOutput } from "@maple/domain/tinybird"
+import type { ErrorDetailTracesOutput } from "../ch/queries/errors"
 import { parseWarehouseDateTime, formatWarehouseDateTime } from "../datetime"
 import { WarehouseExecutor } from "./WarehouseExecutor"
 import type { TimeRange } from "./types"
@@ -21,6 +22,15 @@ const logRangeAround = (traceStartTime: string): { start_time: string; end_time:
 	}
 }
 
+/** The span that failed, with the handful of attributes that identify what it was doing. */
+export interface ErrorDetailSpan {
+	readonly spanId: string
+	readonly name: string
+	readonly serviceName: string
+	readonly statusMessage: string
+	readonly attributes: Readonly<Record<string, string>>
+}
+
 export interface ErrorDetailTrace {
 	readonly traceId: string
 	readonly rootSpanName: string
@@ -29,15 +39,54 @@ export interface ErrorDetailTrace {
 	readonly services: readonly string[]
 	readonly startTime: string
 	readonly errorMessage: string
+	readonly errorSpan: ErrorDetailSpan | undefined
 	readonly logs: ReadonlyArray<{ timestamp: string; severityText: string; body: string }>
+}
+
+const errorSpanOf = (t: ErrorDetailTracesOutput): ErrorDetailSpan | undefined => {
+	if (!t.errorSpanId) return undefined
+	const attributes: Record<string, string> = {}
+	const attr = (key: string, value: string | undefined) => {
+		if (value) attributes[key] = value
+	}
+	attr("gen_ai.request.model", t.errorModel)
+	attr("gen_ai.tool.name", t.errorToolName)
+	attr("http.request.method", t.errorHttpMethod)
+	attr("http.route", t.errorHttpRoute)
+	attr("query.context", t.errorQueryContext)
+	attr("error.type", t.errorType)
+	return {
+		spanId: t.errorSpanId,
+		name: t.errorSpanName ?? "",
+		serviceName: t.errorServiceName ?? "",
+		statusMessage: t.errorMessage ?? "",
+		attributes,
+	}
+}
+
+/** The error a fingerprint stands for, as its most recent sampled occurrence recorded it. */
+export interface ErrorDetailIdentity {
+	readonly label: string
+	readonly exceptionType: string
+	readonly message: string
+	readonly serviceName: string
 }
 
 export interface ErrorDetailOutput {
 	readonly fingerprintHash: string
 	readonly timeRange: TimeRange
+	/** Absent when no sampled trace was found in the window. */
+	readonly error?: ErrorDetailIdentity
 	readonly traces: ReadonlyArray<ErrorDetailTrace>
 	readonly timeseries?: ReadonlyArray<{ bucket: string; count: number }>
 }
+
+const identityOf = (t: ErrorDetailTracesOutput): ErrorDetailIdentity => ({
+	label: t.errorLabel || t.exceptionType,
+	exceptionType: t.exceptionType,
+	message: t.exceptionMessage || t.errorMessage,
+	serviceName: t.errorServiceName,
+})
 
 export const errorDetail = Effect.fn("Observability.errorDetail")(function* (input: {
 	readonly fingerprintHash: string
@@ -116,30 +165,30 @@ export const errorDetail = Effect.fn("Observability.errorDetail")(function* (inp
 	return {
 		fingerprintHash: input.fingerprintHash,
 		timeRange: input.timeRange,
+		error: pipe(Arr.head(traces), Option.map(identityOf), Option.getOrUndefined),
 		traces: pipe(
 			traces,
-			Arr.map(
-				(t, i): ErrorDetailTrace => ({
-					traceId: t.traceId,
-					rootSpanName: t.rootSpanName,
-					// No `Number(...)` / `String(...)`: the row already decoded through
-					// the compiled query's schema, which is what coerces the wire form.
-					durationMs: t.durationMicros / 1000,
-					spanCount: t.spanCount,
-					services: t.services,
-					startTime: t.startTime,
-					errorMessage: t.errorMessage ?? "",
-					logs: pipe(
-						logsResults[i]?.data ?? [],
-						Arr.take(5),
-						Arr.map((l) => ({
-							timestamp: String(l.timestamp),
-							severityText: l.severityText || "INFO",
-							body: l.body,
-						})),
-					),
-				}),
-			),
+			Arr.map((t, i): ErrorDetailTrace => ({
+				traceId: t.traceId,
+				rootSpanName: t.rootSpanName,
+				// No `Number(...)` / `String(...)`: the row already decoded through
+				// the compiled query's schema, which is what coerces the wire form.
+				durationMs: t.durationMicros / 1000,
+				spanCount: t.spanCount,
+				services: t.services,
+				startTime: t.startTime,
+				errorMessage: t.errorMessage ?? "",
+				errorSpan: errorSpanOf(t),
+				logs: pipe(
+					logsResults[i]?.data ?? [],
+					Arr.take(5),
+					Arr.map((l) => ({
+						timestamp: String(l.timestamp),
+						severityText: l.severityText || "INFO",
+						body: l.body,
+					})),
+				),
+			})),
 		),
 		timeseries,
 	}

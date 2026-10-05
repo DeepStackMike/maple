@@ -254,7 +254,10 @@ export function CodeBlock({
 						label={expanded ? "Show fewer lines" : "Show all lines"}
 						onClick={() => setExpanded((prev) => !prev)}
 					>
-						<ChevronDownIcon size={10} className={cn("transition-transform", expanded && "rotate-180")} />
+						<ChevronDownIcon
+							size={10}
+							className={cn("transition-transform", expanded && "rotate-180")}
+						/>
 						{expanded ? "Show less" : `Show all ${prepared.lineCount.toLocaleString()} lines`}
 					</CodeAction>
 				</div>

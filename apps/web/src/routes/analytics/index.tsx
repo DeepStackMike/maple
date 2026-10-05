@@ -2,14 +2,16 @@ import { useState } from "react"
 import { Link, createFileRoute, useNavigate } from "@tanstack/react-router"
 import { Schema } from "effect"
 import { Result } from "@/lib/effect-atom"
-import { formatWarehouseDateTime, parseWarehouseDateTime } from "@maple/query-engine"
 
 import { Button } from "@maple/ui/components/ui/button"
 import { Skeleton } from "@maple/ui/components/ui/skeleton"
+import { Tabs, TabsList, TabsTrigger } from "@maple/ui/components/ui/tabs"
 
 import { DashboardLayout } from "@/components/layout/dashboard-layout"
 import { QueryErrorState } from "@/components/common/query-error-state"
-import { PageHero } from "@/components/infra/primitives/page-hero"
+import { DocsLink } from "@/components/common/docs-link"
+import { SignalEmptyState } from "@/components/common/signal-empty-state"
+import { useSignalPresence } from "@/hooks/use-signal-presence"
 import { PlayRotateClockwiseIcon } from "@/components/icons"
 import { chartBucketSeconds } from "@/components/infra/chart-utils"
 import type { WebAnalyticsBreakdowns, WebAnalyticsEvent } from "@/api/warehouse/web-analytics"
@@ -19,6 +21,7 @@ import {
 	type BreakdownDimension,
 } from "@/components/analytics/analytics-breakdown-panel"
 import { AnalyticsBotNotice } from "@/components/analytics/analytics-bot-notice"
+import { ProductEventTraceSamples } from "@/components/analytics/product-event-trace-samples"
 import { AnalyticsFilterSidebar } from "@/components/analytics/analytics-filter-sidebar"
 import { AnalyticsLiveBadge } from "@/components/analytics/analytics-live-badge"
 import {
@@ -26,6 +29,8 @@ import {
 	AnalyticsMetricStripLoading,
 } from "@/components/analytics/analytics-metric-strip"
 import { AnalyticsTrafficChart } from "@/components/analytics/analytics-traffic-chart"
+import { AnalyticsAiTab } from "@/components/analytics/ai/analytics-ai-tab"
+import { previousWindow } from "@/components/analytics/previous-window"
 import { Favicon } from "@/components/analytics/row-icon"
 import {
 	ANALYTICS_METRICS,
@@ -55,13 +60,21 @@ import {
 import { useEffectiveTimeRange } from "@/hooks/use-effective-time-range"
 import { useRefreshableAtomValue } from "@/hooks/use-refreshable-atom-value"
 import { TimeRangeSearchFields, applyTimeRangeSearch } from "@/components/time-range-picker/search"
+import { sessionTimeRangeSearchMiddleware } from "@/components/time-range-picker/session-time-range"
 import { PageRefreshProvider } from "@/components/time-range-picker/page-refresh-context"
 import { TimeRangeHeaderControls } from "@/components/time-range-picker/time-range-header-controls"
+
+const ANALYTICS_TABS = ["overview", "ai"] as const
+type AnalyticsTab = (typeof ANALYTICS_TABS)[number]
 
 const analyticsSearchSchema = Schema.Struct({
 	...analyticsFilterSearchFields,
 	...TimeRangeSearchFields,
+	// A loose string so a stale or mistyped `?tab=` falls back to Overview instead of failing validation.
+	tab: Schema.optional(Schema.String),
 })
+
+const decodeTab = (value: unknown): AnalyticsTab => ANALYTICS_TABS.find((tab) => tab === value) ?? "overview"
 
 const DEFAULT_PRESET = "7d"
 const PAGES_LIMIT = 100
@@ -71,6 +84,7 @@ const BREAKDOWN_LIMIT = 50
 export const Route = createFileRoute("/analytics/")({
 	component: WebAnalyticsPage,
 	validateSearch: Schema.toStandardSchemaV1(analyticsSearchSchema),
+	search: { middlewares: [sessionTimeRangeSearchMiddleware()] },
 })
 
 function WebAnalyticsPage() {
@@ -83,6 +97,15 @@ function WebAnalyticsPage() {
 		search.timePreset ?? DEFAULT_PRESET,
 	)
 	const filters = filtersFromSearch(search)
+	const activeTab = decodeTab(search.tab)
+
+	const onTabChange = (value: unknown) => {
+		const next = decodeTab(value)
+		navigate({
+			replace: true,
+			search: (prev) => ({ ...prev, tab: next === "overview" ? undefined : next }),
+		})
+	}
 
 	const handleTimeChange = (
 		range: { startTime?: string; endTime?: string; presetValue?: string },
@@ -103,14 +126,15 @@ function WebAnalyticsPage() {
 		onFilterChange(key, toggleFilterValue(filters[key], value))
 	}
 
-	// Clearing filters keeps the time range: that is what you are looking at,
-	// the filters are how narrowly.
+	// Clearing filters keeps the time range and the tab: that is what you are
+	// looking at, the filters are how narrowly.
 	const onClearFilters = () => {
 		navigate({
 			search: {
 				startTime: search.startTime,
 				endTime: search.endTime,
 				timePreset: search.timePreset,
+				tab: search.tab,
 			},
 		})
 	}
@@ -135,6 +159,8 @@ function WebAnalyticsPage() {
 	)
 
 	const chips = activeFilterChips(filters)
+	// An org that never sent browser data gets the on-ramp, not a strip of zeroes.
+	const sessionsPresence = useSignalPresence("sessions")
 
 	return (
 		<PageRefreshProvider timePreset={search.timePreset ?? DEFAULT_PRESET}>
@@ -191,44 +217,64 @@ function WebAnalyticsPage() {
 									/>
 								</div>
 							</DashboardLayout.Header>
+							{/* A page-width tab bar, same as Alerts: a pill beside the time
+							    controls read as one more filter and was easy to miss. */}
+							<Tabs value={activeTab} onValueChange={onTabChange}>
+								<TabsList variant="underline">
+									<TabsTrigger value="overview">Overview</TabsTrigger>
+									<TabsTrigger value="ai">AI traffic</TabsTrigger>
+								</TabsList>
+							</Tabs>
 						</DashboardLayout.Sticky>
 						<DashboardLayout.Scroll>
 							<div className="space-y-6">
-								<PageHero
-									title="Web Analytics"
-									description="Who visited your sites, what they read, and where they came from — from the same browser SDK that records sessions."
-									meta={
-										chips.length > 0 ? (
-											<div className="flex flex-wrap items-center gap-1.5">
-												{chips.map((chip) => (
-													<button
-														key={`${chip.key}:${chip.value}`}
-														type="button"
-														onClick={() => onFilterChange(chip.key, undefined)}
-														className="rounded-sm border bg-muted/50 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:text-foreground"
-													>
-														{chip.label} ✕
-													</button>
-												))}
-												<button
-													type="button"
-													onClick={onClearFilters}
-													className="px-1 text-[10px] text-muted-foreground underline-offset-2 hover:underline"
-												>
-													Clear all
-												</button>
-											</div>
-										) : undefined
-									}
-								/>
-								<AnalyticsContent
-									startTime={startTime}
-									endTime={endTime}
-									filters={filters}
-									breakdownsResult={breakdownsResult}
-									eventsResult={eventsResult}
-									onToggleFilter={onToggleFilter}
-								/>
+								{/* Active filters, removable one at a time. The page title used to carry
+								    them; the breadcrumb and tab bar already say where you are. */}
+								{chips.length > 0 ? (
+									<div className="flex flex-wrap items-center gap-1.5">
+										{chips.map((chip) => (
+											<button
+												key={`${chip.key}:${chip.value}`}
+												type="button"
+												onClick={() => onFilterChange(chip.key, undefined)}
+												className="rounded-sm border bg-muted/50 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:text-foreground"
+											>
+												{chip.label} ✕
+											</button>
+										))}
+										<button
+											type="button"
+											onClick={onClearFilters}
+											className="px-1 text-[10px] text-muted-foreground underline-offset-2 hover:underline"
+										>
+											Clear all
+										</button>
+									</div>
+								) : null}
+								{activeTab === "ai" ? (
+									<AnalyticsAiTab
+										startTime={startTime}
+										endTime={endTime}
+										filters={filters}
+										onToggleFilter={onToggleFilter}
+									/>
+								) : sessionsPresence.status === "absent" && chips.length === 0 ? (
+									<SignalEmptyState
+										signal="sessions"
+										noun="visits"
+										purpose="Web analytics counts visitors, pages and referrers from the browser SDK."
+										guideDocs="webAnalytics"
+									/>
+								) : (
+									<AnalyticsContent
+										startTime={startTime}
+										endTime={endTime}
+										filters={filters}
+										breakdownsResult={breakdownsResult}
+										eventsResult={eventsResult}
+										onToggleFilter={onToggleFilter}
+									/>
+								)}
 							</div>
 						</DashboardLayout.Scroll>
 					</DashboardLayout.Content>
@@ -255,21 +301,6 @@ function pairedCompanion(
 	if (!metric.companion) return undefined
 	const companion = findMetric(metric.companion)
 	return isMetricAvailable(companion, source) ? companion : undefined
-}
-
-/**
- * The window immediately before this one, of the same length — the baseline the
- * KPI deltas are measured against. "Last 7 days" compares against the 7 days
- * before it, which is what makes a delta answer "is this better than usual".
- */
-function previousWindow(startTime: string, endTime: string) {
-	const start = parseWarehouseDateTime(startTime)
-	const end = parseWarehouseDateTime(endTime)
-	const span = end - start
-	return {
-		startTime: formatWarehouseDateTime(start - span),
-		endTime: startTime,
-	}
 }
 
 function AnalyticsContent({
@@ -475,7 +506,14 @@ function AnalyticsContent({
 							renderIcon: multiSite
 								? (row) => <Favicon host={row.secondary ?? ""} />
 								: undefined,
-							emptyMessage: "No page views in the selected window.",
+							emptyMessage: (
+								<>
+									No page views in the selected window.
+									<span className="mt-2 flex justify-center">
+										<DocsLink page="webAnalytics" />
+									</span>
+								</>
+							),
 						},
 						{
 							tab: "Entries",
@@ -566,8 +604,15 @@ function AnalyticsContent({
 							noun: "event",
 							nounPlural: "events",
 							viewsLabel: "Events",
-							emptyMessage:
-								'No custom events in the selected window. Send one with track("name", props) from the browser SDK.',
+							emptyMessage: (
+								<>
+									No custom events in the selected window. Send one with track("name",
+									props) from the browser SDK.
+									<span className="mt-2 flex justify-center">
+										<DocsLink page="productEventsApi" />
+									</span>
+								</>
+							),
 						},
 					]
 
@@ -588,6 +633,10 @@ function AnalyticsContent({
 						{ id: "events", dimensions: eventDimensions, wide: true },
 					]
 
+					// Traces behind the filtered event; renders nothing unless the event
+					// came from an annotated span.
+					const eventName = filters.eventName
+
 					return (
 						<div className="grid items-start gap-4 @min-[880px]/page:grid-cols-2">
 							{cards.map((card) => (
@@ -603,6 +652,15 @@ function AnalyticsContent({
 									/>
 								</div>
 							))}
+							{eventName === undefined ? null : (
+								<div className="@min-[880px]/page:col-span-2">
+									<ProductEventTraceSamples
+										eventName={eventName}
+										startTime={startTime}
+										endTime={endTime}
+									/>
+								</div>
+							)}
 						</div>
 					)
 				})

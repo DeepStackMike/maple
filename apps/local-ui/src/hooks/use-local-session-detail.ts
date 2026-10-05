@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query"
+import { skipToken, useQuery } from "@tanstack/react-query"
 import { CH } from "@maple/query-engine"
 import { Option } from "effect"
 import type {
@@ -14,15 +14,15 @@ import { LOCAL_ORG_ID } from "../lib/constants"
 export function useLocalSessionDetail(sessionId: string | undefined) {
 	return useQuery<SessionReplayDetailOutput | null>({
 		queryKey: ["local", "session", sessionId],
-		enabled: !!sessionId,
-		queryFn: async () => {
-			const compiled = CH.compile(CH.getSessionReplayQuery(), {
-				orgId: LOCAL_ORG_ID,
-				sessionId: sessionId!,
-			})
-			const row = await executeLocalCompiledFirstRow(compiled)
-			return Option.getOrNull(row)
-		},
+		queryFn: sessionId
+			? async ({ signal }) => {
+					const compiled = CH.compile(CH.getSessionReplayQuery(), {
+						orgId: LOCAL_ORG_ID,
+						sessionId,
+					})
+					return Option.getOrNull(await executeLocalCompiledFirstRow(compiled, signal))
+				}
+			: skipToken,
 	})
 }
 
@@ -30,14 +30,16 @@ export function useLocalSessionDetail(sessionId: string | undefined) {
 export function useLocalSessionTranscript(sessionId: string | undefined) {
 	return useQuery<ReadonlyArray<SessionTranscriptOutput>>({
 		queryKey: ["local", "session-transcript", sessionId],
-		enabled: !!sessionId,
-		queryFn: async () => {
-			const compiled = CH.compile(CH.sessionTranscriptQuery({ limit: 250 }), {
-				orgId: LOCAL_ORG_ID,
-				sessionId: sessionId!,
-			})
-			return executeLocalCompiledQuery(compiled)
-		},
+		queryFn: sessionId
+			? ({ signal }) =>
+					executeLocalCompiledQuery(
+						CH.compile(CH.sessionTranscriptQuery({ limit: 250 }), {
+							orgId: LOCAL_ORG_ID,
+							sessionId,
+						}),
+						signal,
+					)
+			: skipToken,
 	})
 }
 
@@ -45,13 +47,14 @@ export function useLocalSessionTranscript(sessionId: string | undefined) {
 export function useLocalSessionTraces(traceIds: ReadonlyArray<string> | undefined) {
 	return useQuery<ReadonlyArray<SessionTraceSummaryOutput>>({
 		queryKey: ["local", "session-traces", traceIds],
-		enabled: !!traceIds && traceIds.length > 0,
-		queryFn: async () => {
-			const compiled = CH.compile(CH.sessionTraceSummariesQuery({ traceIds: traceIds! }), {
-				orgId: LOCAL_ORG_ID,
-			})
-			return executeLocalCompiledQuery(compiled)
-		},
+		queryFn:
+			traceIds && traceIds.length > 0
+				? ({ signal }) =>
+						executeLocalCompiledQuery(
+							CH.compile(CH.sessionTraceSummariesQuery({ traceIds }), { orgId: LOCAL_ORG_ID }),
+							signal,
+						)
+				: skipToken,
 	})
 }
 
@@ -75,12 +78,12 @@ export function useLocalSessionSpans(
 	return useQuery<ReadonlyArray<SessionSpanOutput>>({
 		queryKey: ["local", "session-spans", sessionId, window?.startTime, window?.endTime],
 		enabled: !!sessionId && !!window,
-		queryFn: async () => {
+		queryFn: async ({ signal }) => {
 			const compiled = CH.compile(
 				CH.sessionSpansQuery({ startTime: window!.startTime, endTime: window!.endTime }),
 				{ orgId: LOCAL_ORG_ID, sessionId: sessionId! },
 			)
-			return executeLocalCompiledQuery(compiled)
+			return executeLocalCompiledQuery(compiled, signal)
 		},
 	})
 }

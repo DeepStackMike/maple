@@ -1,6 +1,13 @@
 import type { QueryBuilderQueryDraftPayload } from "@maple/domain/http"
 import type { QuerySpec } from "@maple/domain/query-engine"
-import { normalizeKey, parseBoolean, parseWhereClause, splitCsv } from "@maple/domain/where-clause"
+import {
+	normalizeKey,
+	parseBoolean,
+	parseNumber,
+	parseWhereClause,
+	quoteWhereValue,
+	splitCsv,
+} from "@maple/domain/where-clause"
 import { Match } from "effect"
 
 export type {
@@ -65,7 +72,15 @@ export interface MetricsQueryDraft extends QueryBuilderQueryDraftBase {
 	isMonotonic: boolean
 }
 
-export type QueryBuilderQueryDraft = TracesQueryDraft | LogsQueryDraft | MetricsQueryDraft
+export interface ProductEventsQueryDraft extends QueryBuilderQueryDraftBase {
+	dataSource: "product_events"
+}
+
+export type QueryBuilderQueryDraft =
+	| TracesQueryDraft
+	| LogsQueryDraft
+	| MetricsQueryDraft
+	| ProductEventsQueryDraft
 
 export interface BuildSpecResult {
 	query: QuerySpec | null
@@ -95,6 +110,15 @@ export const AGGREGATIONS_BY_SOURCE: Record<
 		{ label: "rate", value: "rate" },
 		{ label: "increase", value: "increase" },
 	],
+	// `persons` is the row-local key (UserId, else VisitorId) — no identity
+	// stitching, which is the funnel's job.
+	product_events: [
+		{ label: "count", value: "count" },
+		{ label: "uniq(sessions)", value: "sessions" },
+		{ label: "uniq(persons)", value: "persons" },
+		{ label: "uniq(users)", value: "users" },
+		{ label: "uniq(visitors)", value: "visitors" },
+	],
 } satisfies Record<QueryBuilderDataSource, Array<{ label: string; value: string }>>
 
 /**
@@ -123,6 +147,7 @@ const ALLOWED_AGGREGATIONS = {
 	traces: new Set(AGGREGATIONS_BY_SOURCE.traces.map((option) => option.value)),
 	logs: new Set(AGGREGATIONS_BY_SOURCE.logs.map((option) => option.value)),
 	metrics: new Set(AGGREGATIONS_BY_SOURCE.metrics.map((option) => option.value)),
+	product_events: new Set(AGGREGATIONS_BY_SOURCE.product_events.map((option) => option.value)),
 } satisfies Record<QueryBuilderDataSource, ReadonlySet<string>>
 
 const ALLOWED_TRACES_NUMERIC_AGGREGATIONS: ReadonlySet<string> = new Set(TRACES_NUMERIC_AGGREGATIONS)
@@ -196,6 +221,17 @@ export const GROUP_BY_OPTIONS: Record<QueryBuilderDataSource, Array<{ label: str
 		{ label: "service.name", value: "service.name" },
 		{ label: "attr.*", value: "attr." },
 		{ label: "resource.*", value: "resource." },
+		{ label: "none", value: "none" },
+	],
+	product_events: [
+		{ label: "event.name", value: "event.name" },
+		{ label: "event.kind", value: "event.kind" },
+		{ label: "source", value: "source" },
+		{ label: "host", value: "host" },
+		{ label: "page.path", value: "page.path" },
+		{ label: "service.name", value: "service.name" },
+		{ label: "group.id", value: "group.id" },
+		{ label: "attr.*", value: "attr." },
 		{ label: "none", value: "none" },
 	],
 } satisfies Record<QueryBuilderDataSource, Array<{ label: string; value: string }>>
@@ -341,12 +377,77 @@ function parseBucketSeconds(raw: string): number | undefined {
 
 // Clause-to-filter mapping via Match
 
-interface AccumulatedAttributeFilter {
+interface AccumulatedAttributeFilterLeaf {
 	key: string
 	value?: string
 	mode: "equals" | "exists" | "gt" | "gte" | "lt" | "lte" | "contains"
 	negated?: boolean
 }
+
+interface AccumulatedAttributeFilter extends AccumulatedAttributeFilterLeaf {
+	/** The other members of an `(a OR b)` group; see `AttributeFilter.or`. */
+	or?: AccumulatedAttributeFilterLeaf[]
+}
+
+interface AttributeFilterAccumulator {
+	attributeFilters: AccumulatedAttributeFilter[]
+	resourceAttributeFilters: AccumulatedAttributeFilter[]
+}
+
+/**
+ * Lowers an `(a OR b)` where-clause group onto one attribute filter with `or`
+ * alternatives. Each member goes through the source's own clause handler on an
+ * empty accumulator, so key aliases, casing and the bare-key fallback apply as
+ * they do outside a group. A member that lands anywhere but a single attribute
+ * filter (a named dimension like `service.name`), or members split across span
+ * and resource attributes, cannot be OR-ed and the group is dropped with a
+ * warning.
+ */
+function applyOrGroup<A extends AttributeFilterAccumulator>(
+	filters: A,
+	group: readonly WhereClauseInput[],
+	apply: (acc: A, clause: WhereClauseInput, warnings: string[]) => A,
+	empty: A,
+	source: string,
+	warnings: string[],
+): A {
+	const label = `(${group.map((c) => `${typedKey(c)} ${c.operator} ${c.value}`.trim()).join(" OR ")})`
+	const members: Array<{ map: keyof AttributeFilterAccumulator; filter: AccumulatedAttributeFilter }> = []
+	for (const clause of group) {
+		const memberWarnings: string[] = []
+		const next = apply(empty, clause, memberWarnings)
+		const setsOtherField = Object.entries(next).some(
+			([field, value]) =>
+				field !== "attributeFilters" && field !== "resourceAttributeFilters" && value !== undefined,
+		)
+		const map =
+			next.attributeFilters.length === 1 && next.resourceAttributeFilters.length === 0
+				? "attributeFilters"
+				: next.resourceAttributeFilters.length === 1 && next.attributeFilters.length === 0
+					? "resourceAttributeFilters"
+					: undefined
+		const filter = map === undefined ? undefined : next[map][0]
+		if (memberWarnings.length > 0 || setsOtherField || map === undefined || filter === undefined) {
+			warnings.push(`${source} OR group ignored: only attribute filters can be OR-ed: ${label}`)
+			return filters
+		}
+		members.push({ map, filter })
+	}
+	const [first, ...rest] = members
+	if (first === undefined) return filters
+	if (rest.some((m) => m.map !== first.map)) {
+		warnings.push(`${source} OR group ignored: its members mix span and resource attributes: ${label}`)
+		return filters
+	}
+	if (filters[first.map].length >= 5) {
+		warnings.push(`Maximum of 5 filters per attribute map; ignoring ${label}`)
+		return filters
+	}
+	const combined: AccumulatedAttributeFilter = { ...first.filter, or: rest.map((m) => m.filter) }
+	return { ...filters, [first.map]: [...filters[first.map], combined] }
+}
+
+type TracesMatchModeField = "serviceName" | "spanName" | "deploymentEnv"
 
 interface TracesFilterAccumulator {
 	serviceName?: string
@@ -355,9 +456,29 @@ interface TracesFilterAccumulator {
 	errorsOnly?: boolean
 	environments?: string[]
 	commitShas?: string[]
+	minDurationMs?: number
+	maxDurationMs?: number
+	matchModes?: Partial<Record<TracesMatchModeField, "contains">>
+	excludedServiceNames?: string[]
+	excludedSpanNames?: string[]
+	excludedEnvironments?: string[]
+	excludedCommitShas?: string[]
 	attributeFilters: AccumulatedAttributeFilter[]
 	groupByAttributeKeys?: string[]
 	resourceAttributeFilters: AccumulatedAttributeFilter[]
+}
+
+interface WhereClauseInput {
+	key: string
+	rawKey?: string
+	operator: string
+	value: string
+}
+
+// Attribute Map keys are case-sensitive, so they come from the key as typed.
+// `attr.` / `resource.` are ASCII, so slicing the raw key at the prefix is safe.
+function typedKey(clause: WhereClauseInput, prefixLength = 0): string {
+	return (clause.rawKey ?? clause.key).trim().slice(prefixLength)
 }
 
 // Maps a parsed where-clause operator to a positive attribute-filter `mode`
@@ -396,16 +517,82 @@ function makeAttrFilter(attributeKey: string, operator: string, value: string): 
 	}
 }
 
+type DimensionPredicate =
+	| { readonly kind: "include"; readonly values: string[]; readonly contains: boolean }
+	| { readonly kind: "exclude"; readonly values: string[] }
+
+/**
+ * Lowers a clause on a column-backed dimension (service, span name, env, ...)
+ * to an include or exclude list. An operator the column cannot take warns
+ * instead of degrading into an exact match on the value.
+ */
+function dimensionPredicate(
+	clause: WhereClauseInput,
+	warnings: string[],
+	source: string,
+	options: { readonly csv: boolean; readonly contains: boolean },
+): DimensionPredicate | undefined {
+	const values = options.csv ? splitCsv(clause.value) : [clause.value]
+	if (clause.operator === "=") return { kind: "include", values, contains: false }
+	if (clause.operator === "!=") return { kind: "exclude", values }
+	if (clause.operator === "contains" && options.contains) {
+		return { kind: "include", values: [clause.value], contains: true }
+	}
+	const supported = options.contains ? "=, != and contains" : "= and !="
+	warnings.push(`${source} filter ${clause.key} supports only ${supported}; ignoring ${clause.operator}`)
+	return undefined
+}
+
+function withMatchMode(
+	modes: TracesFilterAccumulator["matchModes"],
+	field: TracesMatchModeField,
+	contains: boolean,
+): TracesFilterAccumulator["matchModes"] {
+	const { [field]: _dropped, ...rest } = modes ?? {}
+	const next = contains ? { ...rest, [field]: "contains" as const } : rest
+	return Object.keys(next).length > 0 ? next : undefined
+}
+
+function applyTracesDimension(
+	filters: TracesFilterAccumulator,
+	clause: WhereClauseInput,
+	warnings: string[],
+	field: {
+		readonly options: { readonly csv: boolean; readonly contains: boolean }
+		readonly include: (values: string[]) => Partial<TracesFilterAccumulator>
+		readonly exclude: (values: string[]) => Partial<TracesFilterAccumulator>
+		readonly matchMode?: TracesMatchModeField
+	},
+): TracesFilterAccumulator {
+	const predicate = dimensionPredicate(clause, warnings, "Traces", field.options)
+	if (!predicate) return filters
+	if (predicate.kind === "exclude") return { ...filters, ...field.exclude(predicate.values) }
+	return {
+		...filters,
+		...field.include(predicate.values),
+		...(field.matchMode
+			? { matchModes: withMatchMode(filters.matchModes, field.matchMode, predicate.contains) }
+			: undefined),
+	}
+}
+
+// Keys backed by a scalar filter field only take `=`; anything else warns.
+function requireEquals(clause: WhereClauseInput, warnings: string[], source = "Traces"): boolean {
+	if (clause.operator === "=") return true
+	warnings.push(`${source} filter ${clause.key} supports only =; ignoring ${clause.operator}`)
+	return false
+}
+
 function applyTracesClause(
 	filters: TracesFilterAccumulator,
-	clause: { key: string; operator: string; value: string },
+	clause: WhereClauseInput,
 	warnings: string[],
 ): TracesFilterAccumulator {
 	const key = normalizeKey(clause.key)
 
 	// Handle attr.* and resource.* prefixes before Match
 	if (key.startsWith("attr.")) {
-		const attributeKey = key.slice(5)
+		const attributeKey = typedKey(clause, 5)
 		if (filters.attributeFilters.length >= 5) {
 			warnings.push(`Maximum of 5 attr.* filters supported; ignoring attr.${attributeKey}`)
 			return filters
@@ -420,7 +607,7 @@ function applyTracesClause(
 	}
 
 	if (key.startsWith("resource.")) {
-		const resourceKey = key.slice(9)
+		const resourceKey = typedKey(clause, 9)
 		if (filters.resourceAttributeFilters.length >= 5) {
 			warnings.push(`Maximum of 5 resource.* filters supported; ignoring resource.${resourceKey}`)
 			return filters
@@ -435,17 +622,47 @@ function applyTracesClause(
 	}
 
 	return Match.value(key).pipe(
-		Match.when("service.name", () => ({ ...filters, serviceName: clause.value })),
-		Match.when("span.name", () => ({ ...filters, spanName: clause.value })),
-		Match.when("deployment.environment", () => ({
-			...filters,
-			environments: splitCsv(clause.value),
-		})),
-		Match.when("vcs.ref.head.revision", () => ({
-			...filters,
-			commitShas: splitCsv(clause.value),
-		})),
+		Match.when("service.name", () =>
+			applyTracesDimension(filters, clause, warnings, {
+				options: { csv: false, contains: true },
+				include: (values) => ({ serviceName: values[0] }),
+				exclude: (values) => ({
+					excludedServiceNames: [...(filters.excludedServiceNames ?? []), ...values],
+				}),
+				matchMode: "serviceName",
+			}),
+		),
+		Match.when("span.name", () =>
+			applyTracesDimension(filters, clause, warnings, {
+				options: { csv: false, contains: true },
+				include: (values) => ({ spanName: values[0] }),
+				exclude: (values) => ({
+					excludedSpanNames: [...(filters.excludedSpanNames ?? []), ...values],
+				}),
+				matchMode: "spanName",
+			}),
+		),
+		Match.when("deployment.environment", () =>
+			applyTracesDimension(filters, clause, warnings, {
+				options: { csv: true, contains: true },
+				include: (values) => ({ environments: values }),
+				exclude: (values) => ({
+					excludedEnvironments: [...(filters.excludedEnvironments ?? []), ...values],
+				}),
+				matchMode: "deploymentEnv",
+			}),
+		),
+		Match.when("vcs.ref.head.revision", () =>
+			applyTracesDimension(filters, clause, warnings, {
+				options: { csv: true, contains: false },
+				include: (values) => ({ commitShas: values }),
+				exclude: (values) => ({
+					excludedCommitShas: [...(filters.excludedCommitShas ?? []), ...values],
+				}),
+			}),
+		),
 		Match.when("root_only", () => {
+			if (!requireEquals(clause, warnings)) return filters
 			const boolValue = parseBoolean(clause.value)
 			if (boolValue == null) {
 				warnings.push(`Invalid root_only value ignored: ${clause.value}`)
@@ -454,12 +671,24 @@ function applyTracesClause(
 			return { ...filters, rootSpansOnly: boolValue }
 		}),
 		Match.when("has_error", () => {
+			if (!requireEquals(clause, warnings)) return filters
 			const boolValue = parseBoolean(clause.value)
 			if (boolValue == null) {
 				warnings.push(`Invalid has_error value ignored: ${clause.value}`)
 				return filters
 			}
 			return { ...filters, errorsOnly: boolValue }
+		}),
+		Match.whenOr("min_duration_ms", "max_duration_ms", (durationKey) => {
+			if (!requireEquals(clause, warnings)) return filters
+			const numeric = parseNumber(clause.value)
+			if (numeric == null) {
+				warnings.push(`Invalid ${durationKey} value ignored: ${clause.value}`)
+				return filters
+			}
+			return durationKey === "min_duration_ms"
+				? { ...filters, minDurationMs: numeric }
+				: { ...filters, maxDurationMs: numeric }
 		}),
 		Match.orElse(() => {
 			// A bare key outside the small structured allowlist is almost always a
@@ -477,28 +706,256 @@ function applyTracesClause(
 				...filters,
 				attributeFilters: [
 					...filters.attributeFilters,
-					makeAttrFilter(key, clause.operator, clause.value),
+					makeAttrFilter(typedKey(clause), clause.operator, clause.value),
 				],
 			}
 		}),
 	)
 }
 
+interface LogsFilterAccumulator {
+	serviceName?: string
+	severity?: string
+	excludedServiceNames?: string[]
+	excludedSeverities?: string[]
+	attributeFilters: AccumulatedAttributeFilter[]
+	resourceAttributeFilters: AccumulatedAttributeFilter[]
+}
+
 function applyLogsClause(
-	filters: { serviceName?: string; severity?: string },
-	clause: { key: string; value: string },
+	filters: LogsFilterAccumulator,
+	clause: WhereClauseInput,
 	warnings: string[],
-): { serviceName?: string; severity?: string } {
+): LogsFilterAccumulator {
 	const key = normalizeKey(clause.key)
 
+	if (key.startsWith("attr.") || key.startsWith("resource.")) {
+		const isResource = key.startsWith("resource.")
+		const prefix = isResource ? "resource" : "attr"
+		const attributeKey = typedKey(clause, prefix.length + 1)
+		const target = isResource ? filters.resourceAttributeFilters : filters.attributeFilters
+		if (target.length >= 5) {
+			warnings.push(`Maximum of 5 ${prefix}.* filters supported; ignoring ${prefix}.${attributeKey}`)
+			return filters
+		}
+		const next = [...target, makeAttrFilter(attributeKey, clause.operator, clause.value)]
+		return isResource
+			? { ...filters, resourceAttributeFilters: next }
+			: { ...filters, attributeFilters: next }
+	}
+
 	return Match.value(key).pipe(
-		Match.when("service.name", () => ({ ...filters, serviceName: clause.value })),
-		Match.when("severity", () => ({ ...filters, severity: clause.value })),
+		Match.when("service.name", () => {
+			const predicate = dimensionPredicate(clause, warnings, "Logs", { csv: false, contains: false })
+			if (!predicate) return filters
+			return predicate.kind === "include"
+				? { ...filters, serviceName: predicate.values[0] }
+				: {
+						...filters,
+						excludedServiceNames: [...(filters.excludedServiceNames ?? []), ...predicate.values],
+					}
+		}),
+		Match.when("severity", () => {
+			const predicate = dimensionPredicate(clause, warnings, "Logs", { csv: false, contains: false })
+			if (!predicate) return filters
+			return predicate.kind === "include"
+				? { ...filters, severity: predicate.values[0] }
+				: {
+						...filters,
+						excludedSeverities: [...(filters.excludedSeverities ?? []), ...predicate.values],
+					}
+		}),
 		Match.orElse(() => {
 			warnings.push(`Unsupported logs filter ignored: ${clause.key}`)
 			return filters
 		}),
 	)
+}
+
+function buildLogsSpecFilters(acc: LogsFilterAccumulator): Record<string, unknown> | undefined {
+	const filters: Record<string, unknown> = {}
+	for (const [field, value] of Object.entries(acc)) {
+		if (value !== undefined && !(Array.isArray(value) && value.length === 0)) filters[field] = value
+	}
+	return Object.keys(filters).length > 0 ? filters : undefined
+}
+
+interface ProductEventsFilterAccumulator {
+	eventNames?: string[]
+	kinds?: string[]
+	sources?: string[]
+	hosts?: string[]
+	pagePaths?: string[]
+	serviceNames?: string[]
+	userIds?: string[]
+	groupIds?: string[]
+	excludedEventNames?: string[]
+	excludedKinds?: string[]
+	excludedSources?: string[]
+	excludedHosts?: string[]
+	excludedPagePaths?: string[]
+	excludedServiceNames?: string[]
+	referrerHost?: string
+	country?: string
+	deviceType?: string
+	browserName?: string
+	osName?: string
+	language?: string
+	utmSource?: string
+	utmMedium?: string
+	utmCampaign?: string
+	visitorType?: "new" | "returning"
+	groupByAttributeKey?: string
+	attributeFilters: AccumulatedAttributeFilter[]
+}
+
+/** Row columns that take `=` / `!=` with a comma-separated value list. */
+const PRODUCT_EVENT_LIST_FIELDS = {
+	"event.name": ["eventNames", "excludedEventNames"],
+	event: ["eventNames", "excludedEventNames"],
+	event_name: ["eventNames", "excludedEventNames"],
+	"event.kind": ["kinds", "excludedKinds"],
+	kind: ["kinds", "excludedKinds"],
+	source: ["sources", "excludedSources"],
+	host: ["hosts", "excludedHosts"],
+	"page.path": ["pagePaths", "excludedPagePaths"],
+	page_path: ["pagePaths", "excludedPagePaths"],
+	path: ["pagePaths", "excludedPagePaths"],
+	"service.name": ["serviceNames", "excludedServiceNames"],
+	service: ["serviceNames", "excludedServiceNames"],
+	"user.id": ["userIds", "userIds"],
+	"group.id": ["groupIds", "groupIds"],
+} as const satisfies Record<
+	string,
+	readonly [keyof ProductEventsFilterAccumulator, keyof ProductEventsFilterAccumulator]
+>
+
+/** `session_replays` dimensions — equality only, they lower to the analytics semi-join. */
+const PRODUCT_EVENT_SESSION_FIELDS = {
+	"referrer.host": "referrerHost",
+	referrer_host: "referrerHost",
+	referrer: "referrerHost",
+	country: "country",
+	"device.type": "deviceType",
+	device_type: "deviceType",
+	device: "deviceType",
+	browser: "browserName",
+	"browser.name": "browserName",
+	os: "osName",
+	"os.name": "osName",
+	language: "language",
+	"utm.source": "utmSource",
+	utm_source: "utmSource",
+	"utm.medium": "utmMedium",
+	utm_medium: "utmMedium",
+	"utm.campaign": "utmCampaign",
+	utm_campaign: "utmCampaign",
+} as const satisfies Record<string, keyof ProductEventsFilterAccumulator>
+
+function applyProductEventsClause(
+	filters: ProductEventsFilterAccumulator,
+	clause: { key: string; rawKey?: string; operator: string; value: string },
+	warnings: string[],
+): ProductEventsFilterAccumulator {
+	const key = normalizeKey(clause.key)
+	// Prop keys keep their case: `Attributes` is a case-sensitive Map of the customer's own names.
+	const rawKey = (clause.rawKey ?? clause.key).trim()
+	const attributeKey = key.startsWith("attr.") ? rawKey.slice(5) : undefined
+
+	if (attributeKey === undefined && Object.hasOwn(PRODUCT_EVENT_LIST_FIELDS, key)) {
+		const [positive, negative] = PRODUCT_EVENT_LIST_FIELDS[key as keyof typeof PRODUCT_EVENT_LIST_FIELDS]
+		if (clause.operator !== "=" && clause.operator !== "!=") {
+			warnings.push(
+				`Product events filter ${clause.key} supports only = and !=; ignoring ${clause.operator}`,
+			)
+			return filters
+		}
+		if (clause.operator === "!=" && positive === negative) {
+			warnings.push(`Product events filter ${clause.key} supports only =; ignoring !=`)
+			return filters
+		}
+		const target = clause.operator === "=" ? positive : negative
+		return { ...filters, [target]: splitCsv(clause.value) }
+	}
+
+	if (attributeKey === undefined && Object.hasOwn(PRODUCT_EVENT_SESSION_FIELDS, key)) {
+		if (clause.operator !== "=") {
+			warnings.push(`Product events filter ${clause.key} supports only =; ignoring ${clause.operator}`)
+			return filters
+		}
+		const target = PRODUCT_EVENT_SESSION_FIELDS[key as keyof typeof PRODUCT_EVENT_SESSION_FIELDS]
+		return { ...filters, [target]: clause.value }
+	}
+
+	if (attributeKey === undefined && (key === "visitor.type" || key === "visitor_type")) {
+		if (clause.operator !== "=") {
+			warnings.push(`Product events filter ${clause.key} supports only =; ignoring ${clause.operator}`)
+			return filters
+		}
+		if (clause.value !== "new" && clause.value !== "returning") {
+			warnings.push(`Invalid visitor.type value ignored: ${clause.value}`)
+			return filters
+		}
+		return { ...filters, visitorType: clause.value }
+	}
+
+	// Anything else is a `track()` prop, prefixed or bare — same rule as traces.
+	const propKey = attributeKey ?? rawKey
+	if (!propKey) {
+		warnings.push(`Invalid attr.* filter ignored: ${clause.key}`)
+		return filters
+	}
+	if (filters.attributeFilters.length >= 5) {
+		warnings.push(`Maximum of 5 attr.* filters supported; ignoring ${clause.key}`)
+		return filters
+	}
+	return {
+		...filters,
+		attributeFilters: [
+			...filters.attributeFilters,
+			makeAttrFilter(propKey, clause.operator, clause.value),
+		],
+	}
+}
+
+function resolveProductEventsGroupByToken(
+	raw: string,
+	filters: ProductEventsFilterAccumulator,
+	warnings: string[],
+): ProductEventsGroupByKey | null {
+	const resolution = resolveGroupByToken("product_events", GROUP_BY_ALIASES.product_events, raw)
+	switch (resolution._tag) {
+		case "Empty":
+			return null
+		case "Rejected":
+			warnings.push(resolution.warning)
+			return null
+		case "Literal":
+			return resolution.token
+		case "Prefixed": {
+			// The shared resolver lowercases the token; the prop key keeps the case it was typed with.
+			const key = raw.trim().slice(ATTRIBUTE_PREFIX.prefix.length)
+			// One attribute group column, as on metrics.
+			if (filters.groupByAttributeKey !== undefined && filters.groupByAttributeKey !== key) {
+				warnings.push(`Product events queries support a single attr.* group by; ignoring attr.${key}`)
+				return null
+			}
+			filters.groupByAttributeKey = key
+			return resolution.token
+		}
+	}
+}
+
+function buildProductEventsSpecFilters(
+	acc: ProductEventsFilterAccumulator,
+): Record<string, unknown> | undefined {
+	const { attributeFilters, ...rest } = acc
+	const filters: Record<string, unknown> = {}
+	for (const [field, value] of Object.entries(rest)) {
+		if (value !== undefined && !(Array.isArray(value) && value.length === 0)) filters[field] = value
+	}
+	if (attributeFilters.length > 0) filters.attributeFilters = attributeFilters
+	return Object.keys(filters).length > 0 ? filters : undefined
 }
 
 interface MetricsFilterAccumulator {
@@ -514,7 +971,7 @@ interface MetricsFilterAccumulator {
 
 function applyMetricsClause(
 	filters: MetricsFilterAccumulator,
-	clause: { key: string; operator: string; value: string },
+	clause: WhereClauseInput,
 	warnings: string[],
 ): MetricsFilterAccumulator {
 	const key = normalizeKey(clause.key)
@@ -524,7 +981,7 @@ function applyMetricsClause(
 	// one `attr.<key> = value` clause is honored; anything else warns instead of
 	// being silently dropped.
 	if (key.startsWith("attr.")) {
-		const attributeKey = key.slice(5)
+		const attributeKey = typedKey(clause, 5)
 		const { mode, negated } = operatorToAttrFilter(clause.operator)
 		if (mode !== "equals" || negated) {
 			warnings.push(`Metrics attr.* filters support only equality; ignoring attr.${attributeKey}`)
@@ -546,7 +1003,7 @@ function applyMetricsClause(
 	// Host/pod/node identity on metrics lives in the ResourceAttributes map —
 	// `resource.<key>` filters predicate on it (mirrors the traces handler).
 	if (key.startsWith("resource.")) {
-		const resourceKey = key.slice(9)
+		const resourceKey = typedKey(clause, 9)
 		if (filters.resourceAttributeFilters.length >= 5) {
 			warnings.push(`Maximum of 5 resource.* filters supported; ignoring resource.${resourceKey}`)
 			return filters
@@ -558,6 +1015,14 @@ function applyMetricsClause(
 				makeAttrFilter(resourceKey, clause.operator, clause.value),
 			],
 		}
+	}
+
+	// The metrics filters carry no exclusion or substring fields for these keys.
+	if (
+		(key === "service.name" || key === "deployment.environment" || key === "metric.type") &&
+		!requireEquals(clause, warnings, "Metrics")
+	) {
+		return filters
 	}
 
 	return Match.value(key).pipe(
@@ -599,6 +1064,16 @@ function applyMetricsClause(
 
 type TracesGroupByKey = "service" | "span_name" | "status_code" | "http_method" | "attribute" | "none"
 type LogsGroupByKey = "service" | "severity" | "none"
+type ProductEventsGroupByKey =
+	| "event_name"
+	| "kind"
+	| "source"
+	| "host"
+	| "page_path"
+	| "service"
+	| "group"
+	| "attribute"
+	| "none"
 type MetricsGroupByKey = "service" | "attribute" | "resource_attribute" | "none"
 
 /** Which bucket a prefixed token's key lands in. */
@@ -679,10 +1154,33 @@ const GROUP_BY_ALIASES = {
 		},
 		prefixes: [ATTRIBUTE_PREFIX, RESOURCE_PREFIX],
 	},
+	product_events: {
+		aliases: {
+			event: "event_name",
+			"event.name": "event_name",
+			event_name: "event_name",
+			kind: "kind",
+			"event.kind": "kind",
+			source: "source",
+			host: "host",
+			page: "page_path",
+			"page.path": "page_path",
+			page_path: "page_path",
+			service: "service",
+			"service.name": "service",
+			service_name: "service",
+			group: "group",
+			"group.id": "group",
+			none: "none",
+			all: "none",
+		},
+		prefixes: [ATTRIBUTE_PREFIX],
+	},
 } as const satisfies {
 	readonly traces: GroupBySourceSpec<TracesGroupByKey>
 	readonly logs: GroupBySourceSpec<LogsGroupByKey>
 	readonly metrics: GroupBySourceSpec<MetricsGroupByKey>
+	readonly product_events: GroupBySourceSpec<ProductEventsGroupByKey>
 }
 
 /**
@@ -701,6 +1199,10 @@ export const GROUP_BY_TOKENS = {
 	metrics: {
 		literals: Object.keys(GROUP_BY_ALIASES.metrics.aliases),
 		prefixes: GROUP_BY_ALIASES.metrics.prefixes.map((p) => p.prefix),
+	},
+	product_events: {
+		literals: Object.keys(GROUP_BY_ALIASES.product_events.aliases),
+		prefixes: GROUP_BY_ALIASES.product_events.prefixes.map((p) => p.prefix),
 	},
 } satisfies Readonly<
 	Record<
@@ -915,6 +1417,13 @@ function buildTracesSpecFilters(acc: TracesFilterAccumulator): Record<string, un
 	if (acc.errorsOnly != null) filters.errorsOnly = acc.errorsOnly
 	if (acc.environments?.length) filters.environments = acc.environments
 	if (acc.commitShas?.length) filters.commitShas = acc.commitShas
+	if (acc.minDurationMs != null) filters.minDurationMs = acc.minDurationMs
+	if (acc.maxDurationMs != null) filters.maxDurationMs = acc.maxDurationMs
+	if (acc.matchModes) filters.matchModes = acc.matchModes
+	if (acc.excludedServiceNames?.length) filters.excludedServiceNames = acc.excludedServiceNames
+	if (acc.excludedSpanNames?.length) filters.excludedSpanNames = acc.excludedSpanNames
+	if (acc.excludedEnvironments?.length) filters.excludedEnvironments = acc.excludedEnvironments
+	if (acc.excludedCommitShas?.length) filters.excludedCommitShas = acc.excludedCommitShas
 	if (acc.groupByAttributeKeys?.length) filters.groupByAttributeKeys = acc.groupByAttributeKeys
 	if (acc.attributeFilters.length > 0) filters.attributeFilters = acc.attributeFilters
 	if (acc.resourceAttributeFilters.length > 0)
@@ -938,7 +1447,15 @@ function dedupeGroupByKeys<T extends string>(keys: readonly T[]): T[] {
 
 export function buildTimeseriesQuerySpec(query: QueryBuilderQueryDraftPayload): BuildSpecResult {
 	const warnings: string[] = []
-	const { clauses, warnings: parseWarnings } = parseWhereClause(query.whereClause ?? "")
+	const {
+		clauses,
+		groups,
+		warnings: parseWarnings,
+	} = parseWhereClause(query.whereClause ?? "", {
+		// Only the sources that lower groups ask for them. Any other source gets the
+		// parser's "unsupported clause" warning, so a group is never dropped silently.
+		orGroups: query.dataSource === "traces" || query.dataSource === "logs",
+	})
 	for (const w of parseWarnings) warnings.push(w.message)
 
 	const stepInterval = query.stepInterval ?? ""
@@ -997,9 +1514,10 @@ export function buildTimeseriesQuerySpec(query: QueryBuilderQueryDraftPayload): 
 			}
 		}
 
-		const filters = clauses.reduce<TracesFilterAccumulator>(
-			(acc, clause) => applyTracesClause(acc, clause, warnings),
-			{ attributeFilters: [], resourceAttributeFilters: [] },
+		const emptyTraces: TracesFilterAccumulator = { attributeFilters: [], resourceAttributeFilters: [] }
+		const filters = groups.reduce(
+			(acc, group) => applyOrGroup(acc, group, applyTracesClause, emptyTraces, "Traces", warnings),
+			clauses.reduce((acc, clause) => applyTracesClause(acc, clause, warnings), emptyTraces),
 		)
 
 		const groupByKeys: TracesGroupByKey[] = []
@@ -1065,9 +1583,10 @@ export function buildTimeseriesQuerySpec(query: QueryBuilderQueryDraftPayload): 
 			}
 		}
 
-		const filters = clauses.reduce<{ serviceName?: string; severity?: string }>(
-			(acc, clause) => applyLogsClause(acc, clause, warnings),
-			{},
+		const emptyLogs: LogsFilterAccumulator = { attributeFilters: [], resourceAttributeFilters: [] }
+		const filters = groups.reduce(
+			(acc, group) => applyOrGroup(acc, group, applyLogsClause, emptyLogs, "Logs", warnings),
+			clauses.reduce((acc, clause) => applyLogsClause(acc, clause, warnings), emptyLogs),
 		)
 
 		const logsGroupByKeys: LogsGroupByKey[] = []
@@ -1086,7 +1605,45 @@ export function buildTimeseriesQuerySpec(query: QueryBuilderQueryDraftPayload): 
 				source: "logs",
 				metric: "count",
 				groupBy,
-				filters: Object.keys(filters).length ? filters : undefined,
+				filters: buildLogsSpecFilters(filters),
+				bucketSeconds,
+				seriesLimit,
+			} as QuerySpec,
+			warnings,
+			error: null,
+		}
+	}
+
+	if (query.dataSource === "product_events") {
+		if (!ALLOWED_AGGREGATIONS.product_events.has(query.aggregation)) {
+			return {
+				query: null,
+				warnings,
+				error: `Unsupported product events aggregation: ${query.aggregation}. Valid: ${[...ALLOWED_AGGREGATIONS.product_events].join(", ")}`,
+			}
+		}
+
+		const filters = clauses.reduce<ProductEventsFilterAccumulator>(
+			(acc, clause) => applyProductEventsClause(acc, clause, warnings),
+			{ attributeFilters: [] },
+		)
+
+		const groupByKeys: ProductEventsGroupByKey[] = []
+		if (query.addOns?.groupBy && (query.groupBy?.length ?? 0) > 0) {
+			for (const raw of query.groupBy ?? []) {
+				const resolved = resolveProductEventsGroupByToken(raw, filters, warnings)
+				if (resolved) groupByKeys.push(resolved)
+			}
+		}
+		const groupBy = groupByKeys.length > 0 ? dedupeGroupByKeys(groupByKeys) : undefined
+
+		return {
+			query: {
+				kind: "timeseries",
+				source: "product_events",
+				metric: query.aggregation as "count" | "sessions" | "persons" | "users" | "visitors",
+				groupBy,
+				filters: buildProductEventsSpecFilters(filters),
 				bucketSeconds,
 				seriesLimit,
 			} as QuerySpec,
@@ -1276,20 +1833,33 @@ const FILTER_MODE_TO_DISPLAY: Record<string, string> = {
 	contains: "contains",
 } satisfies Record<string, string>
 
-function formatAttrFilterClause(
-	prefix: string,
-	af: { key: string; value?: string; mode: string; negated?: boolean },
-): string {
+interface FormattableAttrFilter {
+	key: string
+	value?: string
+	mode: string
+	negated?: boolean
+	or?: ReadonlyArray<FormattableAttrFilter>
+}
+
+function formatAttrFilterClause(prefix: string, af: FormattableAttrFilter): string {
+	if (af.or?.length) {
+		const { or, ...first } = af
+		return `(${[first, ...or].map((member) => formatAttrFilterClause(prefix, member)).join(" OR ")})`
+	}
 	if (af.mode === "exists") {
 		return `${prefix}.${af.key} ${af.negated ? "!exists" : "exists"}`
 	}
 	if (af.mode === "contains") {
-		return `${prefix}.${af.key} ${af.negated ? "!contains" : "contains"} "${af.value ?? ""}"`
+		return `${prefix}.${af.key} ${af.negated ? "!contains" : "contains"} ${quoteWhereValue(af.value ?? "")}`
 	}
 	// `negated` only ever pairs with `equals` here (operatorToAttrFilter never
 	// negates the numeric comparators), so render it as `!=`.
 	const op = af.negated && af.mode === "equals" ? "!=" : (FILTER_MODE_TO_DISPLAY[af.mode] ?? "=")
-	return `${prefix}.${af.key} ${op} "${af.value ?? ""}"`
+	return `${prefix}.${af.key} ${op} ${quoteWhereValue(af.value ?? "")}`
+}
+
+function stringList(value: unknown): string[] {
+	return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []
 }
 
 export function formatFiltersAsWhereClause(params: Record<string, unknown>): string {
@@ -1297,53 +1867,70 @@ export function formatFiltersAsWhereClause(params: Record<string, unknown>): str
 		params.filters && typeof params.filters === "object"
 			? (params.filters as Record<string, unknown>)
 			: {}
+	const matchModes =
+		filters.matchModes && typeof filters.matchModes === "object"
+			? (filters.matchModes as Record<string, unknown>)
+			: {}
 
 	const clauses: string[] = []
 
-	if (typeof filters.serviceName === "string" && filters.serviceName.trim()) {
-		clauses.push(`service.name = "${filters.serviceName.trim()}"`)
+	function scalar(clauseKey: string, value: unknown, contains = false) {
+		if (typeof value === "string" && value.trim()) {
+			clauses.push(`${clauseKey} ${contains ? "contains" : "="} ${quoteWhereValue(value.trim())}`)
+		}
 	}
 
-	if (typeof filters.spanName === "string" && filters.spanName.trim()) {
-		clauses.push(`span.name = "${filters.spanName.trim()}"`)
+	function excluded(clauseKey: string, value: unknown) {
+		for (const item of stringList(value)) clauses.push(`${clauseKey} != ${quoteWhereValue(item)}`)
 	}
 
-	if (typeof filters.severity === "string" && filters.severity.trim()) {
-		clauses.push(`severity = "${filters.severity.trim()}"`)
-	}
+	scalar("service.name", filters.serviceName, matchModes.serviceName === "contains")
+	scalar("span.name", filters.spanName, matchModes.spanName === "contains")
+	scalar("severity", filters.severity)
 
 	if (filters.rootSpansOnly === true) {
 		clauses.push("root_only = true")
 	}
 
-	if (Array.isArray(filters.environments) && filters.environments.length > 0) {
-		const val = filters.environments.filter((item): item is string => typeof item === "string").join(",")
-
-		if (val) {
-			clauses.push(`deployment.environment = "${val}"`)
-		}
+	if (typeof filters.errorsOnly === "boolean") {
+		clauses.push(`has_error = ${String(filters.errorsOnly)}`)
 	}
 
-	if (Array.isArray(filters.commitShas) && filters.commitShas.length > 0) {
-		const val = filters.commitShas.filter((item): item is string => typeof item === "string").join(",")
-
-		if (val) {
-			clauses.push(`vcs.ref.head.revision = "${val}"`)
-		}
+	const environments = stringList(filters.environments)
+	if (environments.length > 0) {
+		const contains = matchModes.deploymentEnv === "contains" && environments.length === 1
+		clauses.push(
+			`deployment.environment ${contains ? "contains" : "="} ${quoteWhereValue(environments.join(","))}`,
+		)
 	}
+
+	const commitShas = stringList(filters.commitShas)
+	if (commitShas.length > 0) {
+		clauses.push(`vcs.ref.head.revision = ${quoteWhereValue(commitShas.join(","))}`)
+	}
+
+	if (typeof filters.minDurationMs === "number") {
+		clauses.push(`min_duration_ms = ${String(filters.minDurationMs)}`)
+	}
+
+	if (typeof filters.maxDurationMs === "number") {
+		clauses.push(`max_duration_ms = ${String(filters.maxDurationMs)}`)
+	}
+
+	excluded("service.name", filters.excludedServiceNames)
+	excluded("span.name", filters.excludedSpanNames)
+	excluded("severity", filters.excludedSeverities)
+	excluded("deployment.environment", filters.excludedEnvironments)
+	excluded("vcs.ref.head.revision", filters.excludedCommitShas)
 
 	if (Array.isArray(filters.attributeFilters)) {
-		for (const af of filters.attributeFilters as Array<{ key: string; value?: string; mode: string }>) {
+		for (const af of filters.attributeFilters as Array<FormattableAttrFilter>) {
 			clauses.push(formatAttrFilterClause("attr", af))
 		}
 	}
 
 	if (Array.isArray(filters.resourceAttributeFilters)) {
-		for (const rf of filters.resourceAttributeFilters as Array<{
-			key: string
-			value?: string
-			mode: string
-		}>) {
+		for (const rf of filters.resourceAttributeFilters as Array<FormattableAttrFilter>) {
 			clauses.push(formatAttrFilterClause("resource", rf))
 		}
 	}

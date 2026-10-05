@@ -1,32 +1,25 @@
-import { keepPreviousData, useQuery } from "@tanstack/react-query"
+import { keepPreviousData, skipToken, useQuery } from "@tanstack/react-query"
 import { CH } from "@maple/query-engine"
 import { Option } from "effect"
-import { executeLocalCompiledFirstRow, executeLocalCompiledQuery } from "@/lib/query"
-import { LOCAL_ORG_ID } from "../lib/constants"
-import { boundsForRange } from "../lib/time"
-import { groupSparkPoints, sparkWindow, type SparkPoint } from "../lib/error-spark"
+import { boundsKey, executeLocalCompiledFirstRow, executeLocalCompiledQuery, localParams } from "@/lib/query"
+import type { TimeBounds } from "../lib/time"
+import { groupSparkPoints, type SparkPoint } from "../lib/error-spark"
 
 export interface ErrorsFilters {
 	/** Exact service name match. */
 	service?: string
-	/** Exact `deployment.environment` resource attribute. */
+	/** Exact `deployment.environment` resource attribute (`unknown` matches untagged rows). */
 	env?: string
 	/** Exact `ErrorLabel` match — the value the "Error Type" facet lists. */
 	errorType?: string
 	/** Exact `service.version` match — the value the "Version" facet lists. */
 	version?: string
-	/**
-	 * Restrict to root-span errors — the *unchecked* state of the sidebar's
-	 * "All span errors" box, which is how `apps/web` spelled the same filter.
-	 */
+	/** Restrict to root-span errors. */
 	rootOnly?: boolean
-	/** Time-range preset key (see `TIME_RANGES`). */
-	range?: string
 }
 
-function commonOpts(filters: ErrorsFilters) {
+function sharedFilters(filters: ErrorsFilters) {
 	return {
-		rootOnly: filters.rootOnly,
 		services: filters.service ? [filters.service] : undefined,
 		deploymentEnvs: filters.env ? [filters.env] : undefined,
 		errorLabels: filters.errorType ? [filters.errorType] : undefined,
@@ -35,115 +28,126 @@ function commonOpts(filters: ErrorsFilters) {
 }
 
 /** Headline stats for the errors view (error_events × service_usage). */
-export function useLocalErrorsSummary(filters: ErrorsFilters) {
+export function useLocalErrorsSummary(filters: ErrorsFilters, bounds: TimeBounds) {
 	return useQuery({
-		queryKey: ["local", "errors", "summary", filters],
+		queryKey: ["local", "errors", "summary", filters, boundsKey(bounds)],
 		placeholderData: keepPreviousData,
-		queryFn: async (): Promise<CH.ErrorsSummaryOutput | null> => {
-			const { startTime, endTime } = boundsForRange(filters.range)
+		queryFn: async ({ signal }): Promise<CH.ErrorsSummaryOutput | null> => {
 			const row = await executeLocalCompiledFirstRow(
-				CH.compile(CH.errorsSummaryQuery(commonOpts(filters)), {
-					orgId: LOCAL_ORG_ID,
-					startTime,
-					endTime,
-				}),
+				CH.compile(
+					CH.errorsSummaryQuery({ ...sharedFilters(filters), rootOnly: filters.rootOnly }),
+					localParams(bounds),
+				),
+				signal,
 			)
 			return Option.getOrNull(row)
 		},
 	})
 }
 
+/** A fingerprint-grouped error type; `serviceNames` names up to three of its services. */
+export type ErrorTypeRow = CH.ErrorsByTypeOutput
+
 /** Fingerprint-grouped error types, most frequent first. */
-export function useLocalErrorsByType(filters: ErrorsFilters) {
+export function useLocalErrorsByType(filters: ErrorsFilters, bounds: TimeBounds) {
 	return useQuery({
-		queryKey: ["local", "errors", "by-type", filters],
+		queryKey: ["local", "errors", "by-type", filters, boundsKey(bounds)],
 		placeholderData: keepPreviousData,
-		queryFn: async (): Promise<ReadonlyArray<CH.ErrorsByTypeOutput>> => {
-			const { startTime, endTime } = boundsForRange(filters.range)
-			return executeLocalCompiledQuery(
-				CH.compile(CH.errorsByTypeQuery({ ...commonOpts(filters), limit: 50 }), {
-					orgId: LOCAL_ORG_ID,
-					startTime,
-					endTime,
-				}),
-			)
-		},
+		queryFn: ({ signal }): Promise<ReadonlyArray<ErrorTypeRow>> =>
+			executeLocalCompiledQuery(
+				CH.compile(
+					CH.errorsByTypeQuery({
+						...sharedFilters(filters),
+						rootOnly: filters.rootOnly,
+						limit: 50,
+					}),
+					localParams(bounds),
+				),
+				signal,
+			),
 	})
 }
 
 /**
  * Per-build occurrence split for every fingerprint on the page, in one query.
  *
- * One request for the whole list, not one per row: the list shows fifty
- * fingerprints and every one of them wants the version it was introduced in, and
- * chDB runs local queries serially — fifty round trips would be the page's whole
- * latency budget spent on a subtitle.
- *
- * Returned as a Map so a row looks its own versions up by hash instead of
- * re-filtering the flat result on every render. Rows come back oldest-first
- * within a fingerprint, which is the order "introduced in" reads off; the
- * Compare-versions table re-sorts by recency for display.
+ * One request for the whole list, not one per row: chDB runs local queries
+ * serially, so fifty round trips would be the page's whole latency budget spent
+ * on a subtitle. Returned as a Map so a row looks its own versions up by hash.
+ * Rows come back oldest-first within a fingerprint, which is the order
+ * "introduced in" reads off.
  */
-export function useLocalErrorVersions(fingerprintHashes: ReadonlyArray<string>, filters: ErrorsFilters) {
+export function useLocalErrorVersions(
+	fingerprintHashes: ReadonlyArray<string>,
+	filters: ErrorsFilters,
+	bounds: TimeBounds,
+) {
 	// The key is the hash list, not the row objects: counts change on every
 	// refetch and would evict a cache entry whose answer did not move.
 	const key = [...fingerprintHashes].sort().join(",")
 	return useQuery({
-		queryKey: ["local", "errors", "versions", key, filters],
-		enabled: fingerprintHashes.length > 0,
+		queryKey: ["local", "errors", "versions", key, filters, boundsKey(bounds)],
 		placeholderData: keepPreviousData,
-		queryFn: async (): Promise<Map<string, Array<CH.ErrorVersionsOutput>>> => {
-			const { startTime, endTime } = boundsForRange(filters.range)
-			const rows = await executeLocalCompiledQuery(
-				CH.compile(CH.errorVersionsQuery({ ...commonOpts(filters), fingerprintHashes }), {
-					orgId: LOCAL_ORG_ID,
-					startTime,
-					endTime,
-				}),
-			)
-			const byFingerprint = new Map<string, Array<CH.ErrorVersionsOutput>>()
-			for (const row of rows) {
-				const list = byFingerprint.get(row.fingerprintHash)
-				if (list) list.push(row)
-				else byFingerprint.set(row.fingerprintHash, [row])
-			}
-			return byFingerprint
-		},
+		queryFn:
+			fingerprintHashes.length > 0
+				? async ({ signal }): Promise<Map<string, Array<CH.ErrorVersionsOutput>>> => {
+						const rows = await executeLocalCompiledQuery(
+							CH.compile(
+								CH.errorVersionsQuery({
+									...sharedFilters(filters),
+									rootOnly: filters.rootOnly,
+									fingerprintHashes,
+								}),
+								localParams(bounds),
+							),
+							signal,
+						)
+						const byFingerprint = new Map<string, Array<CH.ErrorVersionsOutput>>()
+						for (const row of rows) {
+							const list = byFingerprint.get(row.fingerprintHash)
+							if (list) list.push(row)
+							else byFingerprint.set(row.fingerprintHash, [row])
+						}
+						return byFingerprint
+					}
+				: skipToken,
 	})
 }
 
 /**
  * Bucketed occurrence counts for every fingerprint on the page, in one scan.
  *
- * `errorsSparkQuery` exists for exactly this and predates the local UI: it is
- * fingerprint-filtered, so it rides `error_events`' (OrgId, FingerprintHash,
- * Timestamp) key instead of scanning the window, and it returns rows tall
- * (fingerprint x bucket) rather than as a wide `groupArray`, because aggregate
- * state merge order is not input order and the client would have to re-sort
- * anyway.
- *
- * The compile window stays `boundsForRange`'s — padded an hour ahead so a
- * clock-skewed exporter's rows are not filtered out — while `sparkWindow`
- * decides what is *drawn*. The two differ on purpose; see `error-spark.ts`.
+ * The compile window is the page's (padded) bounds so a clock-skewed
+ * exporter's rows are not filtered out, while `sparkWindow` decides what is
+ * *drawn* and how wide a bucket is (`bucketSeconds`). See `error-spark.ts`.
  */
-export function useLocalErrorsSpark(fingerprintHashes: ReadonlyArray<string>, filters: ErrorsFilters) {
+export function useLocalErrorsSpark(
+	fingerprintHashes: ReadonlyArray<string>,
+	filters: ErrorsFilters,
+	bounds: TimeBounds,
+	bucketSeconds: number,
+) {
 	const key = [...fingerprintHashes].sort().join(",")
 	return useQuery({
-		queryKey: ["local", "errors", "spark", key, filters],
-		enabled: fingerprintHashes.length > 0,
+		queryKey: ["local", "errors", "spark", key, filters, boundsKey(bounds), bucketSeconds],
 		placeholderData: keepPreviousData,
-		queryFn: async (): Promise<Map<string, Array<SparkPoint>>> => {
-			const { startTime, endTime } = boundsForRange(filters.range)
-			const rows = await executeLocalCompiledQuery(
-				CH.compile(CH.errorsSparkQuery({ ...commonOpts(filters), fingerprintHashes }), {
-					orgId: LOCAL_ORG_ID,
-					startTime,
-					endTime,
-					bucketSeconds: sparkWindow(filters.range).bucketSeconds,
-				}),
-			)
-			return groupSparkPoints(rows)
-		},
+		queryFn:
+			fingerprintHashes.length > 0
+				? async ({ signal }): Promise<Map<string, Array<SparkPoint>>> => {
+						const rows = await executeLocalCompiledQuery(
+							CH.compile(
+								CH.errorsSparkQuery({
+									...sharedFilters(filters),
+									rootOnly: filters.rootOnly,
+									fingerprintHashes,
+								}),
+								{ ...localParams(bounds), bucketSeconds },
+							),
+							signal,
+						)
+						return groupSparkPoints(rows)
+					}
+				: skipToken,
 	})
 }
 
@@ -160,28 +164,20 @@ export interface ErrorsFacets {
 }
 
 /**
- * Sidebar facet counts (one UNION query, one scan).
- *
- * Every active filter goes in, not just the range: `errorsFacetsQuery` drops
- * each section's own dimension server-side (its `except` argument), so ticking
- * `production` narrows the Service counts while Environment still lists its
- * alternatives. Passing only `rootOnly` — which is what this hook did — left
- * every number on the sidebar describing the unfiltered window, so the counts
- * never moved when a box was ticked and none of them matched the list beside
- * them.
+ * Sidebar facets. Each section counts under the other filters but not its own
+ * (the query drops a dimension's own filter from its branch).
  */
-export function useLocalErrorsFacets(filters: ErrorsFilters) {
+export function useLocalErrorsFacets(filters: ErrorsFilters, bounds: TimeBounds) {
 	return useQuery({
-		queryKey: ["local", "errors", "facets", filters],
+		queryKey: ["local", "errors", "facets", filters, boundsKey(bounds)],
 		placeholderData: keepPreviousData,
-		queryFn: async (): Promise<ErrorsFacets> => {
-			const { startTime, endTime } = boundsForRange(filters.range)
+		queryFn: async ({ signal }): Promise<ErrorsFacets> => {
 			const rows = await executeLocalCompiledQuery(
-				CH.compileUnion(CH.errorsFacetsQuery(commonOpts(filters)), {
-					orgId: LOCAL_ORG_ID,
-					startTime,
-					endTime,
-				}),
+				CH.compileUnion(
+					CH.errorsFacetsQuery({ ...sharedFilters(filters), rootOnly: filters.rootOnly }),
+					localParams(bounds),
+				),
+				signal,
 			)
 			const pick = (facetType: string) =>
 				rows
@@ -200,84 +196,87 @@ export function useLocalErrorsFacets(filters: ErrorsFilters) {
 /**
  * The latest occurrence's exception columns for one fingerprint (expanded row).
  *
- * Its own query rather than four more columns on `errorsByTypeQuery`: a
- * stacktrace is kilobytes, the list is fifty rows, and only the row the user
- * opened ever shows one. Unfiltered by service on purpose — the list row's
- * service filter narrows *which* errors are listed, and once one is open the
- * question is what the newest one looked like.
+ * Its own query rather than more columns on `errorsByTypeQuery`: a stacktrace
+ * is kilobytes and only the row the user opened ever shows one. Unfiltered by
+ * service on purpose — once a row is open the question is what the newest one
+ * looked like.
  */
-export function useLocalErrorSampleStack(fingerprintHash: string | undefined, filters: ErrorsFilters) {
+export function useLocalErrorSampleStack(fingerprintHash: string | undefined, bounds: TimeBounds) {
 	return useQuery({
-		queryKey: ["local", "errors", "sample-stack", fingerprintHash, filters.range],
-		enabled: !!fingerprintHash,
-		queryFn: async (): Promise<CH.ErrorSampleStackOutput | null> => {
-			const { startTime, endTime } = boundsForRange(filters.range)
-			const row = await executeLocalCompiledFirstRow(
-				CH.compile(CH.errorSampleStackQuery({ fingerprintHash: fingerprintHash! }), {
-					orgId: LOCAL_ORG_ID,
-					startTime,
-					endTime,
-				}),
-			)
-			return Option.getOrNull(row)
-		},
+		queryKey: ["local", "errors", "sample-stack", fingerprintHash, boundsKey(bounds)],
+		queryFn: fingerprintHash
+			? async ({ signal }): Promise<CH.ErrorSampleStackOutput | null> => {
+					const row = await executeLocalCompiledFirstRow(
+						CH.compile(CH.errorSampleStackQuery({ fingerprintHash }), localParams(bounds)),
+						signal,
+					)
+					return Option.getOrNull(row)
+				}
+			: skipToken,
 	})
 }
 
-/** Most recently errored traces for one fingerprint (expanded row). */
-export function useLocalErrorTraces(fingerprintHash: string | undefined, filters: ErrorsFilters) {
+/** Most recently errored traces for one fingerprint (expanded row), under the view's filters. */
+export function useLocalErrorTraces(
+	fingerprintHash: string | undefined,
+	filters: ErrorsFilters,
+	bounds: TimeBounds,
+) {
 	return useQuery({
-		queryKey: ["local", "errors", "traces", fingerprintHash, filters],
-		enabled: !!fingerprintHash,
-		queryFn: async (): Promise<ReadonlyArray<CH.ErrorDetailTracesOutput>> => {
-			const { startTime, endTime } = boundsForRange(filters.range)
-			return executeLocalCompiledQuery(
-				CH.compile(
-					CH.errorDetailTracesQuery({
-						fingerprintHash: fingerprintHash!,
-						rootOnly: filters.rootOnly,
-						services: filters.service ? [filters.service] : undefined,
-						limit: 10,
-					}),
-					{ orgId: LOCAL_ORG_ID, startTime, endTime },
-				),
-			)
-		},
+		queryKey: [
+			"local",
+			"errors",
+			"traces",
+			fingerprintHash,
+			filters.rootOnly,
+			filters.service,
+			filters.env,
+			filters.errorType,
+			filters.version,
+			boundsKey(bounds),
+		],
+		queryFn: fingerprintHash
+			? ({ signal }): Promise<ReadonlyArray<CH.ErrorDetailTracesOutput>> =>
+					executeLocalCompiledQuery(
+						CH.compile(
+							CH.errorDetailTracesQuery({
+								fingerprintHash,
+								rootOnly: filters.rootOnly,
+								...sharedFilters(filters),
+								limit: 10,
+							}),
+							localParams(bounds),
+						),
+						signal,
+					)
+			: skipToken,
 	})
 }
 
 /**
  * Browser sessions this error was hit in (expanded row).
  *
- * `messageMatch` comes from the fingerprint's own latest occurrence, so this
- * runs after {@link useLocalErrorSampleStack} rather than beside it — which is
- * why the caller mounts it only once that has resolved. Passing `undefined`
- * would not be harmless: it silently drops the branch of the query that finds
- * browser-side errors at all.
- *
- * Unfiltered by service, like the stack: the sidebar narrows *which* errors are
- * listed, and once one is open the question is who hit it.
+ * `messageMatch` comes from the fingerprint's own latest occurrence, so the
+ * caller mounts this only once {@link useLocalErrorSampleStack} has resolved:
+ * passing `undefined` drops the branch of the query that finds browser-side
+ * errors at all. Unfiltered by service, like the stack.
  */
 export function useLocalErrorSessions(
 	fingerprintHash: string | undefined,
 	messageMatch: string | undefined,
-	filters: ErrorsFilters,
+	bounds: TimeBounds,
 ) {
 	return useQuery({
-		queryKey: ["local", "errors", "sessions", fingerprintHash, messageMatch, filters.range],
-		enabled: !!fingerprintHash,
-		queryFn: async (): Promise<ReadonlyArray<CH.ErrorSessionsOutput>> => {
-			const { startTime, endTime } = boundsForRange(filters.range)
-			return executeLocalCompiledQuery(
-				CH.compile(
-					CH.errorSessionsQuery({
-						fingerprintHash: fingerprintHash!,
-						messageMatch,
-						limit: 10,
-					}),
-					{ orgId: LOCAL_ORG_ID, startTime, endTime },
-				),
-			)
-		},
+		queryKey: ["local", "errors", "sessions", fingerprintHash, messageMatch, boundsKey(bounds)],
+		queryFn: fingerprintHash
+			? ({ signal }): Promise<ReadonlyArray<CH.ErrorSessionsOutput>> =>
+					executeLocalCompiledQuery(
+						CH.compile(
+							CH.errorSessionsQuery({ fingerprintHash, messageMatch, limit: 10 }),
+							localParams(bounds),
+						),
+						signal,
+					)
+			: skipToken,
 	})
 }

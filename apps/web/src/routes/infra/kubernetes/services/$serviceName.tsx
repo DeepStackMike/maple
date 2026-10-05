@@ -9,6 +9,7 @@ import { cn } from "@maple/ui/lib/utils"
 
 import { Result, useAtomValue } from "@/lib/effect-atom"
 import { GridIcon } from "@/components/icons"
+import { DocsLink } from "@/components/common/docs-link"
 import { QueryErrorState } from "@/components/common/query-error-state"
 import { PodTable, PodTableLoading } from "@/components/infra/pod-table"
 import { chartBucketSeconds } from "@/components/infra/chart-utils"
@@ -30,6 +31,7 @@ import {
 import type { WorkloadKind } from "@/api/warehouse/infra"
 import { useEffectiveTimeRange } from "@/hooks/use-effective-time-range"
 import { TimeRangeSearchFields, applyTimeRangeSearch } from "@/components/time-range-picker/search"
+import { sessionTimeRangeSearchMiddleware } from "@/components/time-range-picker/session-time-range"
 
 /**
  * Kubernetes, read through one service.
@@ -46,6 +48,7 @@ const searchSchema = Schema.Struct(TimeRangeSearchFields)
 export const Route = createFileRoute("/infra/kubernetes/services/$serviceName")({
 	component: ServiceLensPage,
 	validateSearch: Schema.toStandardSchemaV1(searchSchema),
+	search: { middlewares: [sessionTimeRangeSearchMiddleware()] },
 })
 
 /** Matches the pod table's own page size on the browse route. */
@@ -375,6 +378,7 @@ function LensBody({
 							Helm chart so the collector tags them.
 						</EmptyDescription>
 					</EmptyHeader>
+					<DocsLink page="kubernetes" />
 				</Empty>
 			) : (
 				<>

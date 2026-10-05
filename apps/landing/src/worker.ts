@@ -8,11 +8,12 @@
  */
 import {
 	assetWorkerObservability,
-	CLOUDFLARE_WORKER_PLACEMENT,
 	MapleStack,
 	resolveWorkerName,
+	resolveWorkerPlacement,
 	WorkersObservabilityDestinations,
 } from "@maple/infra/cloudflare"
+import { plainWithDefault } from "@maple/infra/env"
 import * as Cloudflare from "alchemy/Cloudflare"
 import * as Command from "alchemy/Command"
 import * as Output from "alchemy/Output"
@@ -28,7 +29,7 @@ import { type AssetsBinding, handleRequest } from "./handler"
  */
 const props = Effect.gen(function* () {
 	if (globalThis.__ALCHEMY_RUNTIME__) return { main: import.meta.url }
-	const { stage, domains, urls } = yield* MapleStack
+	const { stage, region, domains, urls } = yield* MapleStack
 	const destinations = yield* WorkersObservabilityDestinations
 	// Astro static build (memoized on the app's source files, skipped on destroy).
 	const build = yield* Command.Build("landing-build", {
@@ -40,13 +41,14 @@ const props = Effect.gen(function* () {
 		// ingest key the web app uses, so both surfaces land in one org and a
 		// visitor's marketing and product sessions sit side by side.
 		env: {
-			PUBLIC_MAPLE_INGEST_KEY: process.env.MAPLE_OTEL_PUBLIC_INGEST_KEY ?? "",
+			PUBLIC_MAPLE_INGEST_KEY: (yield* plainWithDefault("MAPLE_OTEL_PUBLIC_INGEST_KEY", ""))
+				.MAPLE_OTEL_PUBLIC_INGEST_KEY,
 			PUBLIC_INGEST_URL: urls.ingest,
 		},
 	})
 	return {
 		main: import.meta.url,
-		name: resolveWorkerName("landing", stage),
+		name: resolveWorkerName("landing", stage, region),
 		// The `assets` prop auto-adds the ASSETS binding the handler reads.
 		assets: {
 			directory: build.outdir,
@@ -61,7 +63,7 @@ const props = Effect.gen(function* () {
 			runWorkerFirst: ["/*", "!/_astro/*", "!/*.*"],
 		},
 		compatibility: { date: "2026-04-08", flags: ["nodejs_compat"] },
-		placement: CLOUDFLARE_WORKER_PLACEMENT,
+		placement: resolveWorkerPlacement(region),
 		observability: assetWorkerObservability(destinations),
 		workersDev: true,
 		domain: domains.landing,

@@ -1,33 +1,37 @@
-import { ToolbarSearch } from "@maple/ui/components/toolbar"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@maple/ui/components/ui/select"
+import type { ReactNode } from "react"
+import { ToolbarSearch, ToolbarStat } from "@maple/ui/components/toolbar"
+import { Switch } from "@maple/ui/components/ui/switch"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@maple/ui/components/ui/tooltip"
 import { cn } from "@maple/ui/lib/utils"
-import { AGENT_SESSIONS_SORT_OPTIONS, type AgentSessionsSortOption } from "./agent-sessions-filter-inputs"
 
 interface AgentSessionsToolbarProps {
 	/** Current `q` search param (session / trace id prefix). */
 	query: string
 	onSearch: (value: string | undefined) => void
-	/** `hasErrors` URL filter state — the chip toggles it. */
+	/** `hasErrors` URL filter state — the switch toggles it. */
 	errorsOnly: boolean
 	onToggleErrorsOnly: () => void
-	sortKey: string
-	onSortChange: (option: AgentSessionsSortOption) => void
+	/** Sessions loaded so far, for the count beside the controls; `undefined`
+	 *  until the first page lands. */
+	sessionCount: number | undefined
 	/** Dim the controls while the list is refetching. */
 	waiting?: boolean
+	/** Trailing controls — the route's Reload button. */
+	actions?: ReactNode
 }
 
 /**
- * Search, the one-click error triage chip, and the sort. The session count
- * lives in the page header; this row answers "which of these first".
+ * Search, the loaded count and the one-click error triage switch. The order
+ * is the table's to set: its column headers sort it.
  */
 export function AgentSessionsToolbar({
 	query,
 	onSearch,
 	errorsOnly,
 	onToggleErrorsOnly,
-	sortKey,
-	onSortChange,
+	sessionCount,
 	waiting = false,
+	actions,
 }: AgentSessionsToolbarProps) {
 	return (
 		// Bare container rather than the shared `Toolbar`: this sits inside
@@ -42,49 +46,37 @@ export function AgentSessionsToolbar({
 
 			<div
 				className={cn(
-					"flex flex-wrap items-center gap-2 transition-opacity",
+					"flex flex-wrap items-center gap-4 transition-opacity",
 					waiting && "opacity-60",
 				)}
 			>
-				<button
-					type="button"
-					onClick={onToggleErrorsOnly}
-					aria-pressed={errorsOnly}
-					title={errorsOnly ? "Show all sessions" : "Show only sessions with errors"}
-					className={cn(
-						"inline-flex h-7 items-center gap-1.5 rounded-full border px-3 text-xs font-medium transition-colors",
-						errorsOnly
-							? "border-destructive bg-destructive text-white"
-							: "border-destructive/30 bg-destructive/10 text-destructive hover:bg-destructive/15",
-					)}
-				>
-					<span
-						className={cn("size-1.5 rounded-full", errorsOnly ? "bg-white" : "bg-destructive")}
-						aria-hidden
-					/>
-					With errors
-				</button>
+				{sessionCount !== undefined && (
+					<Tooltip>
+						<TooltipTrigger render={<span />} className="hidden sm:block">
+							<ToolbarStat value={sessionCount} label="sessions" />
+						</TooltipTrigger>
+						<TooltipContent>Loaded so far — more load as you scroll</TooltipContent>
+					</Tooltip>
+				)}
 
-				<Select
-					value={sortKey}
-					onValueChange={(value) => {
-						const option = AGENT_SESSIONS_SORT_OPTIONS.find(
-							(candidate) => candidate.key === value,
-						)
-						if (option) onSortChange(option)
-					}}
-				>
-					<SelectTrigger size="sm" className="h-7 w-40 text-xs" aria-label="Sort sessions">
-						<SelectValue />
-					</SelectTrigger>
-					<SelectContent>
-						{AGENT_SESSIONS_SORT_OPTIONS.map((option) => (
-							<SelectItem key={option.key} value={option.key}>
-								{option.label}
-							</SelectItem>
-						))}
-					</SelectContent>
-				</Select>
+				{/* A switch, not a chip: it is a filter that is on or off, and a
+				    chip in the destructive tone read as a warning about the list. */}
+				<Tooltip>
+					<TooltipTrigger
+						render={<label />}
+						className="inline-flex cursor-pointer items-center gap-2 text-xs font-medium"
+					>
+						<Switch
+							checked={errorsOnly}
+							onCheckedChange={onToggleErrorsOnly}
+							className="[--thumb-size:--spacing(3.5)] data-checked:bg-destructive sm:[--thumb-size:--spacing(3.5)]"
+						/>
+						With errors
+					</TooltipTrigger>
+					<TooltipContent>Only sessions with a failed turn, tool call or span</TooltipContent>
+				</Tooltip>
+
+				{actions}
 			</div>
 		</div>
 	)

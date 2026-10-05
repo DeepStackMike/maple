@@ -17,11 +17,15 @@ import { track, type TrackProps } from "@maple-dev/effect-sdk/client"
 
 export type ProductEvent =
 	| "onboarding_step_completed"
+	/** The org admin redeemed the onboarding-checklist credit from the top bar. */
+	| "onboarding_reward_claimed"
 	| "integration_connected"
 	| "alert_rule_created"
 	| "api_key_created"
 	| "dashboard_created"
 	| "chat_message_sent"
+	/** A member asked for a Slack Connect invite to the org's shared channel with the Maple team. */
+	| "support_channel_invite_sent"
 	/**
 	 * Client-side intent signal fired right before the Stripe redirect. The
 	 * server-side `plan_started` (Autumn webhook / inline attach) is the truth for

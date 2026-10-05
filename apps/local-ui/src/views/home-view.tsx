@@ -46,9 +46,11 @@ import { useNamespace } from "../hooks/use-namespace"
 import { lastSeenByService, overviewSeries, summarizeServices } from "../lib/home-overview"
 import { DOCS_LOCAL_MODE_SEND_TELEMETRY } from "../lib/links"
 import { ALL_PROJECTS_LABEL } from "../lib/namespace"
-import { navigate, useQueryParams } from "../lib/router"
-import { HOME_DEFAULT_RANGE, formatRelativeTime } from "../lib/time"
-import { ConnectHint } from "../components/connect-button"
+import { navigate } from "../lib/router"
+import { formatRelativeTime } from "../lib/time"
+import { useRange } from "../hooks/use-range"
+import { useTimeWindow } from "../hooks/use-time-window"
+import { ConnectGuide } from "../components/connect-guide"
 import { RefreshButton, TimeRangeSelect, Toolbar } from "../components/toolbar"
 import { ErrorState, ListSkeleton } from "../components/view-states"
 
@@ -58,8 +60,8 @@ const ERROR_ROWS = 5
 const SESSION_ROWS = 5
 
 export function HomeView() {
-	const [query, setParams] = useQueryParams()
-	const range = query.get("range") || HOME_DEFAULT_RANGE
+	const [range, setRange] = useRange()
+	const timeWindow = useTimeWindow(range)
 	// The header's project selection. Home is the one page that reads across
 	// every signal, so it is also the one page where the filter applies to some
 	// blocks and not others — see the block labels below, and `lib/namespace.ts`
@@ -77,14 +79,15 @@ export function HomeView() {
 	// `false` is a different key from a present one even though it compiles to
 	// the same SQL. Matching them makes Home's fetch the tab's fetch, so
 	// following a tile lands on a warm cache.
-	const catalog = useLocalServiceCatalog({ range, ns: namespace, env: environment })
-	const errorsSummary = useLocalErrorsSummary({ rootOnly: false, range, env: environment })
-	const errorsByType = useLocalErrorsByType({ rootOnly: false, range, env: environment })
-	const sessions = useLocalSessions({ errorsOnly: false, range, env: environment })
+	const { bounds } = timeWindow
+	const catalog = useLocalServiceCatalog({ ns: namespace, env: environment }, bounds)
+	const errorsSummary = useLocalErrorsSummary({ rootOnly: false, env: environment }, bounds)
+	const errorsByType = useLocalErrorsByType({ rootOnly: false, env: environment }, bounds)
+	const sessions = useLocalSessions({ errorsOnly: false, env: environment }, bounds)
 	const sessionsSummary = useLocalSessionsSummary(range, environment)
 	const timeseries = useLocalOverviewTimeseries(range, namespace, environment)
 
-	const entries = catalog.data?.entries ?? []
+	const entries = catalog.entries
 	const totals = useMemo(() => summarizeServices(entries), [entries])
 	const points = timeseries.data ?? []
 	const chartRows = useMemo(() => overviewSeries(points), [points])
@@ -93,10 +96,8 @@ export function HomeView() {
 	const sessionCount = sessionsSummary.data?.sessions ?? 0
 	const errorCount = errorsSummary.data?.totalErrors ?? 0
 
-	// Carry the resolved range onto every link. Home defaults narrower than the
-	// list views do (`HOME_DEFAULT_RANGE`), so without this an unset `range` would
-	// silently widen to 30 days the moment a tile is clicked, and the tab would
-	// disagree with the number that sent the user there.
+	// Carry the resolved range onto every link, so the tab a tile opens shows the
+	// same window as the number that sent the user there.
 	// The environment rides along too: the five list views read `env` from the
 	// hash as their own facet, so a tile clicked under `production` opens a page
 	// already filtered to it rather than to everything.
@@ -107,8 +108,8 @@ export function HomeView() {
 		<Toolbar>
 			<span className="text-sm text-muted-foreground">Overview</span>
 			<div className="flex items-center gap-4">
-				<RefreshButton />
-				<TimeRangeSelect value={range} onChange={(next) => setParams({ range: next })} />
+				<RefreshButton advance={timeWindow.advance} />
+				<TimeRangeSelect value={range} onChange={setRange} />
 			</div>
 		</Toolbar>
 	)
@@ -126,13 +127,13 @@ export function HomeView() {
 	// services, no sessions and no errors while being perfectly well connected —
 	// telling that user to go set up an exporter would be wrong.
 	const nothingIngested =
-		entries.length === 0 &&
-		sessionCount === 0 &&
-		errorCount === 0 &&
-		(catalog.data?.totalIngestedBytes ?? 0) === 0
+		entries.length === 0 && sessionCount === 0 && errorCount === 0 && catalog.totalIngestedBytes === 0
 
 	const settling =
-		catalog.isPending || errorsSummary.isPending || sessionsSummary.isPending || timeseries.isPending
+		catalog.query.isPending ||
+		errorsSummary.isPending ||
+		sessionsSummary.isPending ||
+		timeseries.isPending
 
 	return (
 		<div className="flex h-full flex-col">
@@ -140,11 +141,11 @@ export function HomeView() {
 			<div className="min-h-0 flex-1 overflow-auto">
 				{settling ? (
 					<ListSkeleton rows={8} />
-				) : catalog.isError ? (
+				) : catalog.query.isError ? (
 					<ErrorState
 						label="the overview"
-						error={catalog.error}
-						onRetry={() => catalog.refetch()}
+						error={catalog.query.error}
+						onRetry={() => catalog.query.refetch()}
 					/>
 				) : nothingIngested ? (
 					<NothingIngestedState />
@@ -508,7 +509,7 @@ function NothingIngestedState() {
 				</EmptyDescription>
 			</EmptyHeader>
 			<EmptyContent className="w-full max-w-md items-stretch gap-3 text-left">
-				<ConnectHint />
+				<ConnectGuide />
 				<div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
 					<span className="flex items-center gap-3">
 						<span className="flex items-center gap-1.5">

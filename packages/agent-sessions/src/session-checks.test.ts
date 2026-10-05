@@ -1,0 +1,754 @@
+import type { AiSessionGenAiValues } from "@maple/domain/http"
+import { describe, expect, it } from "vitest"
+
+import { buildSessionChecks, type SessionCheck } from "./session-checks"
+import { buildSessionSummary } from "./session-summary"
+import { buildSessionTurns } from "./session-turns"
+import { agentSpan, llmSpan, makeSpan, toolSpan } from "./span-test-support"
+
+const SECOND = 1000
+const MINUTE = 60 * SECOND
+
+type Spans = Parameters<typeof buildSessionTurns>[0]
+
+function checks(spans: Spans) {
+	const turns = buildSessionTurns(spans)
+	return buildSessionChecks(turns, buildSessionSummary({ spans, turns }))
+}
+
+function byId(report: ReturnType<typeof checks>, id: string): SessionCheck {
+	const found = report.checks.find((check) => check.id === id)
+	if (found === undefined) throw new Error(`no check ${id}`)
+	return found
+}
+
+/** A clean opening turn, keyed by conversation id so a second turn can follow. */
+function firstTurn(): Spans {
+	return [
+		agentSpan({ spanId: "a1", startMs: 0, durationMs: 10 * SECOND, genAi: { conversationId: "t1" } }),
+		llmSpan({
+			spanId: "l1",
+			parentSpanId: "a1",
+			startMs: SECOND,
+			durationMs: SECOND,
+			model: "claude-opus-5",
+			genAi: {
+				conversationId: "t1",
+				usageInputTokens: 1000,
+				usageOutputTokens: 100,
+				responseFinishReasons: ["stop"],
+			},
+		}),
+	]
+}
+
+describe("buildSessionChecks", () => {
+	// The five-second answer for a session with nothing wrong: every check
+	// passed and says what it measured, so the page reads as inspected.
+	it("passes a clean session with the facts each check measured", () => {
+		const report = checks([
+			...firstTurn(),
+			agentSpan({
+				spanId: "a2",
+				startMs: 5 * MINUTE,
+				durationMs: 10 * SECOND,
+				genAi: { conversationId: "t2" },
+			}),
+			toolSpan({
+				spanId: "t2-read",
+				parentSpanId: "a2",
+				startMs: 5 * MINUTE + SECOND,
+				durationMs: 2 * SECOND,
+				toolName: "read_file",
+				genAi: { conversationId: "t2" },
+			}),
+		])
+
+		expect(report.verdict.status).toBe("clean")
+		expect(report.counts.failed).toBe(0)
+		expect(report.counts.warning).toBe(0)
+		expect(report.headline).toBe(`cleanly — ${report.counts.passed} checks passed across 2 turns`)
+		expect(report.checks.find((check) => check.id === "completion")).toBeUndefined()
+		expect(byId(report, "context-window").headline).toBe("The prompt peaked at 1.0K tokens")
+		expect(byId(report, "tool-timeouts").headline).toBe(
+			"No tool call timed out; the slowest was `read_file` at 2s",
+		)
+		expect(byId(report, "tool-errors").headline).toBe("1 tool call, none failed")
+		// Nothing reported cache usage, so the cache check says so rather than passing.
+		expect(byId(report, "prompt-cache").status).toBe("skipped")
+		// Passed and skipped rows carry no fix tag: there is nothing to fix.
+		expect(report.checks.every((check) => check.status !== "passed" || check.fixArea === undefined)).toBe(
+			true,
+		)
+	})
+
+	it("names the cause of death in the headline, and the cause's own check carries the action", () => {
+		const report = checks([
+			...firstTurn(),
+			agentSpan({
+				spanId: "a2",
+				startMs: 5 * MINUTE,
+				durationMs: 10 * SECOND,
+				statusCode: "Error",
+				statusMessage: "prompt is too long: 214832 tokens > 200000 maximum",
+				genAi: { conversationId: "t2", errorType: "context_length_exceeded" },
+			}),
+			llmSpan({
+				spanId: "l2",
+				parentSpanId: "a2",
+				startMs: 5 * MINUTE + SECOND,
+				durationMs: SECOND,
+				model: "claude-opus-5",
+				statusCode: "Error",
+				statusMessage: "prompt is too long: 214832 tokens > 200000 maximum",
+				genAi: {
+					conversationId: "t2",
+					errorType: "context_length_exceeded",
+					usageInputTokens: 214832,
+					usageOutputTokens: 0,
+				},
+			}),
+		])
+
+		expect(report.verdict.status).toBe("failed")
+		expect(report.headline).toBe("the final turn died on the context window")
+		// The cause leads the list; the outcome is the headline, not a row.
+		expect(report.checks[0].id).toBe("context-window")
+
+		const context = byId(report, "context-window")
+		expect(context.status).toBe("failed")
+		expect(context.headline).toBe(
+			"The prompt outgrew the model's context window on turn 2 (final); the prompt grew 1.0K → 214.8K tokens over the session",
+		)
+		expect(context.action).toMatch(/^Compact or summarise/)
+		expect(context.fixArea).toBe("prompt")
+		expect(context.findings.map((finding) => finding.spanId)).toEqual(["l2"])
+		expect(report.counts.failed).toBe(1)
+	})
+
+	it("warns on a failure the session carried past, and says so", () => {
+		const report = checks([
+			...firstTurn(),
+			agentSpan({
+				spanId: "a2",
+				startMs: 5 * MINUTE,
+				durationMs: 10 * SECOND,
+				genAi: { conversationId: "t2" },
+			}),
+			llmSpan({
+				spanId: "l2",
+				parentSpanId: "a2",
+				startMs: 5 * MINUTE + SECOND,
+				durationMs: SECOND,
+				model: "claude-opus-5",
+				statusCode: "Error",
+				statusMessage: "429 Too Many Requests",
+				genAi: { conversationId: "t2", errorType: "429" },
+			}),
+			llmSpan({
+				spanId: "l3",
+				parentSpanId: "a2",
+				startMs: 5 * MINUTE + 3 * SECOND,
+				durationMs: SECOND,
+				model: "claude-opus-5",
+				genAi: { conversationId: "t2", usageInputTokens: 1200, usageOutputTokens: 80 },
+			}),
+		])
+
+		expect(report.verdict.status).toBe("attention")
+		expect(report.headline).toBe("with 1 warning")
+		const limits = byId(report, "rate-limits")
+		expect(limits.status).toBe("warning")
+		expect(limits.headline).toBe("1 model call was rate-limited on turn 2; the session carried on")
+		expect(limits.fixArea).toBe("provider")
+		expect(report.checks[0].id).toBe("rate-limits")
+	})
+
+	// A tool that cannot run needs fixing whether or not the run survived it,
+	// and the fix is an integration, not the prompt.
+	it("fails tool availability outright and names the integration as the fix", () => {
+		const report = checks([
+			...firstTurn(),
+			agentSpan({
+				spanId: "a2",
+				startMs: 5 * MINUTE,
+				durationMs: 10 * SECOND,
+				genAi: { conversationId: "t2" },
+			}),
+			toolSpan({
+				spanId: "t2-grep",
+				parentSpanId: "a2",
+				startMs: 5 * MINUTE + SECOND,
+				durationMs: SECOND,
+				toolName: "sandbox_grep",
+				statusCode: "Error",
+				statusMessage: "GitHub App not configured for this organisation",
+				genAi: { conversationId: "t2", errorType: "tool_error" },
+			}),
+		])
+
+		expect(report.headline).toBe("but 1 check failed")
+		const availability = byId(report, "tool-availability")
+		expect(availability.status).toBe("failed")
+		expect(availability.headline).toBe(
+			"`sandbox_grep` could not run on turn 2: GitHub App not configured for this organisation; the session carried on",
+		)
+		expect(availability.fixArea).toBe("integration")
+	})
+
+	it("lists several failed tools in one headline, in the order they failed", () => {
+		const report = checks([
+			...firstTurn(),
+			agentSpan({
+				spanId: "a2",
+				startMs: 5 * MINUTE,
+				durationMs: 20 * SECOND,
+				genAi: { conversationId: "t2" },
+			}),
+			toolSpan({
+				spanId: "t2-tests",
+				parentSpanId: "a2",
+				startMs: 5 * MINUTE + SECOND,
+				durationMs: SECOND,
+				toolName: "run_tests",
+				statusCode: "Error",
+				statusMessage: "exit 1",
+				genAi: { conversationId: "t2", errorType: "tool_error" },
+			}),
+			toolSpan({
+				spanId: "t2-shard",
+				parentSpanId: "a2",
+				startMs: 5 * MINUTE + 5 * SECOND,
+				durationMs: SECOND,
+				toolName: "reindex_shard",
+				statusCode: "Error",
+				statusMessage: "shard 3 is locked by a running merge",
+				genAi: { conversationId: "t2", errorType: "SHARD_LOCKED" },
+			}),
+			llmSpan({
+				spanId: "l2",
+				parentSpanId: "a2",
+				startMs: 5 * MINUTE + 8 * SECOND,
+				durationMs: SECOND,
+				model: "claude-opus-5",
+				genAi: { conversationId: "t2" },
+			}),
+		])
+
+		const errors = byId(report, "tool-errors")
+		expect(errors.status).toBe("warning")
+		expect(errors.headline).toBe("2 tool calls failed; the session carried on")
+		expect(errors.findings).toHaveLength(2)
+	})
+
+	it("reads the prompt cache off the calls after the first, and skips when nothing reported one", () => {
+		const call = (spanId: string, startMs: number, cacheRead: number) =>
+			llmSpan({
+				spanId,
+				parentSpanId: "a1",
+				startMs,
+				durationMs: SECOND,
+				model: "claude-opus-5",
+				genAi: {
+					conversationId: "t1",
+					// Inclusive of the cache read, as the default convention counts it.
+					// No write reported: a Claude prompt this long that read nothing
+					// missed the cache, rather than being too short to cache.
+					usageInputTokens: 10_000,
+					usageCacheReadInputTokens: cacheRead,
+					usageOutputTokens: 100,
+				},
+			})
+		const cold = checks([
+			agentSpan({ spanId: "a1", startMs: 0, durationMs: MINUTE, genAi: { conversationId: "t1" } }),
+			call("c1", SECOND, 0),
+			call("c2", 5 * SECOND, 1_000),
+			call("c3", 10 * SECOND, 0),
+			call("c4", 15 * SECOND, 2_000),
+		])
+		const cache = byId(cold, "prompt-cache")
+		expect(cache.status).toBe("warning")
+		expect(cache.headline).toBe("Cache hit rate 10% over 3 calls; 3 missed the cache")
+		expect(cache.action).toMatch(/prompt prefix stable/)
+
+		const warm = checks([
+			agentSpan({ spanId: "a1", startMs: 0, durationMs: MINUTE, genAi: { conversationId: "t1" } }),
+			call("c1", SECOND, 0),
+			call("c2", 5 * SECOND, 9_000),
+			call("c3", 10 * SECOND, 9_000),
+			call("c4", 15 * SECOND, 8_000),
+		])
+		expect(byId(warm, "prompt-cache").headline).toBe("Cache hit rate 87% over 3 calls")
+
+		expect(byId(checks(firstTurn()), "prompt-cache").status).toBe("skipped")
+	})
+
+	it("reads the prompt cache off the gateway's buckets on a span it stamped", () => {
+		// Strands' pre-rename cache key, which the detail decode does not alias:
+		// only the gateway's bucket says the call read from cache.
+		const call = (spanId: string, startMs: number) =>
+			llmSpan({
+				spanId,
+				parentSpanId: "a1",
+				startMs,
+				durationMs: SECOND,
+				model: "claude-opus-5",
+				genAi: {
+					conversationId: "t1",
+					mapleLlmCall: 1,
+					mapleInputTokens: 1_000,
+					mapleCacheReadTokens: 9_000,
+					mapleOutputTokens: 100,
+				},
+			})
+		const report = checks([
+			agentSpan({ spanId: "a1", startMs: 0, durationMs: MINUTE, genAi: { conversationId: "t1" } }),
+			call("c1", SECOND),
+			call("c2", 5 * SECOND),
+			call("c3", 10 * SECOND),
+			call("c4", 15 * SECOND),
+		])
+		expect(byId(report, "prompt-cache").headline).toBe("Cache hit rate 90% over 3 calls")
+	})
+
+	// Short test conversations (DSPy peaked at 870 tokens; Claude Agent SDK on
+	// Haiku 4.5 sent 1.2K–2.3K against a 4,096-token minimum) cannot be cached,
+	// so reading them as misses warned "0% ... missed the cache" on every one.
+	it("skips the prompt cache when no prompt could have been cached", () => {
+		const call = (spanId: string, startMs: number, genAi: AiSessionGenAiValues) =>
+			llmSpan({
+				spanId,
+				parentSpanId: "a1",
+				startMs,
+				durationMs: SECOND,
+				genAi: { conversationId: "t1", usageOutputTokens: 50, ...genAi },
+			})
+		const session = (genAi: (i: number) => AiSessionGenAiValues) =>
+			checks([
+				agentSpan({ spanId: "a1", startMs: 0, durationMs: MINUTE, genAi: { conversationId: "t1" } }),
+				...[0, 1, 2, 3, 4].map((i) => call(`c${i}`, (i + 1) * SECOND, genAi(i))),
+			])
+
+		const short = byId(
+			session((i) => ({ usageInputTokens: 700 + 40 * i, usageCacheReadInputTokens: 0 })),
+			"prompt-cache",
+		)
+		expect(short.status).toBe("skipped")
+		expect(short.headline).toBe(
+			"Only 0 model calls had a prompt long enough to cache; at least 4 are needed to judge the prompt cache.",
+		)
+
+		// Claude calls that neither wrote nor read the cache were below the
+		// model's minimum (Haiku 4.5: 4,096): Claude Agent SDK, flue through
+		// OpenRouter (write stamped 0), OpenRouter Broadcast (write key absent).
+		for (const claude of [
+			{ providerName: "anthropic", requestModel: "claude-haiku-4-5", usageCacheCreationInputTokens: 0 },
+			{
+				providerName: "openrouter",
+				requestModel: "anthropic/claude-haiku-4.5",
+				usageCacheCreationInputTokens: 0,
+			},
+			{ providerName: "anthropic", requestModel: "claude-sonnet-4.5" },
+		]) {
+			const neverWritten = byId(
+				session((i) => ({
+					...claude,
+					usageInputTokens: 1_227 + 200 * i,
+					usageCacheReadInputTokens: 0,
+				})),
+				"prompt-cache",
+			)
+			expect(neverWritten.status).toBe("skipped")
+		}
+
+		// Per call: a session mixing uncached Claude calls with OpenAI misses is
+		// judged on the OpenAI calls.
+		const mixed = byId(
+			session((i) =>
+				i % 2 === 0
+					? {
+							providerName: "openai",
+							requestModel: "gpt-4o-mini",
+							usageInputTokens: 2_000,
+							usageCacheReadInputTokens: 0,
+						}
+					: {
+							providerName: "openrouter",
+							requestModel: "anthropic/claude-haiku-4.5",
+							usageInputTokens: 1_300,
+							usageCacheReadInputTokens: 0,
+							usageCacheCreationInputTokens: 0,
+						},
+			),
+			"prompt-cache",
+		)
+		expect(mixed.status).toBe("skipped")
+		expect(mixed.headline).toMatch(/^Only 3 model calls had a prompt long enough to cache/)
+
+		// Long enough on OpenAI: a miss is a miss, whether or not the emitter
+		// reported a write bucket (most stamp a zero one on every call).
+		for (const write of [undefined, 0]) {
+			const missed = byId(
+				session(() => ({
+					providerName: "openai",
+					usageInputTokens: 2_000,
+					usageCacheReadInputTokens: 0,
+					usageCacheCreationInputTokens: write,
+				})),
+				"prompt-cache",
+			)
+			expect(missed.status).toBe("warning")
+			expect(missed.headline).toBe("Cache hit rate 0% over 4 calls; 4 missed the cache")
+		}
+
+		// A short opening call (a title, a router) is not the one that wrote the
+		// cache: the first long call is, and it is not a miss.
+		const shortFirst = byId(
+			session((i) =>
+				i === 0
+					? { usageInputTokens: 300, usageCacheReadInputTokens: 0 }
+					: { usageInputTokens: 2_000, usageCacheReadInputTokens: i === 1 ? 0 : 1_000 },
+			),
+			"prompt-cache",
+		)
+		expect(shortFirst.headline).toBe("Cache hit rate 50% over 3 calls")
+	})
+
+	// OpenRouter Broadcast: every request is a `chat` root carrying the usage
+	// plus a `provider attempt N` and a `generation` child, all op `chat`. The
+	// headline read "All 48 model calls" for a session of 16.
+	it("counts model calls in the provider headline once per call, not per chat span", () => {
+		const request = (n: number) => {
+			const traceId = `trace-${n}`
+			const root = `gen-${n}`
+			const at = n * MINUTE
+			return [
+				llmSpan({
+					spanId: root,
+					traceId,
+					spanName: "LLM Generation",
+					startMs: at,
+					durationMs: 4_842,
+					genAi: { usageInputTokens: 58_797, usageOutputTokens: 220, responseId: `gen-${n}` },
+				}),
+				llmSpan({
+					spanId: `${root}-attempt`,
+					parentSpanId: root,
+					traceId,
+					spanName: "provider attempt 1: OpenAI",
+					startMs: at + 184,
+					durationMs: 2_019,
+					genAi: { responseId: `gen-${n}:attempt-0` },
+				}),
+				llmSpan({
+					spanId: `${root}-generation`,
+					parentSpanId: root,
+					traceId,
+					spanName: "generation",
+					startMs: at + 200,
+					durationMs: 4_402,
+					genAi: { responseId: `gen-${n}:generation` },
+				}),
+			]
+		}
+		const report = checks([...request(0), ...request(1)])
+		expect(byId(report, "provider").headline).toBe("All 2 model calls were answered first time")
+	})
+
+	// Strands TS writes its finish reasons camelCase (`maxTokens`), which the
+	// lowercased match against `max_tokens` never caught.
+	it("reads a cut-off reply whatever the finish reason's spelling", () => {
+		for (const reason of ["maxTokens", "MAX_TOKENS", "max_tokens"]) {
+			const report = checks([
+				agentSpan({ spanId: "a1", startMs: 0, durationMs: 10 * SECOND }),
+				llmSpan({
+					spanId: "l1",
+					parentSpanId: "a1",
+					startMs: SECOND,
+					durationMs: SECOND,
+					genAi: { requestMaxTokens: 600, responseFinishReasons: [reason] },
+				}),
+			])
+			const replyLength = byId(report, "reply-length")
+			expect(replyLength.status).toBe("warning")
+			expect(replyLength.headline).toMatch(/^1 reply hit the output token limit \(max_tokens 600\)/)
+		}
+	})
+
+	// Vercel AI SDK's `ai.response.finishReason` is kebab-case: a
+	// `content-filter` refusal read as passed.
+	it("reads a filtered reply whatever the finish reason's spelling", () => {
+		const report = checks([
+			agentSpan({ spanId: "a1", startMs: 0, durationMs: 10 * SECOND }),
+			llmSpan({
+				spanId: "l1",
+				parentSpanId: "a1",
+				startMs: SECOND,
+				durationMs: SECOND,
+				genAi: { responseFinishReasons: ["content-filter"] },
+			}),
+		])
+		expect(byId(report, "refusals").status).not.toBe("passed")
+		expect(byId(report, "refusals").headline).toMatch(/^1 reply was refused or filtered/)
+	})
+
+	// The app's own span reports no cache fields; its gateway's mirror, in a
+	// trace of its own with the same response id, does. The call is counted
+	// once, and judged by the observation that measured the cache.
+	it("judges the prompt cache off a gateway mirror when the counted span has none", () => {
+		const report = checks(
+			[0, 1, 2, 3, 4].flatMap((i) => [
+				llmSpan({
+					spanId: `app-${i}`,
+					traceId: `trace-app-${i}`,
+					startMs: i * MINUTE,
+					durationMs: 2 * SECOND,
+					genAi: {
+						providerName: "openai",
+						usageInputTokens: 2_000,
+						usageOutputTokens: 50,
+						responseId: `gen-${i}`,
+					},
+				}),
+				llmSpan({
+					spanId: `mirror-${i}`,
+					traceId: `trace-gateway-${i}`,
+					spanName: "LLM Generation",
+					startMs: i * MINUTE + 10,
+					durationMs: 2 * SECOND,
+					genAi: {
+						providerName: "openai",
+						usageInputTokens: 2_000,
+						usageCacheReadInputTokens: i === 0 ? 0 : 1_500,
+						usageOutputTokens: 50,
+						responseId: `gen-${i}`,
+					},
+				}),
+			]),
+		)
+		expect(byId(report, "prompt-cache").headline).toBe("Cache hit rate 75% over 4 calls")
+	})
+
+	// Google ADK reports each call twice: `call_llm` (no operation, a model)
+	// over `generate_content`, both with the same usage. The cache check read
+	// "over 15 calls" for a session of 8.
+	it("judges the prompt cache once per model call when a wrapper repeats the usage", () => {
+		const usage = (i: number): AiSessionGenAiValues => ({
+			requestModel: "openrouter/openai/gpt-4o-mini",
+			usageInputTokens: 2_000,
+			usageCacheReadInputTokens: i === 0 ? 0 : 1_536,
+			usageOutputTokens: 32,
+		})
+		const report = checks([
+			agentSpan({ spanId: "a1", startMs: 0, durationMs: MINUTE, agentName: "assistant" }),
+			...[0, 1, 2, 3, 4].flatMap((i) => [
+				makeSpan({
+					spanId: `call-${i}`,
+					parentSpanId: "a1",
+					spanName: "call_llm",
+					startMs: (i + 1) * SECOND,
+					durationMs: 2 * SECOND,
+					genAi: usage(i),
+				}),
+				llmSpan({
+					spanId: `gen-${i}`,
+					parentSpanId: `call-${i}`,
+					spanName: "generate_content",
+					startMs: (i + 1) * SECOND,
+					durationMs: 2 * SECOND,
+					genAi: { operationName: "generate_content", ...usage(i) },
+				}),
+			]),
+		])
+		expect(byId(report, "prompt-cache").headline).toBe("Cache hit rate 77% over 4 calls")
+	})
+
+	// The one rule behind red and amber, pinned per kind: a class that needs a
+	// fix stays red when survived; everything else survived is amber.
+	it("keeps a survived context overflow red and a survived provider error amber", () => {
+		const survived = (spanId: string, statusMessage: string, errorType: string) => [
+			...firstTurn(),
+			agentSpan({
+				spanId: "a2",
+				startMs: 5 * MINUTE,
+				durationMs: 10 * SECOND,
+				genAi: { conversationId: "t2" },
+			}),
+			llmSpan({
+				spanId,
+				parentSpanId: "a2",
+				startMs: 5 * MINUTE + SECOND,
+				durationMs: SECOND,
+				model: "claude-opus-5",
+				statusCode: "Error",
+				statusMessage,
+				genAi: { conversationId: "t2", errorType, usageInputTokens: 5000, usageOutputTokens: 0 },
+			}),
+			llmSpan({
+				spanId: `${spanId}-again`,
+				parentSpanId: "a2",
+				startMs: 5 * MINUTE + 3 * SECOND,
+				durationMs: SECOND,
+				model: "claude-opus-5",
+				genAi: { conversationId: "t2", usageInputTokens: 1200, usageOutputTokens: 80 },
+			}),
+		]
+
+		const overflow = checks(survived("l-ctx", "prompt is too long", "context_length_exceeded"))
+		expect(overflow.verdict.status).toBe("attention")
+		expect(byId(overflow, "context-window").status).toBe("failed")
+		expect(byId(overflow, "context-window").headline).toMatch(/; the session carried on$/)
+		expect(overflow.headline).toBe("but 1 check failed")
+
+		const provider = checks(survived("l-prov", "upstream unavailable", "provider_error"))
+		expect(byId(provider, "provider").status).toBe("warning")
+		expect(byId(provider, "provider").headline).toBe(
+			"1 model call failed at the provider on turn 2; the session carried on",
+		)
+		expect(provider.headline).toBe("with 1 warning")
+	})
+
+	it("names the tool that killed the final turn, in the verdict and in its own row", () => {
+		const report = checks([
+			...firstTurn(),
+			agentSpan({
+				spanId: "a2",
+				startMs: 5 * MINUTE,
+				durationMs: 10 * SECOND,
+				statusCode: "Error",
+				statusMessage: "Agent run failed",
+				genAi: { conversationId: "t2" },
+			}),
+			toolSpan({
+				spanId: "t2-fetch",
+				parentSpanId: "a2",
+				startMs: 5 * MINUTE + SECOND,
+				durationMs: 8 * SECOND,
+				toolName: "fetch_docs",
+				statusCode: "Error",
+				statusMessage: "deadline exceeded after 8s",
+				genAi: { conversationId: "t2", errorType: "tool_error" },
+			}),
+		])
+
+		expect(report.verdict.status).toBe("failed")
+		expect(report.headline).toBe("the final turn died on `fetch_docs` timing out")
+		expect(report.checks[0].id).toBe("tool-timeouts")
+		expect(report.checks[0].headline).toBe(
+			"`fetch_docs` timed out once on turn 2 (final): deadline exceeded after 8s",
+		)
+		expect(report.checks[0].fixArea).toBe("tool")
+	})
+
+	it("names three findings and counts the rest", () => {
+		const failing = (name: string, index: number) =>
+			toolSpan({
+				spanId: `t-${name}`,
+				parentSpanId: "a2",
+				startMs: 5 * MINUTE + index * SECOND,
+				durationMs: SECOND,
+				toolName: name,
+				statusCode: "Error",
+				statusMessage: "boom",
+				genAi: { conversationId: "t2", errorType: "tool_error" },
+			})
+		const report = checks([
+			...firstTurn(),
+			agentSpan({
+				spanId: "a2",
+				startMs: 5 * MINUTE,
+				durationMs: 20 * SECOND,
+				genAi: { conversationId: "t2" },
+			}),
+			...["t_one", "t_two", "t_three", "t_four", "t_five"].map(failing),
+			llmSpan({
+				spanId: "l2",
+				parentSpanId: "a2",
+				startMs: 5 * MINUTE + 10 * SECOND,
+				durationMs: SECOND,
+				model: "claude-opus-5",
+				genAi: { conversationId: "t2" },
+			}),
+		])
+
+		expect(byId(report, "tool-errors").headline).toBe("5 tool calls failed; the session carried on")
+		expect(byId(report, "tool-errors").findings).toHaveLength(5)
+	})
+
+	// A failure another check classified is not this row's to deny.
+	it("has tool errors defer to the check that named the failure", () => {
+		const report = checks([
+			...firstTurn(),
+			agentSpan({
+				spanId: "a2",
+				startMs: 5 * MINUTE,
+				durationMs: 10 * SECOND,
+				genAi: { conversationId: "t2" },
+			}),
+			toolSpan({
+				spanId: "t2-grep",
+				parentSpanId: "a2",
+				startMs: 5 * MINUTE + SECOND,
+				durationMs: SECOND,
+				toolName: "sandbox_grep",
+				statusCode: "Error",
+				statusMessage: "GitHub App not configured for this organisation",
+				genAi: { conversationId: "t2", errorType: "tool_error" },
+			}),
+			toolSpan({
+				spanId: "t2-read",
+				parentSpanId: "a2",
+				startMs: 5 * MINUTE + 3 * SECOND,
+				durationMs: SECOND,
+				toolName: "read_file",
+				genAi: { conversationId: "t2" },
+			}),
+		])
+
+		expect(byId(report, "tool-availability").status).toBe("failed")
+		expect(byId(report, "tool-errors").status).toBe("passed")
+		expect(byId(report, "tool-errors").headline).toBe(
+			"2 tool calls; the one that failed is named by the checks above",
+		)
+	})
+
+	it("reports what the instrumentation captured, so a skipped check can say what to turn on", () => {
+		const report = checks([
+			...firstTurn(),
+			toolSpan({
+				spanId: "t1-read",
+				parentSpanId: "a1",
+				startMs: 2 * SECOND,
+				durationMs: SECOND,
+				toolName: "read_file",
+				genAi: { conversationId: "t1" },
+			}),
+		])
+
+		expect(report.coverage).toEqual({
+			messages: "missing",
+			toolPayloads: "missing",
+			usage: "per-call",
+			cost: "missing",
+			// One conversation id alone is no turn key; the agent root opens the turn.
+			turns: "agent-root",
+		})
+	})
+
+	// A session that called no tool has no tool payloads to capture: that is
+	// not a gap in the instrumentation, and the row must not say it is.
+	it("marks a signal absent, not missing, when there was nothing to capture", () => {
+		const report = checks([
+			agentSpan({ spanId: "a1", startMs: 0, durationMs: 4 * SECOND, genAi: { conversationId: "t1" } }),
+			llmSpan({
+				spanId: "l1",
+				parentSpanId: "a1",
+				startMs: SECOND,
+				durationMs: SECOND,
+				genAi: { conversationId: "t1" },
+			}),
+		])
+		expect(report.coverage.toolPayloads).toBe("absent")
+		expect(report.coverage.messages).toBe("missing")
+	})
+})

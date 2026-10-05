@@ -3,8 +3,8 @@
 // Derived from packages/domain/src/tinybird/datasources.ts
 // These define the ClickHouse table schemas used by the query DSL.
 
-import { type ColumnDefs, type Table, table as chTable } from "@maple-dev/clickhouse-builder"
-import * as T from "@maple-dev/clickhouse-builder/types"
+import { type ColumnDefs, type Table, table as chTable } from "@maple-dev/effect-clickhouse"
+import * as T from "@maple-dev/effect-clickhouse/types"
 import { OrgId, SpanId, TraceId } from "@maple/domain"
 
 /**
@@ -112,8 +112,9 @@ export const TraceDetailSpans = table("trace_detail_spans", {
  * Migration 0026 added the sidebar's other facet dimensions (`DeploymentEnv`,
  * `Model`, `AgentName`, `ToolName`) and the per-span measures the page ranks
  * and filters on (`IsError`, `IsLlmCall`, `IsToolCall`, `Tokens`, `Cost`, with
- * `SpanId`/`ParentSpanId`/`Duration`), all coalesced and classified at insert
- * by `@maple/domain/tinybird/gen-ai-columns`; `''`/0 where the span carries no
+ * `SpanId`/`ParentSpanId`/`Duration`), each since 0035 a projection of the
+ * fact the ingest gateway stamped on the span
+ * (`@maple/domain/tinybird/gen-ai-columns`); `''`/0 where the span carries no
  * such fact, and on every row materialized before 0026.
  */
 export const AiTraceIndex = table("ai_trace_index", {
@@ -135,6 +136,41 @@ export const AiTraceIndex = table("ai_trace_index", {
 	IsToolCall: T.uint8,
 	Tokens: T.float64,
 	Cost: T.float64,
+	ResponseId: T.string,
+	// Migration 0031 — what the list row needs beyond the page's ranking, so
+	// the row renders off this index alone: the vendor's version beside its id,
+	// and the five disjoint token buckets `Tokens` is the sum of.
+	VendorVersion: T.string,
+	InputTokens: T.float64,
+	CacheReadTokens: T.float64,
+	CacheWriteTokens: T.float64,
+	OutputTokens: T.float64,
+	ReasoningTokens: T.float64,
+	// Migration 0032 — why a failing span failed and what a tool call says it
+	// does, so the tool detail page's failures and header read this index too.
+	// Both strings are truncated by the view. `FailedToolCallResult` is '' and
+	// `ErrorFingerprint` 0 on spans that did not fail; select the fingerprint
+	// through `toString`, as every hash.
+	ErrorType: T.string,
+	StatusMessage: T.string,
+	ToolDescription: T.string,
+	FailedToolCallResult: T.string,
+	ErrorFingerprint: T.uint64,
+})
+
+/**
+ * Server spans from AI crawlers (migration 0033), one row per span. A proxied
+ * request has several spans in one trace, so requests are `uniq(TraceId)`.
+ */
+export const AiCrawlerRequests = table("ai_crawler_requests", {
+	OrgId: orgId,
+	Timestamp: dateTime64,
+	TraceId: T.string,
+	ServiceName: T.string,
+	Crawler: T.string,
+	Host: T.string,
+	Path: T.string,
+	HttpStatus: T.uint16,
 })
 
 export const TraceListMv = table("trace_list_mv", {
@@ -153,6 +189,21 @@ export const TraceListMv = table("trace_list_mv", {
 	ServiceNamespace: T.string,
 	HasError: T.uint8,
 	TraceState: T.string,
+})
+
+export const TraceFacetsHourly = table("trace_facets_hourly", {
+	OrgId: orgId,
+	Hour: dateTime,
+	ServiceName: T.string,
+	SpanName: T.string,
+	HttpMethod: T.string,
+	HttpStatusCode: T.string,
+	DeploymentEnv: T.string,
+	ServiceNamespace: T.string,
+	HasError: T.uint8,
+	TraceCount: T.uint64,
+	DurationMin: T.uint64,
+	DurationMax: T.uint64,
 })
 
 export const Logs = table("logs", {
@@ -620,6 +671,31 @@ export const AlertChecks = table("alert_checks", {
 	ErrorCategory: T.string,
 })
 
+export const AuditLog = table("audit_log", {
+	OrgId: orgId,
+	Id: T.string,
+	OccurredAt: dateTime64,
+	RecordedAt: dateTime64,
+	ActorType: T.string,
+	UserId: T.string,
+	ApiKeyId: T.string,
+	ActorId: T.string,
+	ActorLabel: T.string,
+	AffectedUserId: T.string,
+	Source: T.string,
+	Action: T.string,
+	Outcome: T.string,
+	DenialReason: T.string,
+	ResourceType: T.string,
+	ResourceId: T.string,
+	ChangedFields: T.array(T.string),
+	Changes: T.string,
+	Metadata: T.string,
+	RequestId: T.string,
+	OriginIp: T.string,
+	OriginCountry: T.string,
+})
+
 export const SessionReplays = table("session_replays", {
 	OrgId: orgId,
 	SessionId: T.string,
@@ -780,6 +856,13 @@ export const ProductEvents = table("product_events", {
 	ServiceName: T.string,
 	// track() props.
 	Attributes: T.map(T.string, T.string),
+	// The trace this event was derived from — non-empty only on Source='trace'
+	// rows, i.e. spans the customer annotated with `maple.product_event.name`.
+	// The link in both directions: trace view → its product events, funnel row →
+	// the trace that performed the step.
+	TraceId: T.string,
+	// The annotated span within TraceId. '' on every other source.
+	SpanId: T.string,
 })
 
 // (VisitorId, UserId) pairs observed together on a session_replays row.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest"
-import { compileUnsafe, compileUnionUnsafe } from "@maple-dev/clickhouse-builder"
+import { compileUnsafe, compileUnionUnsafe } from "@maple-dev/effect-clickhouse"
 import {
 	getSessionReplayQuery,
 	sessionReplaysFacetsQuery,
@@ -218,12 +218,12 @@ describe("sessionReplaysFacetsQuery userId filter", () => {
 	it("narrows every facet branch by the exact UserId", () => {
 		const q = sessionReplaysFacetsQuery({ userId: "user_123" })
 		const { sql } = compileUnionUnsafe(q, { ...baseParams, ...WINDOW })
-		// Branches: service / browser / country / device / group / error count /
-		// duration histogram / p50 / p95 — userId is applied to all of them (never
-		// excluded, unlike each branch's own dimension), so the distribution
-		// reflects the selected user rather than the whole org.
+		// Branches: service / browser / country / device / group / page / tag / error count /
+		// duration histogram / p50 / p95 / total / live — userId is applied to all
+		// of them (never excluded, unlike each branch's own dimension), so the
+		// distribution reflects the selected user rather than the whole org.
 		const occurrences = sql.split("UserId = 'user_123'").length - 1
-		expect(occurrences).toBe(9)
+		expect(occurrences).toBe(13)
 	})
 
 	it("omits the UserId predicate when absent", () => {
@@ -281,8 +281,8 @@ describe("session replay identity columns", () => {
 		const q = sessionReplaysFacetsQuery({ groupName: "Acme Inc" })
 		const { sql } = compileUnionUnsafe(q, { ...baseParams, ...WINDOW })
 		expect(sql).toContain("GroupName AS name")
-		// 9 branches, minus the group branch itself.
-		expect(sql.split("GroupName = 'Acme Inc'").length - 1).toBe(8)
+		// 13 branches, minus the group branch itself.
+		expect(sql.split("GroupName = 'Acme Inc'").length - 1).toBe(12)
 	})
 
 	it("never offers an empty group as a facet option", () => {
@@ -478,10 +478,10 @@ describe("sessionReplaysFacetsQuery duration distribution", () => {
 	it("casts percentiles to the union's integer count type, nan-safe", () => {
 		const { sql } = compileUnionUnsafe(sessionReplaysFacetsQuery({}), { ...baseParams, ...WINDOW })
 		expect(sql).toContain(
-			"toUInt64(ifNotFinite(round(quantile(0.5)(assumeNotNull(DurationMs))), 0)) AS count",
+			"toUInt64(ifNull(ifNotFinite(round(quantile(0.5)(assumeNotNull(DurationMs))), 0), 0)) AS count",
 		)
 		expect(sql).toContain(
-			"toUInt64(ifNotFinite(round(quantile(0.95)(assumeNotNull(DurationMs))), 0)) AS count",
+			"toUInt64(ifNull(ifNotFinite(round(quantile(0.95)(assumeNotNull(DurationMs))), 0), 0)) AS count",
 		)
 	})
 
@@ -719,5 +719,228 @@ describe("sessionEnvironmentsQuery", () => {
 		expect(sql).not.toContain("argMax")
 		expect(sql).toContain("OrgId = 'org_1'")
 		expect(sql).toContain("StartTime >= ")
+	})
+})
+
+// Live-ness, keyset paging and visitor scoping
+//
+// The read side used to trust `Status` on its own. It cannot: the SDK writes
+// `"ended"` from an unload handler, so a tab that is killed, crashes or is put
+// to sleep leaves the row saying `"active"` for the rest of its retention.
+// Measured in production that made 69 of 70 LIVE badges wrong, and left the
+// same sessions with a NULL `DurationMs` forever.
+
+describe("sessionReplaysListQuery live-ness columns", () => {
+	it("selects LastActivityAt on every branch that returns list rows", () => {
+		const branches = [{}, { durationMinMs: 1_000 }, { activeTimeMinMs: 1_000 }, { eventType: "error" }]
+		for (const opts of branches) {
+			const { sql } = compileUnsafe(sessionReplaysListQuery(opts), { ...baseParams, ...WINDOW })
+			expect(sql, JSON.stringify(opts)).toContain("AS lastActivityAt")
+		}
+	})
+
+	it("finalizes it through argMax like every other ReplacingMergeTree column", () => {
+		const { sql } = compileUnsafe(sessionReplaysListQuery({}), { ...baseParams, ...WINDOW })
+		expect(sql).toContain("argMax(LastActivityAt, Version) AS lastActivityAt")
+	})
+})
+
+describe("sessionReplaysListQuery keyset cursor", () => {
+	it("walks (StartTime, SessionId) so a tie can't swallow a page boundary", () => {
+		const { sql } = compileUnsafe(
+			sessionReplaysListQuery({
+				cursor: { startTime: "2026-09-01 12:00:00", sessionId: "sess_9" },
+			}),
+			{ ...baseParams, ...WINDOW },
+		)
+		expect(sql).toContain("StartTime < '2026-09-01 12:00:00'")
+		expect(sql).toContain("SessionId < 'sess_9'")
+		// The tie-break is a disjunction, not a second AND: rows at the boundary
+		// timestamp with a lower id still belong to the next page.
+		expect(sql).toContain("OR")
+	})
+
+	it("falls back to the bare timestamp comparison without a session id", () => {
+		const { sql } = compileUnsafe(
+			sessionReplaysListQuery({ cursor: { startTime: "2026-09-01 12:00:00" } }),
+			{ ...baseParams, ...WINDOW },
+		)
+		expect(sql).toContain("StartTime < '2026-09-01 12:00:00'")
+		expect(sql).not.toContain("SessionId <")
+	})
+
+	it("filters before the GROUP BY, not after it", () => {
+		const { sql } = compileUnsafe(
+			sessionReplaysListQuery({
+				cursor: { startTime: "2026-09-01 12:00:00", sessionId: "sess_9" },
+			}),
+			{ ...baseParams, ...WINDOW },
+		)
+		expect(sql.indexOf("StartTime < '2026-09-01 12:00:00'")).toBeLessThan(sql.indexOf("GROUP BY"))
+	})
+})
+
+describe("sessionReplaysFacetsQuery header counts", () => {
+	it("emits a window total and a live count", () => {
+		const { sql } = compileUnionUnsafe(sessionReplaysFacetsQuery({}), { ...baseParams, ...WINDOW })
+		expect(sql).toContain("'total' AS facetType")
+		expect(sql).toContain("'live' AS facetType")
+	})
+
+	it("counts live on activity recency, not on Status alone", () => {
+		const { sql } = compileUnionUnsafe(sessionReplaysFacetsQuery({}), { ...baseParams, ...WINDOW })
+		// Same shape as the analytics live badge: coalesce to StartTime so a
+		// session whose only row is the v1 start row is judged on when it began.
+		expect(sql).toContain("coalesce(LastActivityAt, StartTime)")
+		expect(sql).toContain("INTERVAL 300 SECOND")
+		expect(sql).toContain("Status = 'active'")
+	})
+
+	it("scopes every branch to the selected visitor", () => {
+		const { sql } = compileUnionUnsafe(sessionReplaysFacetsQuery({ visitorId: "vis_abc" }), {
+			...baseParams,
+			...WINDOW,
+		})
+		// VisitorId has no facet branch of its own, so like userId it narrows all
+		// thirteen. Left out, the sidebar and header described the whole org while
+		// the list beside them showed one browser.
+		expect(sql.split("VisitorId = 'vis_abc'").length - 1).toBe(13)
+	})
+
+	it("omits the visitor predicate when absent", () => {
+		const { sql } = compileUnionUnsafe(sessionReplaysFacetsQuery({}), { ...baseParams, ...WINDOW })
+		expect(sql).not.toContain("VisitorId =")
+	})
+})
+
+// Page visited: a session matches if it navigated to the path at any point, read
+// from product_events (time-sorted, PagePath pre-parsed) rather than session_events.
+
+describe("page visited filter", () => {
+	const PAGE_SUBQUERY = "SessionId IN (SELECT SessionId AS SessionId FROM product_events"
+	const flat = (sql: string) => sql.replace(/\s+/g, " ")
+
+	it("narrows every list branch to sessions that navigated to the exact path", () => {
+		const branches = [{}, { durationMinMs: 1_000 }, { activeTimeMinMs: 1_000 }, { eventType: "error" }]
+		for (const opts of branches) {
+			const sql = flat(
+				compileUnsafe(sessionReplaysListQuery({ ...opts, pagePath: "/pricing" }), {
+					...baseParams,
+					...WINDOW,
+				}).sql,
+			)
+			expect(sql, JSON.stringify(opts)).toContain(PAGE_SUBQUERY)
+			expect(sql).toContain("PagePath = '/pricing'")
+			expect(sql).toContain("Kind = 'navigation'")
+			// The window bounds the subquery too, or it would scan the table's full retention.
+			expect(sql).toMatch(/FROM product_events WHERE .*Timestamp >= /)
+		}
+	})
+
+	it("leaves the list untouched when unset", () => {
+		const { sql } = compileUnsafe(sessionReplaysListQuery({}), { ...baseParams, ...WINDOW })
+		expect(sql).not.toContain("product_events")
+	})
+
+	it("adds a page facet, counted per session and narrowed by the other filters", () => {
+		const q = sessionReplaysFacetsQuery({ browser: "Chrome" })
+		const sql = flat(compileUnionUnsafe(q, { ...baseParams, ...WINDOW }).sql)
+		expect(sql).toContain("PagePath AS name")
+		expect(sql).toContain("PagePath != ''")
+		expect(sql).toMatch(
+			/SessionId IN \(SELECT SessionId AS SessionId FROM session_replays WHERE .*BrowserName = 'Chrome'\)/,
+		)
+	})
+
+	it("excludes the selected page from the page facet branch only", () => {
+		const q = sessionReplaysFacetsQuery({ pagePath: "/pricing" })
+		const { sql } = compileUnionUnsafe(q, { ...baseParams, ...WINDOW })
+		// 13 branches, minus the page branch itself.
+		expect(sql.split("PagePath = '/pricing'").length - 1).toBe(12)
+	})
+})
+
+// Session tags
+//
+// Rule-based tags decided over each session's finalized row (see session-tags.ts).
+// Filtering is a SessionId semi-join, so it rides every list branch unchanged.
+
+describe("session tags", () => {
+	const params = { ...baseParams, ...WINDOW }
+	const flat = (sql: string) => sql.replace(/\s+/g, " ")
+
+	it("puts the quality tier and new-visitor flag on every list row", () => {
+		const { sql } = compileUnsafe(sessionReplaysListQuery({}), params)
+		expect(sql).toContain("'bot', ")
+		expect(sql).toContain("'engaged') AS quality")
+		expect(sql).toContain("argMax(VisitorIsNew, Version) AS visitorIsNew")
+	})
+
+	it("ranks bot first, then bounce, idle, glance, and falls back to engaged", () => {
+		const { sql } = compileUnsafe(sessionReplaysListQuery({}), params)
+		const order = ["'bot'", "'bounce'", "'idle'", "'glance'", "'engaged'"].map((tag) => sql.indexOf(tag))
+		expect(order.every((position) => position > 0)).toBe(true)
+		expect([...order].sort((a, b) => a - b)).toEqual(order)
+	})
+
+	it("falls back to last activity when a session never sent its ended row", () => {
+		const { sql } = compileUnsafe(sessionReplaysListQuery({}), params)
+		expect(sql).toContain(
+			"coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 5000",
+		)
+	})
+
+	it("requires every requested tag through one semi-join over the same window", () => {
+		const { sql } = compileUnsafe(sessionReplaysListQuery({ tags: ["engaged", "signed_in"] }), params)
+		expect(sql).toContain("SessionId IN (SELECT")
+		expect(sql).toContain("WHERE quality = 'engaged'")
+		expect(sql).toContain("AND signedIn = 1")
+		expect(sql.match(/FROM session_replays/g)).toHaveLength(2)
+	})
+
+	it("applies no tag predicate when no tags are asked for", () => {
+		const { sql } = compileUnsafe(sessionReplaysListQuery({ tags: [] }), params)
+		expect(sql).not.toContain("SessionId IN")
+	})
+
+	it("keeps the tag filter on the duration branch too", () => {
+		const { sql } = compileUnsafe(
+			sessionReplaysListQuery({ tags: ["new_visitor"], durationMinMs: 1000 }),
+			params,
+		)
+		expect(sql).toContain("WHERE newVisitor = 1")
+		expect(sql).toContain("durationMs >= 1000")
+	})
+
+	it("counts sessions per tag in one facet branch", () => {
+		const sql = flat(compileUnionUnsafe(sessionReplaysFacetsQuery({}), params).sql)
+		const tagBranch = sql.split("UNION ALL").find((branch) => branch.includes("'tag' AS facetType"))
+		expect(tagBranch).toContain(
+			"arrayJoin(arrayFilter(tag -> tag != '', [quality, if(signedIn = 1, 'signed_in', ''), if(newVisitor = 1, 'new_visitor', '')])) AS name",
+		)
+	})
+
+	it("narrows every other facet branch by the selected tags, but not the tag branch", () => {
+		const sql = flat(compileUnionUnsafe(sessionReplaysFacetsQuery({ tags: ["engaged"] }), params).sql)
+		const branches = sql.split("UNION ALL")
+		const tagBranch = branches.find((branch) => branch.includes("'tag' AS facetType"))
+		expect(tagBranch).not.toContain("WHERE quality = 'engaged'")
+		// Every other branch, including the hand-written error one, is narrowed by it.
+		const narrowed = branches.filter((branch) => branch.includes("WHERE quality = 'engaged'"))
+		expect(narrowed.length).toBe(branches.length - 1)
+	})
+
+	it("counts each tag under the other selected tags, so a count is what ticking it returns", () => {
+		const sql = flat(
+			compileUnionUnsafe(sessionReplaysFacetsQuery({ tags: ["bot", "signed_in"] }), params).sql,
+		)
+		const tagBranch = sql.split("UNION ALL").find((branch) => branch.includes("'tag' AS facetType"))
+		// A tier is counted under the selected traits only: ticking a tier replaces the tier.
+		expect(tagBranch).toContain("if((quality != '' AND signedIn = 1), quality, '')")
+		// A trait is counted under the selected tier and the other selected traits.
+		expect(tagBranch).toContain("if((signedIn = 1 AND quality = 'bot'), 'signed_in', '')")
+		expect(tagBranch).toContain(
+			"if(((newVisitor = 1 AND quality = 'bot') AND signedIn = 1), 'new_visitor', '')",
+		)
 	})
 })

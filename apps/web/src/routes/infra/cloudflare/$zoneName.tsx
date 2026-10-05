@@ -1,11 +1,13 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router"
+import { Link, createFileRoute, useNavigate } from "@tanstack/react-router"
 import { Schema } from "effect"
 import { Result } from "@/lib/effect-atom"
 
+import { Button } from "@maple/ui/components/ui/button"
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@maple/ui/components/ui/empty"
 import { Skeleton } from "@maple/ui/components/ui/skeleton"
 
 import { DashboardLayout } from "@/components/layout/dashboard-layout"
+import { DocsLink, EmptyActions } from "@/components/common/docs-link"
 import { QueryErrorState } from "@/components/common/query-error-state"
 import { CloudflareIcon } from "@/components/icons"
 import { HeroChip, PageHero } from "@/components/infra/primitives/page-hero"
@@ -47,6 +49,7 @@ import { formatNumber } from "@maple/ui/lib/format"
 import { useEffectiveTimeRange } from "@/hooks/use-effective-time-range"
 import { useRefreshableAtomValue } from "@/hooks/use-refreshable-atom-value"
 import { TimeRangeSearchFields, applyTimeRangeSearch } from "@/components/time-range-picker/search"
+import { sessionTimeRangeSearchMiddleware } from "@/components/time-range-picker/session-time-range"
 import { PageRefreshProvider } from "@/components/time-range-picker/page-refresh-context"
 import { TimeRangeHeaderControls } from "@/components/time-range-picker/time-range-header-controls"
 
@@ -58,6 +61,7 @@ const zoneDetailSearchSchema = Schema.Struct({
 export const Route = createFileRoute("/infra/cloudflare/$zoneName")({
 	component: ZoneDetailPage,
 	validateSearch: Schema.toStandardSchemaV1(zoneDetailSearchSchema),
+	search: { middlewares: [sessionTimeRangeSearchMiddleware()] },
 })
 
 const ZONE_SERVICE_PREFIX = "cloudflare/"
@@ -260,6 +264,12 @@ function ZoneDetailContent({
 								traffic is landing.
 							</EmptyDescription>
 						</EmptyHeader>
+						<EmptyActions>
+							<Button variant="outline" size="sm" render={<Link to="/infra/cloudflare" />}>
+								Back to zones
+							</Button>
+							<DocsLink page="cloudflare" />
+						</EmptyActions>
 					</Empty>
 				)
 			}

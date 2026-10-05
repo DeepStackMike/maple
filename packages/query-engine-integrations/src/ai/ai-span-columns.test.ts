@@ -1,153 +1,150 @@
 import { describe, expect, it } from "vitest"
-import * as CH from "@maple-dev/clickhouse-builder/expr"
-import * as T from "@maple-dev/clickhouse-builder/types"
-import { compile } from "@maple-dev/clickhouse-builder/sql"
+import * as CH from "@maple-dev/effect-clickhouse/expr"
+import * as T from "@maple-dev/effect-clickhouse/types"
+import { compile } from "@maple-dev/effect-clickhouse/sql"
 import {
-	GENAI_AGENT_NAME_KEYS,
-	GENAI_COST_KEYS,
-	GENAI_MODEL_KEYS,
-	GENAI_TOOL_NAME_KEYS,
-	GENAI_USAGE_KEYS,
-	OPENINFERENCE_KIND_OPERATIONS,
-	genAiIsErrorCond,
-	genAiIsLlmCallCond,
-	genAiIsToolCallCond,
-	genAiOperationExpr,
-	genAiTokensExpr,
-} from "@maple/domain/tinybird/gen-ai-columns"
-import type { AiGenAiField, MutableAiGenAiValues } from "@maple/domain/gen-ai"
-import { genAiIntegration, resolveAiIntegration } from "./ai-integrations"
-import { AI_VENDOR_INTEGRATIONS } from "./ai-vendors"
-import { deepestReporterSum, usageReportersExpr } from "./ai-span-columns"
+	nettedReportersExpr,
+	sessionLlmCalls,
+	sessionReportersExpr,
+	sessionUsageSum,
+	traceUsageColumns,
+} from "./ai-span-columns"
 
-/** Every key any integration reads for `field` — the default's plus each vendor's. */
-const decodedKeys = (field: AiGenAiField): ReadonlySet<string> =>
-	new Set([
-		...genAiIntegration.sources[field],
-		...Object.keys(AI_VENDOR_INTEGRATIONS).flatMap(
-			(vendorId) => resolveAiIntegration(vendorId).sources[field],
-		),
-	])
-
-const attrs = {
-	get: (key: string) => CH.mapGet(CH.dynamicColumn<Record<string, string>>("SpanAttributes"), key),
-}
-const columns = {
-	SpanName: CH.dynamicColumn<string>("SpanName", T.string),
-	StatusCode: CH.dynamicColumn<string>("StatusCode", T.string),
-	SpanAttributes: attrs,
-}
 const sql = (expr: { toFragment(): Parameters<typeof compile>[0] }) => compile(expr.toFragment())
 
-// The SQL lists are hand-copied from the integration layer's alias tables,
-// because the index's MV cannot call into it. These pin every list to that
-// layer, so a key that decodes on the detail page is one the list can filter
-// on — and one the list reads that nothing decodes is a typo caught here.
-describe("GenAI column key lists match the integration layer", () => {
-	it("model: response and request model keys", () => {
-		const decoded = new Set([...decodedKeys("responseModel"), ...decodedKeys("requestModel")])
-		for (const key of GENAI_MODEL_KEYS) expect(decoded).toContain(key)
+/** `body` with `name` bound to `value` once, as `bind` writes it. */
+const bind = (name: string, value: string, body: string) => `arrayMap(${name} -> ${body}, [${value}])[1]`
+
+/** A lookup, as `lookupExpr` writes it: table entries and needles sorted
+ *  together, the table's value filled down each run of a key. */
+const lookup = (table: string, needles: string, fallback: string) =>
+	bind(
+		"entries",
+		`arrayConcat(arrayMap(t -> (t.1, 0, t.2), ${table}), arrayMap(k -> (k, 1, ${fallback}), ${needles}))`,
+		bind(
+			"sorted",
+			"arraySort(e -> (e.1.1, e.1.2), arrayZip(entries, arrayEnumerate(entries)))",
+			"tupleElement(arraySort(f -> f.3, arrayFilter(f -> f.2 = 1, arrayZip(arrayFill((v, first) -> first = 1, tupleElement(tupleElement(sorted, 1), 3), arrayEnumerateUniq(tupleElement(tupleElement(sorted, 1), 1))), tupleElement(tupleElement(sorted, 1), 2), tupleElement(sorted, 2)))), 1)",
+		),
+	)
+
+/** A span id as the netting compares it: a 63-bit hash, 0 for none. */
+const key = (column: string) => `if(${column} = '', 0, bitShiftRight(cityHash64(${column}), 1))`
+
+describe("session usage SQL", () => {
+	const trace = traceUsageColumns({
+		SpanId: CH.dynamicColumn<string>("SpanId", T.string),
+		ParentSpanId: CH.dynamicColumn<string>("ParentSpanId", T.string),
+		Tokens: CH.dynamicColumn<number>("Tokens", T.float64),
+		Cost: CH.dynamicColumn<number>("Cost", T.float64),
+		ResponseId: CH.dynamicColumn<string>("ResponseId", T.string),
+		IsLlmCall: CH.dynamicColumn<number>("IsLlmCall", T.uint8),
+		InputTokens: CH.dynamicColumn<number>("InputTokens", T.float64),
+		CacheReadTokens: CH.dynamicColumn<number>("CacheReadTokens", T.float64),
+		CacheWriteTokens: CH.dynamicColumn<number>("CacheWriteTokens", T.float64),
+		OutputTokens: CH.dynamicColumn<number>("OutputTokens", T.float64),
+		ReasoningTokens: CH.dynamicColumn<number>("ReasoningTokens", T.float64),
 	})
 
-	it("agent and tool names", () => {
-		for (const key of GENAI_AGENT_NAME_KEYS) expect(decodedKeys("agentName")).toContain(key)
-		for (const key of GENAI_TOOL_NAME_KEYS) expect(decodedKeys("toolName")).toContain(key)
-	})
-
-	it("every usage bucket and the cost, bucket for bucket", () => {
-		const fields = {
-			input: "usageInputTokens",
-			cacheRead: "usageCacheReadInputTokens",
-			cacheWrite: "usageCacheCreationInputTokens",
-			output: "usageOutputTokens",
-			reasoning: "usageReasoningOutputTokens",
-		} as const
-		for (const [bucket, field] of Object.entries(fields)) {
-			const decoded = decodedKeys(field)
-			for (const key of GENAI_USAGE_KEYS[bucket as keyof typeof GENAI_USAGE_KEYS]) {
-				expect(decoded, `${bucket}: ${key}`).toContain(key)
-			}
-			// And the other way: the list reads every key the detail page decodes,
-			// so a session's tokens cannot be counted on one page and not the other.
-			for (const key of decoded) {
-				expect(
-					GENAI_USAGE_KEYS[bucket as keyof typeof GENAI_USAGE_KEYS],
-					`${bucket}: ${key}`,
-				).toContain(key)
-			}
-		}
-		for (const key of GENAI_COST_KEYS) expect(decodedKeys("usageCost")).toContain(key)
-		for (const key of decodedKeys("usageCost")) expect(GENAI_COST_KEYS).toContain(key)
-	})
-
-	it("translates the OpenInference span kinds the integration refines", () => {
-		const integration = resolveAiIntegration("openinference-openai")
-		for (const [kind, operation] of OPENINFERENCE_KIND_OPERATIONS) {
-			const values: MutableAiGenAiValues = {}
-			integration.refine?.(values, {
-				attributes: { "openinference.span.kind": kind },
-				row: {} as never,
-			})
-			expect(values.operationName, kind).toBe(operation)
-		}
-	})
-})
-
-describe("span classification SQL", () => {
-	it("reads the operation from gen_ai.operation.name, else the OpenInference kind", () => {
-		expect(sql(genAiOperationExpr(attrs))).toBe(
-			"coalesce(nullIf(SpanAttributes['gen_ai.operation.name'], ''), multiIf(SpanAttributes['openinference.span.kind'] = 'LLM', 'chat', SpanAttributes['openinference.span.kind'] = 'TOOL', 'execute_tool', SpanAttributes['openinference.span.kind'] = 'AGENT', 'invoke_agent', SpanAttributes['openinference.span.kind'] = 'EMBEDDING', 'embeddings', SpanAttributes['openinference.span.kind'] = 'RETRIEVER', 'retrieval', ''))",
+	it("collects a trace's reporters and model calls, capped", () => {
+		// The five buckets ride along as elements 7–11; a span reports by its
+		// total or cost, which the buckets sum to, so they add no predicate.
+		expect(sql(trace.usageSpans)).toBe(
+			`groupArrayIf(2000)(tuple(${key("SpanId")}, ${key("ParentSpanId")}, Tokens, Cost, ResponseId, IsLlmCall, InputTokens, CacheReadTokens, CacheWriteTokens, OutputTokens, ReasoningTokens), ((Tokens > 0 OR Cost > 0) OR IsLlmCall = 1))`,
 		)
 	})
 
-	it("counts a model turn by operation, or by name only for an unclassified agent span", () => {
-		const text = sql(genAiIsLlmCallCond(columns))
-		expect(text).toContain("IN ('chat', 'generate_content', 'text_completion', 'fetch_response')")
-		// The name rules apply only where the operation is absent or unknown to
-		// the convention, only to vendor-stamped spans, and only after the tool
-		// and agent rules have declined — the client's order.
+	it("maps each of a trace's spans to itself when it reported the measure, else to its parent", () => {
+		// Both measures in one table, the key's lowest bit telling them apart.
+		expect(sql(trace.usageLinks)).toBe(
+			`groupArrayArray(4000)([tuple(${key("SpanId")} * 2 + 0, if(Tokens > 0, ${key("SpanId")}, ${key("ParentSpanId")}) * 2 + 0), tuple(${key("SpanId")} * 2 + 1, if(Cost > 0, ${key("SpanId")}, ${key("ParentSpanId")}) * 2 + 1)])`,
+		)
+	})
+
+	it("climbs four links from every reporter's parent, each hop one lookup", () => {
+		const parents =
+			"arrayConcat(arrayMap(r -> r.2 * 2, usageSpans), arrayMap(r -> r.2 * 2 + 1, usageSpans))"
+		const hop = (needles: string) => lookup("usageLinks", needles, "toUInt64(0)")
+		// Each reporter gains the nearest ancestor that reported tokens (12) and
+		// the nearest that reported a cost (13).
+		expect(sql(trace.usageReporters)).toBe(
+			bind(
+				"ancestors",
+				hop(hop(hop(hop(parents)))),
+				"arrayMap((r, t, c) -> tupleConcat(r, (intDiv(t, 2), intDiv(c, 2))), usageSpans, arraySlice(ancestors, 1, length(usageSpans)), arraySlice(ancestors, length(usageSpans) + 1))",
+			),
+		)
+	})
+
+	it("collects the session's reporters once, capped by the aggregate itself", () => {
+		expect(sql(sessionReportersExpr("usageReporters"))).toBe("groupArrayArray(2000)(usageReporters)")
+	})
+
+	it("nets every claim in one pass: children off their parent, a call at its deepest account", () => {
+		const text = sql(nettedReportersExpr("reporters"))
+		// What the reporters charged to each one already claimed, and which spans
+		// are reporters: one sumMap, each reporter entered under its token
+		// ancestor with its tokens, its cost ancestor with its cost, and itself —
+		// read back at the reporter's own id, its two ancestors and its parent.
+		const charged = lookup(
+			bind(
+				"claims",
+				"arrayReduce('sumMap', arrayMap(r -> [r.12, r.13, r.1], reporters), arrayMap(r -> [r.3, 0., 0.], reporters), arrayMap(r -> [0., r.4, 0.], reporters), arrayMap(r -> [r.7, 0., 0.], reporters), arrayMap(r -> [r.8, 0., 0.], reporters), arrayMap(r -> [r.9, 0., 0.], reporters), arrayMap(r -> [r.10, 0., 0.], reporters), arrayMap(r -> [r.11, 0., 0.], reporters), arrayMap(r -> [0., 0., 1.], reporters))",
+				"arrayZip(claims.1, arrayZip(claims.2, claims.3, claims.4, claims.5, claims.6, claims.7, claims.8, claims.9))",
+			),
+			"arrayConcat(tupleElement(reporters, 1), tupleElement(reporters, 12), tupleElement(reporters, 13), tupleElement(reporters, 2))",
+			"(0., 0., 0., 0., 0., 0., 0., 0.)",
+		)
+		expect(
+			text.startsWith(
+				"arrayMap(charged -> arrayMap((r, own, tokenAncestor, costAncestor, parent) -> tuple(r.5, ",
+			),
+		).toBe(true)
+		expect(
+			text.endsWith(
+				`, reporters, arraySlice(charged, 0 * length(reporters) + 1, length(reporters)), arraySlice(charged, 1 * length(reporters) + 1, length(reporters)), arraySlice(charged, 2 * length(reporters) + 1, length(reporters)), arraySlice(charged, 3 * length(reporters) + 1, length(reporters))), [${charged}])[1]`,
+			),
+		).toBe(true)
+		// A reporting call counts by its netted claim; a non-reporting one by
+		// having no reporting ancestor and no model call for a parent.
 		expect(text).toContain(
-			"NOT IN ('chat', 'generate_content', 'text_completion', 'fetch_response', 'embeddings', 'retrieval', 'execute_tool', 'invoke_agent', 'create_agent', 'invoke_workflow', 'plan', 'agent_step')",
+			"r.6 = 1 AND if((r.3 > 0 OR r.4 > 0), greatest(0., r.3 - own.1) > 0 OR greatest(0., r.4 - own.2) > 0, tokenAncestor.8 = 0 AND costAncestor.8 = 0 AND parent.8 = 0)",
 		)
-		expect(text).toContain("NOT ((coalesce(nullIf(SpanAttributes['gen_ai.tool.name'], '')")
-		expect(text).toContain("lower(SpanName) LIKE '%tool%'")
-		expect(text).toContain("NOT ((lower(SpanName) LIKE '%agent%' OR lower(SpanName) LIKE '%workflow%'))")
-		expect(text).toContain("lower(SpanName) LIKE '%chat%' OR lower(SpanName) LIKE '%completion%'")
+		// Tokens, cost and the five buckets, each less its children's, floored at
+		// zero — and nothing at all for a reporter that is not a model call once
+		// that measure was charged to it (tokens decide the buckets).
+		for (const [element, charged, measure] of [
+			[3, 1, 1],
+			[4, 2, 2],
+			[7, 3, 1],
+			[8, 4, 1],
+			[9, 5, 1],
+			[10, 6, 1],
+			[11, 7, 1],
+		] as const) {
+			expect(text).toContain(
+				`if(r.6 = 0 AND own.${measure} > 0, 0., greatest(0., r.${element} - own.${charged}))`,
+			)
+		}
 	})
 
-	it("counts a tool call by operation, or by a tool name / tool-ish span name", () => {
-		const text = sql(genAiIsToolCallCond(columns))
-		expect(text).toContain("IN ('execute_tool')")
-		expect(text).toContain("SpanAttributes['tool.name']) != '' OR lower(SpanName) LIKE '%tool%'")
-	})
+	it.each([
+		["tokens", 3],
+		["cost", 4],
+		["inputTokens", 5],
+		["reasoningTokens", 9],
+	] as const)(
+		"sums the netted claims: every unkeyed one, and the largest per response id (%s)",
+		(measure, element) => {
+			expect(sql(sessionUsageSum("netted", measure))).toBe(
+				`arraySum(tupleElement(arrayFilter(n -> n.1 = '', netted), ${element})) + arraySum(mapValues(arrayReduce('maxMap', arrayMap(n -> map(n.1, n.${element}), arrayFilter(n -> n.1 != '', netted)))))`,
+			)
+		},
+	)
 
-	it("sums the five token buckets, each coalesced canonical-first", () => {
-		const text = sql(genAiTokensExpr(attrs))
-		expect(text.split(" + ")).toHaveLength(5)
-		expect(text).toMatch(
-			/^toFloat64OrZero\(coalesce\(nullIf\(SpanAttributes\['gen_ai\.usage\.input_tokens'\], ''\)/,
-		)
-		expect(text).toContain("SpanAttributes['llm.token_count.completion_details.reasoning']))")
-	})
-
-	it("flags a failure by status or by a declared failure attribute", () => {
-		expect(sql(genAiIsErrorCond(columns))).toBe(
-			"((StatusCode = 'Error' OR SpanAttributes['error.type'] != '') OR SpanAttributes['gen_ai.response.status'] IN ('failed', 'error'))",
-		)
-	})
-
-	it("collects a trace's reporters, capped, and charges children to their parent", () => {
-		const reporters = usageReportersExpr({
-			SpanId: CH.dynamicColumn<string>("SpanId", T.string),
-			ParentSpanId: CH.dynamicColumn<string>("ParentSpanId", T.string),
-			Tokens: CH.dynamicColumn<number>("Tokens", T.float64),
-			Cost: CH.dynamicColumn<number>("Cost", T.float64),
-		})
-		expect(sql(reporters)).toBe(
-			"groupArrayIf(2000)(tuple(SpanId, ParentSpanId, Tokens, Cost), (Tokens > 0 OR Cost > 0))",
-		)
-		expect(sql(deepestReporterSum("usageReporters", 4))).toBe(
-			"sum(arraySum(r -> greatest(0., r.4 - arraySum(c -> if(c.2 = r.1, c.4, 0.), usageReporters)), usageReporters))",
+	it("counts the model calls the same way, off the netted flag", () => {
+		expect(sql(sessionLlmCalls("netted"))).toBe(
+			"toFloat64(arraySum(tupleElement(arrayFilter(n -> n.1 = '', netted), 2)) + arraySum(mapValues(arrayReduce('maxMap', arrayMap(n -> map(n.1, toFloat64(n.2)), arrayFilter(n -> n.1 != '', netted))))))",
 		)
 	})
 })

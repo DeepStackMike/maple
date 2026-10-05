@@ -1046,6 +1046,50 @@ export const traceListMv = defineDatasource("trace_list_mv", {
 export type TraceListMvRow = InferRow<typeof traceListMv>
 
 /**
+ * Hourly rollup of `trace_list_mv` for the traces sidebar facets and duration
+ * stats. Scanning `trace_list_mv` itself (~14M root spans/day for a busy org)
+ * exceeds the 5s discovery budget past about a day; the facet dimensions
+ * collapse to a few hundred rows per org-hour.
+ */
+export const traceFacetsHourly = defineDatasource("trace_facets_hourly", {
+	description:
+		"Hourly root-span counts and duration state per service, span name, HTTP method/status, environment, namespace and error flag. Traces sidebar facets. Populated by materialized view from trace_list_mv.",
+	jsonPaths: false,
+	schema: {
+		OrgId: t.string().lowCardinality(),
+		Hour: t.dateTime(),
+		ServiceName: t.string().lowCardinality(),
+		SpanName: t.string(),
+		HttpMethod: t.string().lowCardinality(),
+		HttpStatusCode: t.string().lowCardinality(),
+		DeploymentEnv: t.string().lowCardinality(),
+		ServiceNamespace: t.string().lowCardinality(),
+		HasError: t.uint8(),
+		TraceCount: t.simpleAggregateFunction("sum", t.uint64()),
+		DurationMin: t.simpleAggregateFunction("min", t.uint64()),
+		DurationMax: t.simpleAggregateFunction("max", t.uint64()),
+		DurationQuantiles: t.aggregateFunction("quantilesTDigest(0.5, 0.95)", t.uint64()),
+	},
+	engine: engine.aggregatingMergeTree({
+		partitionKey: "toDate(Hour)",
+		sortingKey: [
+			"OrgId",
+			"Hour",
+			"ServiceName",
+			"SpanName",
+			"HttpMethod",
+			"HttpStatusCode",
+			"DeploymentEnv",
+			"ServiceNamespace",
+			"HasError",
+		],
+		ttl: "Hour + INTERVAL 30 DAY",
+	}),
+})
+
+export type TraceFacetsHourlyRow = InferRow<typeof traceFacetsHourly>
+
+/**
  * All spans for a given trace, re-sorted by TraceId for fast detail lookups.
  * Populated by materialized view, not direct ingestion.
  * Sorting key (OrgId, TraceId, SpanId) enables O(log N) primary-key lookup
@@ -1096,7 +1140,7 @@ export type TraceDetailSpansRow = InferRow<typeof traceDetailSpans>
  * The columns are what its readers need — the trace-id set, the grouping key,
  * the agent-span bounds that tell the fan-out which hours to read, the filter
  * dimensions the sidebar offers (service, environment, and the span's model,
- * agent and tool coalesced across dialects), and the per-span measures the
+ * agent and tool as stamped by the ingest gateway), and the per-span measures the
  * page ranks and filters on: whether the span is a model call, a tool call, a
  * failure, and the tokens and cost it reported, with `SpanId`/`ParentSpanId`
  * so a wrapper's roll-up of its children's usage can be taken off it. Every
@@ -1127,7 +1171,8 @@ export const aiTraceIndex = defineDatasource("ai_trace_index", {
 		VendorId: t.string().lowCardinality(),
 		ServiceName: t.string().lowCardinality(),
 		// Migration 0026 — the sidebar's other facet dimensions, and the per-span
-		// measures the page ranks and filters on. All `gen-ai-columns.ts`.
+		// measures the page ranks and filters on. Since 0035 the GenAI ones project a
+		// fact the ingest gateway stamped (`gen-ai-columns.ts`).
 		DeploymentEnv: t.string().lowCardinality(),
 		Model: t.string().lowCardinality(),
 		AgentName: t.string().lowCardinality(),
@@ -1140,6 +1185,44 @@ export const aiTraceIndex = defineDatasource("ai_trace_index", {
 		IsToolCall: t.uint8(),
 		Tokens: t.float64(),
 		Cost: t.float64(),
+		// Migration 0029 — the provider's id for the response (`gen_ai.response.id`
+		// and its Vercel spelling), so two observations of one model call — the
+		// app's own span and a gateway's mirror of it (OpenRouter Broadcast,
+		// Helicone, …), which land in the same session as separate traces — are
+		// counted once. '' where the span carries none.
+		ResponseId: t.string(),
+		// Migration 0031 — the last facts the Agent Sessions list read off the
+		// raw spans: the vendor's version beside its id, and the five disjoint
+		// buckets `Tokens` is the sum of (the gateway's `maple_ai.usage.*`), so
+		// a row renders from one index query instead of a fan-out over
+		// `trace_detail_spans`. '' / 0 on rows materialized before it.
+		VendorVersion: t.string().lowCardinality(),
+		InputTokens: t.float64(),
+		CacheReadTokens: t.float64(),
+		CacheWriteTokens: t.float64(),
+		OutputTokens: t.float64(),
+		ReasoningTokens: t.float64(),
+		// Migration 0032 — why a failing span failed and what a tool call says it
+		// does, so the tool detail page is this index too. `IsError` said THAT a
+		// call failed and nothing more, so its Errors table, its failure modal and
+		// its header each seeked `trace_detail_spans` inside the window's whole
+		// spread of partitions — seconds to tens of seconds, and the header's
+		// description was the page's render gate. All three are facts of the tool
+		// span itself. `StatusMessage` is truncated by the view
+		// (`GENAI_STATUS_MESSAGE_MAX`), `ToolDescription` by the ingest gateway,
+		// which stamps it on tool calls only, so the column is '' on the rest.
+		// `FailedToolCallResult` is a failed tool call's result (truncated by the
+		// gateway; '' on every other span), because several frameworks describe
+		// a tool failure there and nowhere else.
+		// `ErrorFingerprint` groups failures: a hash of that result, else of the
+		// status message, redacted as `error_events` redacts messages; 0 on spans
+		// that did not fail. Redacting at read time would cost seconds per million
+		// failures. '' / 0 on rows materialized before it, like 0026/0029/0031.
+		ErrorType: t.string().lowCardinality(),
+		StatusMessage: t.string(),
+		ToolDescription: t.string(),
+		FailedToolCallResult: t.string(),
+		ErrorFingerprint: t.uint64(),
 	},
 	engine: engine.mergeTree({
 		partitionKey: "toDate(Timestamp)",
@@ -1149,6 +1232,34 @@ export const aiTraceIndex = defineDatasource("ai_trace_index", {
 })
 
 export type AiTraceIndexRow = InferRow<typeof aiTraceIndex>
+
+/**
+ * AI crawler requests: Server spans whose user agent names a published AI
+ * fetcher (GPTBot, ClaudeBot, PerplexityBot, ...), for the Web Analytics AI tab.
+ * One row per span, so read requests as `uniq(TraceId)`: a proxied request has several.
+ */
+export const aiCrawlerRequests = defineDatasource("ai_crawler_requests", {
+	description:
+		"Server spans from AI crawlers (GPTBot, ClaudeBot, PerplexityBot, ...) with the crawler, host, path and HTTP status pre-extracted. Web Analytics AI tab. Populated by materialized view.",
+	jsonPaths: false,
+	schema: {
+		OrgId: t.string().lowCardinality(),
+		Timestamp: t.dateTime64(9),
+		TraceId: t.string(),
+		ServiceName: t.string().lowCardinality(),
+		Crawler: t.string().lowCardinality(),
+		Host: t.string().lowCardinality(),
+		Path: t.string(),
+		HttpStatus: t.uint16(),
+	},
+	engine: engine.mergeTree({
+		partitionKey: "toDate(Timestamp)",
+		sortingKey: ["OrgId", "Timestamp", "TraceId"],
+		ttl: "toDate(Timestamp) + INTERVAL 30 DAY",
+	}),
+})
+
+export type AiCrawlerRequestsRow = InferRow<typeof aiCrawlerRequests>
 
 /**
  * OpenTelemetry sum/counter metrics datasource
@@ -1582,6 +1693,64 @@ export const alertChecks = defineDatasource("alert_checks", {
 })
 
 export type AlertChecksRow = InferRow<typeof alertChecks>
+
+/**
+ * The org-wide audit log: one row per allowed or denied action, and per read
+ * of telemetry or session replays, attributed to the user, API key, agent, or
+ * Maple itself that performed it. Written by the API through `ingest` (the
+ * audit events queue consumer, or the producer directly when no queue is
+ * bound) and read only by the admin-gated `GET /v2/audit_log`; never fed by a
+ * materialized view and never routed to a BYO ClickHouse — the log is Maple's
+ * record, not the customer warehouse's.
+ *
+ * Absent values are empty strings rather than NULL: `LowCardinality(Nullable)`
+ * is awkward in ClickHouse and every read maps `''` back to `null` on the wire.
+ * `Changes`/`Metadata` hold JSON documents (`''` when none); `ChangedFields`
+ * keeps the touched field names queryable without parsing `Changes`.
+ *
+ * Six-year retention: HIPAA §164.316(b)(2) keeps required documentation for six
+ * years, and the audit trail is the documentation of who accessed what.
+ */
+export const auditLog = defineDatasource("audit_log", {
+	description:
+		"Org-wide audit trail: allowed and denied actions plus telemetry/session-replay reads, attributed to the user, API key, or agent that performed them. Admin-only; read through GET /v2/audit_log.",
+	schema: {
+		OrgId: t.string().lowCardinality(),
+		Id: t.string(),
+		OccurredAt: t.dateTime64(3),
+		RecordedAt: t.dateTime64(3),
+		ActorType: t.string().lowCardinality(),
+		UserId: t.string(),
+		ApiKeyId: t.string(),
+		ActorId: t.string(),
+		ActorLabel: t.string(),
+		AffectedUserId: t.string(),
+		Source: t.string().lowCardinality(),
+		Action: t.string().lowCardinality(),
+		Outcome: t.string().lowCardinality(),
+		DenialReason: t.string(),
+		ResourceType: t.string().lowCardinality(),
+		ResourceId: t.string(),
+		// `[:]` is what lets the Events API map a JSON array onto Array(String).
+		ChangedFields: column(t.array(t.string()), { jsonPath: "$.ChangedFields[:]" }),
+		Changes: t.string(),
+		Metadata: t.string(),
+		RequestId: t.string(),
+		OriginIp: t.string(),
+		OriginCountry: t.string().lowCardinality(),
+	},
+	// ReplacingMergeTree keyed on the entry id makes queue redelivery idempotent:
+	// a second delivery of the same event collapses at the next merge. Until
+	// then a page can carry both copies; `AuditLogService.list` drops the
+	// repeat by id.
+	engine: engine.replacingMergeTree({
+		partitionKey: "toYYYYMM(OccurredAt)",
+		sortingKey: ["OrgId", "OccurredAt", "Id"],
+		ttl: "toDate(OccurredAt) + INTERVAL 2190 DAY",
+	}),
+})
+
+export type AuditLogRow = InferRow<typeof auditLog>
 
 /**
  * Minute-grain operation metrics used by the service-detail Operations panel.
@@ -2273,7 +2442,33 @@ export const productEvents = defineDatasource("product_events", {
 		Attributes: column(t.map(t.string(), t.string()).defaultExpr("map()"), {
 			jsonPath: "$.attributes",
 		}),
+		/**
+		 * The trace this event was derived from — set on `Source = 'trace'` rows,
+		 * `''` otherwise. A real column because both link directions filter on it
+		 * and a `Map` lookup reads the whole map per row. Last because
+		 * `ALTER TABLE … ADD COLUMN` appends.
+		 *
+		 * NO `jsonPath`, deliberately: only `product_events_traces_mv` and its
+		 * backfill write these. The insert-mapping generator skips path-less
+		 * columns, so the gateway's INSERT never names them and migration 0028 can
+		 * stay `requiredForIngest: false`. Give them a path and every `/v1/events`
+		 * batch for a BYO cluster stamped below 28 is rejected.
+		 */
+		TraceId: t.string().default(""),
+		/** The annotated span within {@link TraceId}. `''` on non-trace rows. */
+		SpanId: t.string().default(""),
 	},
+	// REQUIRED, proven against a real deploy: without it Tinybird REBUILDS this
+	// table from its 30-day sources to satisfy the new columns, dropping history
+	// past 30 days and every `/v1/events` row at any age (they have no source).
+	// `DEPLOYMENT_METHOD alter` on the view does not substitute — tested. Do not
+	// follow Tinybird's later suggestion to drop it in favour of ALTER TABLE.
+	// Every column must be listed; the two new ones take their type default.
+	forwardQuery: `SELECT
+		OrgId, Timestamp, Source, SessionId, Seq, VisitorId, UserId, GroupId, Kind, EventName,
+		Host, PagePath, Url, ServiceName, Attributes,
+		defaultValueOfTypeName('String') AS TraceId,
+		defaultValueOfTypeName('String') AS SpanId`,
 	engine: engine.mergeTree({
 		partitionKey: "toDate(Timestamp)",
 		sortingKey: ["OrgId", "Timestamp", "VisitorId", "SessionId", "Seq"],
@@ -2295,6 +2490,14 @@ export const productEvents = defineDatasource("product_events", {
 			// UserId-keyed funnel branch. Near-unique values, so a bloom filter.
 			name: "idx_user_id",
 			expr: "UserId",
+			type: "bloom_filter",
+			granularity: 4,
+		},
+		{
+			// The trace view looks up by id alone; near-unique values and `''` on
+			// most rows make a bloom filter prune hard and stay cheap.
+			name: "idx_trace_id",
+			expr: "TraceId",
 			type: "bloom_filter",
 			granularity: 4,
 		},

@@ -32,7 +32,7 @@ function joined(tokens: ReadonlyArray<CodeToken>): string {
 describe("detectLanguage", () => {
 	it("calls an object or an array JSON", () => {
 		expect(detectLanguage('{"a":1}')).toBe("json")
-		expect(detectLanguage(' [1, 2, 3]\n')).toBe("json")
+		expect(detectLanguage(" [1, 2, 3]\n")).toBe("json")
 	})
 
 	it("holds the JSON verdict for a body it cannot parse, and drops it for one with no closing delimiter", () => {
@@ -155,14 +155,7 @@ describe("tokenizeSql", () => {
 
 	it("marks every placeholder dialect as a placeholder", () => {
 		const tokens = tokenizeSql("SELECT $1, $22, ?, :name, @tenant, {orgId:String} FROM t")
-		expect(typed(tokens, "placeholder")).toEqual([
-			"$1",
-			"$22",
-			"?",
-			":name",
-			"@tenant",
-			"{orgId:String}",
-		])
+		expect(typed(tokens, "placeholder")).toEqual(["$1", "$22", "?", ":name", "@tenant", "{orgId:String}"])
 	})
 
 	it("keeps both comment spellings whole", () => {
@@ -292,7 +285,11 @@ describe("collectCodeAttributes", () => {
 
 describe("highlightJson", () => {
 	const decode = (html: string): string =>
-		html.replaceAll("&quot;", '"').replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&amp;", "&")
+		html
+			.replaceAll("&quot;", '"')
+			.replaceAll("&lt;", "<")
+			.replaceAll("&gt;", ">")
+			.replaceAll("&amp;", "&")
 
 	/** Every token of a class, in order, with Sugar High's entities decoded. */
 	const tokens = (json: string, type: string): Array<string> => {

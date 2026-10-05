@@ -1,12 +1,12 @@
-// Time helpers for the local query layer.
+// Time helpers for the local query layer and for rendering warehouse timestamps.
 //
 // The CH query builders accept `startTime` / `endTime` as ClickHouse DateTime
-// strings (`'YYYY-MM-DD HH:MM:SS'`); `resolveParam` quotes them inline. chDB
-// parses the quoted string into a DateTime for the partition-pruning filters.
+// strings (`'YYYY-MM-DD HH:MM:SS'`, UTC); chDB returns tz-less UTC strings too.
+// Everything the user reads is rendered in the browser's local zone.
 
-import { formatRelativeFrom } from "@maple/ui/lib/time-format"
+import { computeBucketSeconds, formatWarehouseDateTime } from "@maple/query-engine"
+import { formatRelativeFrom, toEpochMs } from "@maple/ui/lib/time-format"
 
-import { formatWarehouseDateTime } from "@maple/query-engine"
 /** Format an epoch-ms instant as a ClickHouse DateTime string (UTC, second precision). */
 export function toClickHouseDateTime(epochMs: number): string {
 	return formatWarehouseDateTime(epochMs)
@@ -17,7 +17,7 @@ export interface TimeBounds {
 	endTime: string
 }
 
-// Time-range presets — drive the segmented range control in the filter bar.
+// Time-range presets drive the range select in every toolbar.
 
 export interface TimeRange {
 	readonly key: string
@@ -33,20 +33,62 @@ export const TIME_RANGES: ReadonlyArray<TimeRange> = [
 	{ key: "30d", label: "30D", minutes: 30 * 24 * 60 },
 ]
 
-/** Default look-back. Mirrors the original 30-day window so behavior is unchanged until a user narrows it. */
-export const DEFAULT_RANGE = "30d"
+/** A local store is usually minutes old, so the default window is short enough to chart it. */
+export const DEFAULT_RANGE = "1h"
+
+/** The widest preset: what "widen the range" jumps to. */
+export const WIDEST_RANGE = "30d"
+
+const MINUTE_MS = 60 * 1000
+/** Upper-bound pad so rows stamped slightly ahead (clock skew) or after the anchor still match. */
+const END_PAD_MS = 60 * MINUTE_MS
+
+/** A preset key: the only kind worth remembering across page loads. */
+export function isPresetRangeKey(value: string | null | undefined): value is string {
+	return TIME_RANGES.some((range) => range.key === value)
+}
+
+/** A preset key or a well-formed custom window (`custom_<from>_<to>`). */
+export function isRangeKey(value: string | null | undefined): value is string {
+	return isPresetRangeKey(value) || (value != null && parseCustomRange(value) !== null)
+}
 
 /**
- * Home's default look-back, deliberately narrower than {@link DEFAULT_RANGE}.
- *
- * The list views default wide because their job is "find the thing", and a
- * filtered list of nothing is a dead end. Home's job is "what is happening
- * now", and a 30-day window answers it with a month-long average — a service
- * that has been down all afternoon still reads healthy. Home writes the
- * resolved range onto every link it emits, so following one lands the target
- * tab on the same window rather than on its own default.
+ * The preset a key names. A custom window answers as a preset of its own
+ * length, so code that only sizes buckets off `minutes` handles both; anything
+ * that needs the window's actual instants reads {@link resolveRangeWindow}.
  */
-export const HOME_DEFAULT_RANGE = "24h"
+export function resolveRange(key: string | undefined): TimeRange {
+	const custom = parseCustomRange(key)
+	if (custom && key) {
+		const seconds = (custom.toMs - custom.fromMs) / 1000
+		return { key, label: formatDurationLabel(seconds), minutes: Math.max(1, Math.round(seconds / 60)) }
+	}
+	return TIME_RANGES.find((r) => r.key === key) ?? TIME_RANGES[0]
+}
+
+/** Floor an instant to its minute, so anchors taken seconds apart share one query key. */
+export function snapToMinute(epochMs: number): number {
+	return Math.floor(epochMs / MINUTE_MS) * MINUTE_MS
+}
+
+/**
+ * Resolve a range key to ClickHouse DateTime bounds, padding a preset's upper
+ * bound for clock skew. A custom window is *not* padded: the user named both
+ * ends, and quietly returning an hour they did not ask for would make "did
+ * anything happen before the deploy at 14:00" unanswerable.
+ */
+export function boundsForRange(key: string | undefined, anchorMs = Date.now()): TimeBounds {
+	const custom = parseCustomRange(key)
+	if (custom) {
+		return { startTime: toClickHouseDateTime(custom.fromMs), endTime: toClickHouseDateTime(custom.toMs) }
+	}
+	const range = resolveRange(key)
+	return {
+		startTime: toClickHouseDateTime(anchorMs - range.minutes * MINUTE_MS),
+		endTime: toClickHouseDateTime(anchorMs + END_PAD_MS),
+	}
+}
 
 // Custom (absolute) ranges.
 //
@@ -118,7 +160,7 @@ export function customRangeError(range: Partial<AbsoluteRange>, nowMs = Date.now
 }
 
 /** The hour of slack every window allows for an exporter whose clock runs ahead. */
-const CLOCK_SKEW_PAD_MS = 60 * 60 * 1000
+const CLOCK_SKEW_PAD_MS = END_PAD_MS
 
 /**
  * A range key resolved to instants, whatever kind of key it was.
@@ -145,12 +187,10 @@ export interface ResolvedRange {
 }
 
 /**
- * Resolve any range key — preset or custom — to a window.
- *
- * An unknown or malformed key falls back to the widest preset, which is the
- * behaviour every previous `TIME_RANGES.find(...) ?? last` site had.
+ * Resolve any range key — preset or custom — to a window. An unknown or
+ * malformed key falls back the way {@link resolveRange} does.
  */
-export function resolveRange(key: string | undefined, anchorMs = Date.now()): ResolvedRange {
+export function resolveRangeWindow(key: string | undefined, anchorMs = Date.now()): ResolvedRange {
 	const custom = parseCustomRange(key)
 	if (custom) {
 		return {
@@ -162,7 +202,7 @@ export function resolveRange(key: string | undefined, anchorMs = Date.now()): Re
 			shortLabel: formatDurationLabel((custom.toMs - custom.fromMs) / 1000),
 		}
 	}
-	const preset = TIME_RANGES.find((r) => r.key === key) ?? TIME_RANGES[TIME_RANGES.length - 1]
+	const preset = resolveRange(key)
 	return {
 		startMs: anchorMs - preset.minutes * 60 * 1000,
 		endMs: anchorMs,
@@ -170,22 +210,6 @@ export function resolveRange(key: string | undefined, anchorMs = Date.now()): Re
 		absolute: false,
 		label: preset.key.toUpperCase(),
 		shortLabel: preset.key.toUpperCase(),
-	}
-}
-
-/**
- * Resolve a range key to ClickHouse DateTime bounds.
- *
- * A preset's upper bound is padded an hour ahead so rows from an exporter whose
- * clock runs ahead still land inside the window. A custom window is *not*
- * padded: the user named both ends, and quietly returning an hour they did not
- * ask for would make "did anything happen before the deploy at 14:00" unanswerable.
- */
-export function boundsForRange(key: string | undefined, anchorMs = Date.now()): TimeBounds {
-	const range = resolveRange(key, anchorMs)
-	return {
-		startTime: toClickHouseDateTime(range.startMs),
-		endTime: toClickHouseDateTime(range.absolute ? range.endMs : range.endMs + CLOCK_SKEW_PAD_MS),
 	}
 }
 
@@ -206,7 +230,7 @@ export function formatDurationLabel(seconds: number): string {
 
 /** Window length in seconds for any range key — what bucket ladders divide. */
 export function rangeWindowSeconds(key: string | undefined): number {
-	return resolveRange(key).seconds
+	return resolveRangeWindow(key).seconds
 }
 
 const ABSOLUTE_DAY = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" })
@@ -262,22 +286,81 @@ export function fromDateTimeLocalInput(value: string): number | null {
 }
 
 /**
- * Parse a chDB UTC datetime string (`'YYYY-MM-DD HH:MM:SS'`, no timezone
- * marker) to epoch-ms. Returns `null` for empty/invalid input or the zero date
- * chDB emits for an empty aggregate.
+ * Parse a chDB UTC datetime string (tz-less, optional fraction) to epoch-ms.
+ * Returns `null` for empty/invalid input or the zero date chDB emits for an
+ * empty aggregate.
  */
 export function parseClickHouseDateTime(chDateTime: string | null | undefined): number | null {
 	if (!chDateTime) return null
-	const ms = Date.parse(`${chDateTime.replace(" ", "T")}Z`)
-	if (Number.isNaN(ms) || ms <= 0) return null
-	return ms
+	const ms = toEpochMs(chDateTime)
+	return Number.isFinite(ms) && ms > 0 ? ms : null
+}
+
+/** Compact relative-time label ("3m ago") from a ClickHouse DateTime string. */
+export function formatRelativeTime(chDateTime: string | null | undefined): string {
+	const ms = parseClickHouseDateTime(chDateTime)
+	return ms === null ? "-" : formatRelativeFrom(ms)
+}
+
+const pad = (value: number, width = 2) => String(value).padStart(width, "0")
+
+function isSameLocalDay(a: Date, b: Date): boolean {
+	return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
 }
 
 /**
- * Compact relative-time label from a ClickHouse DateTime string. Keeps the
- * chDB null/zero-date guard, then defers to the shared relative-time ladder.
+ * Local wall-clock time for a warehouse timestamp: `14:05:01.940` today,
+ * `Sep 25 14:05:01.940` on other days. `precision: "s"` drops the millis.
  */
-export function formatRelativeTime(chDateTime: string | null | undefined): string {
+export function formatLocalTimestamp(
+	chDateTime: string | null | undefined,
+	options: { precision?: "ms" | "s"; nowMs?: number } = {},
+): string {
 	const ms = parseClickHouseDateTime(chDateTime)
-	return ms === null ? "—" : formatRelativeFrom(ms)
+	if (ms === null) return "-"
+	const date = new Date(ms)
+	const clock = `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+	const time = options.precision === "s" ? clock : `${clock}.${pad(date.getMilliseconds(), 3)}`
+	if (isSameLocalDay(date, new Date(options.nowMs ?? Date.now()))) return time
+	const day = date.toLocaleDateString(undefined, { month: "short", day: "numeric" })
+	return `${day} ${time}`
+}
+
+/** Full local date and time with millis, for detail panels. */
+export function formatLocalDateTime(chDateTime: string | null | undefined): string {
+	const ms = parseClickHouseDateTime(chDateTime)
+	if (ms === null) return "-"
+	const date = new Date(ms)
+	const day = date.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })
+	return `${day} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}`
+}
+
+/** The stored value, verbatim and zone-marked, for `title` tooltips and copy. */
+export function formatUtcTitle(chDateTime: string | null | undefined): string {
+	return chDateTime ? `${chDateTime} UTC` : ""
+}
+
+export interface ChartWindow {
+	readonly startMs: number
+	readonly endMs: number
+	readonly bucketSeconds: number
+}
+
+/**
+ * The span a chart actually draws: the selected range clipped to when data
+ * first appeared (a 1h-old store charted at 30D is 59 empty buckets and one
+ * point), ending now. Buckets come off the shared ladder, which is aligned
+ * with the minutely/hourly rollups so a bucket never straddles two of them.
+ */
+export function chartWindow(bounds: TimeBounds, firstSeenMs: number | null, nowMs = Date.now()): ChartWindow {
+	const rangeStart = toEpochMs(bounds.startTime)
+	const endMs = Math.min(toEpochMs(bounds.endTime), nowMs)
+	const dataStart = firstSeenMs !== null && firstSeenMs > rangeStart ? firstSeenMs : rangeStart
+	// Keep at least ten minutes on screen so a first burst still reads as a line.
+	const startMs = Math.min(dataStart, endMs - 10 * MINUTE_MS)
+	return {
+		startMs,
+		endMs,
+		bucketSeconds: computeBucketSeconds(startMs, endMs, { targetPoints: 60, minBuckets: 6 }),
+	}
 }

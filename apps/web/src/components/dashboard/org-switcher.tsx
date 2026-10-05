@@ -1,21 +1,23 @@
 import { useOrganization } from "@clerk/clerk-react"
 import { ChevronExpandYIcon, ServerIcon } from "@/components/icons"
-import {
-	DropdownMenu,
-	DropdownMenuContent,
-	DropdownMenuTrigger,
-} from "@maple/ui/components/ui/dropdown-menu"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@maple/ui/components/ui/dropdown-menu"
 import { SidebarMenu, SidebarMenuButton, SidebarMenuItem } from "@maple/ui/components/ui/sidebar"
 import { isClerkAuthEnabled } from "@/lib/services/common/auth-mode"
 import { useGlobalNamespace } from "@/hooks/use-global-namespace"
 import { ClerkOrgSwitcherMenu, OrgAvatar } from "./org-switcher-menu"
 import { NamespaceScopeMenuGroup } from "./namespace-scope-menu"
+import { useOrganizationRegion } from "@/hooks/use-organization-region"
+import { hasMultipleRegions, MAPLE_REGION_LABELS } from "@/lib/region"
 
 function ClerkOrgSwitcher() {
 	const { organization } = useOrganization()
 	const pinnedNamespace = useGlobalNamespace()
+	const orgRegion = useOrganizationRegion()
 	const orgName = organization?.name ?? "Select Organization"
 	const orgImageUrl = organization?.imageUrl
+	// Named on the subtitle line, where it cannot squeeze the org name.
+	const regionSuffix =
+		hasMultipleRegions && orgRegion.isLoaded ? ` · ${MAPLE_REGION_LABELS[orgRegion.region].short}` : ""
 
 	return (
 		<ClerkOrgSwitcherMenu
@@ -31,9 +33,14 @@ function ClerkOrgSwitcher() {
 					<div className="grid flex-1 text-left text-sm leading-tight">
 						<span className="truncate font-medium">{orgName}</span>
 						{pinnedNamespace !== null ? (
-							<span className="truncate text-xs font-medium text-primary">{pinnedNamespace}</span>
+							<span className="truncate text-xs">
+								<span className="font-medium text-primary">{pinnedNamespace}</span>
+								<span className="text-muted-foreground">{regionSuffix}</span>
+							</span>
 						) : (
-							<span className="truncate text-xs text-muted-foreground">Organization</span>
+							<span className="truncate text-xs text-muted-foreground">
+								Organization{regionSuffix}
+							</span>
 						)}
 					</div>
 					<ChevronExpandYIcon size={16} className="ml-auto" />
@@ -60,7 +67,9 @@ function SelfHostedOrgSwitcher() {
 						<div className="grid flex-1 text-left text-sm leading-tight">
 							<span className="truncate font-medium">Self Hosted</span>
 							{pinnedNamespace !== null && (
-								<span className="truncate text-xs font-medium text-primary">{pinnedNamespace}</span>
+								<span className="truncate text-xs font-medium text-primary">
+									{pinnedNamespace}
+								</span>
 							)}
 						</div>
 						<ChevronExpandYIcon size={16} className="ml-auto" />

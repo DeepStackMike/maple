@@ -49,6 +49,9 @@ const leaseCurrent = (): MetadataSessionHandle | undefined => {
 		get sessionId() {
 			return owned.sessionId
 		},
+		announce: () => {
+			if (!released) owned.announce()
+		},
 		shutdown: async (options) => {
 			if (released) return
 			released = true
@@ -78,7 +81,8 @@ export const noteStandaloneSpan = (sessionId: string, traceId: string): void => 
 export const setupStandaloneSession = (
 	options: StandaloneSessionOptions,
 ): MetadataSessionHandle | undefined => {
-	if (typeof window === "undefined" || !options.ingestKey || readSessionSink()) return undefined
+	if (typeof window === "undefined" || typeof document === "undefined" || readSessionSink())
+		return undefined
 	if (current) return leaseCurrent()
 	const handle = startMetadataSession({
 		endpoint: options.endpoint,

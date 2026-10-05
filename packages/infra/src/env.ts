@@ -2,9 +2,10 @@ import * as Config from "effect/Config"
 import * as Option from "effect/Option"
 import * as Redacted from "effect/Redacted"
 import * as Schema from "effect/Schema"
-import { optionalString } from "@maple/effect-cloudflare/config-helpers"
-import type { MapleStage } from "./cloudflare/stage.ts"
+import { optionalString } from "./config-helpers.ts"
+import type { MapleDomains, MapleStage } from "./cloudflare/stage.ts"
 import { resolveDeploymentEnvironment } from "./cloudflare/stage.ts"
+import { DEFAULT_MAPLE_REGION, type MapleRegion } from "./region.ts"
 
 /**
  * Deploy-time environment for the Cloudflare workers.
@@ -50,7 +51,7 @@ export type WorkerEnv = Record<string, string | Redacted.Redacted<string>>
 /**
  * Present-and-non-blank, trimmed.
  *
- * Built on `@maple/effect-cloudflare/config-helpers`' `optionalString`, which
+ * Built on `./config-helpers.ts`' `optionalString`, which
  * already encodes "blank or whitespace-only counts as absent" for the runtime
  * worker env schemas. The trim on top is the one thing it does not do — it
  * returns the raw value — and the deploy path has always trimmed.
@@ -105,6 +106,14 @@ export const optionalPlain = (key: string, fallback?: string): Config.Config<Pla
 /** Optional secret, omitted when unset. */
 export const optionalSecret = (key: string): Config.Config<SecretEnv> =>
 	trimmedOption(key).pipe(Config.map((value) => entry(key, Option.map(value, Redacted.make))))
+
+/** The first present-and-non-blank of `keys`, else `fallback`. For build vars with a `VITE_` twin. */
+export const plainFrom = (keys: ReadonlyArray<string>, fallback: string): Config.Config<string> =>
+	Config.all(keys.map(trimmedOption)).pipe(
+		Config.map((values: ReadonlyArray<Option.Option<string>>) =>
+			Option.getOrElse(Option.firstSomeOf(values), () => fallback),
+		),
+	)
 
 /**
  * Optional value with a default that a BLANK env var also falls back to.
@@ -165,12 +174,17 @@ export const ingestKeyCryptoEnv: Config.Config<WorkerEnv> = merge(
 	requireSecretEntry("MAPLE_INGEST_KEY_LOOKUP_HMAC_KEY"),
 )
 
-/** Public URLs the workers build links with (emails, share links, quick-start snippets). */
-export const appUrlsEnv: Config.Config<WorkerEnv> = merge(
-	plainWithDefault("MAPLE_INGEST_PUBLIC_URL", "https://ingest.maple.dev"),
-	plainWithDefault("MAPLE_APP_BASE_URL", "https://app.maple.dev"),
-	plainWithDefault("EMAIL_FROM", "Maple <notifications@noreply.maple.dev>"),
-)
+/**
+ * Public URLs the workers build links with (emails, share links, quick-start
+ * snippets). Defaults follow the deploy's own hostnames, so the EU instance
+ * links to itself; a dev stage has none and falls back to production's.
+ */
+export const appUrlsEnv = (domains: MapleDomains = {}): Config.Config<WorkerEnv> =>
+	merge(
+		plainWithDefault("MAPLE_INGEST_PUBLIC_URL", `https://${domains.ingest ?? "ingest.maple.dev"}`),
+		plainWithDefault("MAPLE_APP_BASE_URL", `https://${domains.web ?? "app.maple.dev"}`),
+		plainWithDefault("EMAIL_FROM", "Maple <notifications@noreply.maple.dev>"),
+	)
 
 /**
  * The worker's own OTLP export, through the ingest gateway.
@@ -182,7 +196,10 @@ export const appUrlsEnv: Config.Config<WorkerEnv> = merge(
  * missing binding quietly restores the behaviour where any occurrence reopens a
  * fixed issue.
  */
-export const selfObservabilityEnv = (stage: MapleStage): Config.Config<WorkerEnv> =>
+export const selfObservabilityEnv = (
+	stage: MapleStage,
+	region: MapleRegion = DEFAULT_MAPLE_REGION,
+): Config.Config<WorkerEnv> =>
 	merge(
 		// Bound under a different name than it is read from. Optional on dev stages
 		// only: no developer has a real ingest key, and absent means self-observability off.
@@ -199,6 +216,14 @@ export const selfObservabilityEnv = (stage: MapleStage): Config.Config<WorkerEnv
 				),
 		optionalPlain("MAPLE_ENDPOINT"),
 		derived("MAPLE_ENVIRONMENT", resolveDeploymentEnvironment(stage)),
+		// The instance a Worker runs in. Read where a Durable Object stub is
+		// addressed (`chatSessionStub`), which is the one place the runtime has to
+		// know: the EU instance keeps its objects in the `eu` jurisdiction.
+		derived("MAPLE_REGION", region),
+		// Stamped on every span and log as a resource attribute (the SDK reads the OTel
+		// variable off the Worker env). Both instances report to the US internal org
+		// for now, and this is what tells their `maple-api`s apart there.
+		derived("OTEL_RESOURCE_ATTRIBUTES", `maple.region=${region}`),
 		// GITHUB_SHA is read as its own key and re-labelled, rather than passed to
 		// `optionalPlain`'s `fallback` — a `process.env.GITHUB_SHA` read there would
 		// bypass the ConfigProvider and so miss `.env` / `--env-file`.
@@ -209,6 +234,45 @@ export const selfObservabilityEnv = (stage: MapleStage): Config.Config<WorkerEnv
 			}),
 		),
 	)
+
+/**
+ * The prd services that stamp `vcs.ref.head.revision` and are deployed by a
+ * SINGLE `alchemy deploy --stage prd` run, so in a healthy production they all
+ * report the same commit.
+ *
+ * That lockstep is what the **"Prod revision skew — a Worker missed the deploy"**
+ * alert rule (`raw_query`, id `2a6e9529-5f73-4478-9fa0-432904ff15c8`) tests: it
+ * counts distinct revisions across exactly these service names and pages when
+ * the count exceeds one. Alchemy isolates per-resource failures on purpose, so
+ * a deploy can update four of these and leave the fifth on its old script —
+ * that is the 2026-09-07 incident, where `api` sat 6h behind `web`.
+ *
+ * **The alert rule lives in the Maple database, not in this repo, so nothing
+ * mechanically couples the two.** This constant and `env.test.ts` are that
+ * coupling. If you change which services deploy together, you MUST edit the
+ * rule's SQL to match — otherwise it either pages forever on a service that no
+ * longer ships with the rest, or silently stops covering one that does.
+ *
+ * What is deliberately NOT here:
+ * - `scraper` — runs in production but is not part of this stack (see the
+ *   dev-only note in `alchemy.run.ts`), so it sits on its own revision.
+ * - `maple-landing`, `maple-ios` — deployed, but stamp no revision.
+ * - api's background service names (`maple-vcs-sync`, …) — the same Worker as
+ *   `maple-api`, so they add no signal. `maple-investigations` is no longer one
+ *   of them: the fan-out runs on `maple-ai` now, which is listed in its own
+ *   right below.
+ */
+export const PRD_LOCKSTEP_REVISION_SERVICES = [
+	"alerting",
+	// The agent surfaces. Added when maple-ai first deployed to prd; the alert
+	// rule's SQL, which lives in the production database rather than this repo,
+	// has to list it too or a skewed maple-ai goes unnoticed.
+	"maple-ai",
+	"electric-sync",
+	"ingest",
+	"maple-api",
+	"maple-web",
+] as const
 
 /** Cloudflare account integration (account OAuth — Authorization Code + PKCE). */
 export const cloudflareOAuthEnv: Config.Config<WorkerEnv> = merge(
@@ -231,7 +295,21 @@ export const planetScaleOAuthEnv: Config.Config<WorkerEnv> = merge(
 	optionalPlain("MAPLE_PLANETSCALE_API_BASE_URL"),
 )
 
-/** Apple push (iOS app) — token auth; see `apps/api/src/platform/Apns.ts`. */
+/**
+ * The GitHub App as a repository reader: app id + private key mint installation
+ * tokens, `GITHUB_API_BASE_URL` points them at GitHub Enterprise Server, the slug is the
+ * reviewer's `@` handle in published reviews. Bound by every Worker that resolves a connected
+ * repository: api for the integration, maple-ai for the agents' source and sandbox tools and
+ * PR reviews. The install flow's client id/secret and the webhook secret stay api-only.
+ */
+export const githubAppSourceEnv: Config.Config<WorkerEnv> = merge(
+	optionalPlain("GITHUB_APP_ID"),
+	optionalPlain("GITHUB_APP_SLUG"),
+	optionalSecret("GITHUB_APP_PRIVATE_KEY"),
+	optionalPlain("GITHUB_API_BASE_URL"),
+)
+
+/** Apple push (iOS app) — token auth; see `packages/backend/src/platform/Apns.ts`. */
 export const apnsEnv: Config.Config<WorkerEnv> = merge(
 	optionalPlain("APNS_TEAM_ID"),
 	optionalPlain("APNS_KEY_ID"),

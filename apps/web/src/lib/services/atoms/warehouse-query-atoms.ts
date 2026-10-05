@@ -15,6 +15,7 @@ import {
 	getServiceDetailThroughputRefinement,
 } from "@/api/warehouse/custom-charts"
 import { getErrorsByType, getErrorsFacets, getErrorsSpark, getErrorsSummary } from "@/api/warehouse/errors"
+import { getReleaseDetail, getReleases } from "@/api/warehouse/releases"
 import {
 	getLog,
 	getLogAttributeKeys,
@@ -113,8 +114,24 @@ import {
 	getSessionTraceSummaries,
 	listReplays,
 } from "@/api/warehouse/replays"
-import { getAiSessionSpans, getAiSessionsFacets, listAiSessions } from "@/api/warehouse/ai-sessions"
 import {
+	getAiSessionSpans,
+	getAiSessionSummary,
+	getAiSessionsDistributions,
+	getAiSessionsFacets,
+	listAiSessions,
+} from "@/api/warehouse/ai-sessions"
+import {
+	getAiToolBreakdowns,
+	getAiToolErrorDetail,
+	getAiToolErrorSamples,
+	getAiToolErrors,
+	getAiToolSeries,
+	getAiToolTotals,
+} from "@/api/warehouse/ai-session-tools"
+import {
+	getWebAnalyticsAiCrawlers,
+	getWebAnalyticsAiReferrals,
 	getWebAnalyticsBreakdowns,
 	getWebAnalyticsEvents,
 	getWebAnalyticsLive,
@@ -123,7 +140,12 @@ import {
 	getWebAnalyticsSummary,
 	getWebAnalyticsTimeseries,
 } from "@/api/warehouse/web-analytics"
-import { getProductEventNames } from "@/api/warehouse/product-events"
+import {
+	getProductEventAttributeKeys,
+	getProductEventNames,
+	getProductEventsForTrace,
+	getProductEventTraceSamples,
+} from "@/api/warehouse/product-events"
 
 /**
  * The error union every warehouse server function fails with: the structured
@@ -337,8 +359,44 @@ export const aiSessionsFacetsResultAtom = makeQueryAtomFamily(getAiSessionsFacet
 	staleTime: 30_000,
 })
 
+export const aiSessionsDistributionsResultAtom = makeQueryAtomFamily(getAiSessionsDistributions, {
+	staleTime: 30_000,
+})
+
 export const aiSessionSpansResultAtom = makeQueryAtomFamily(getAiSessionSpans, {
 	staleTime: 60_000,
+})
+
+export const aiSessionSummaryResultAtom = makeQueryAtomFamily(getAiSessionSummary, {
+	staleTime: 60_000,
+})
+
+// Agent Sessions › Tools. Five reads over one selection, all 30s: the page is
+// a time-ranged analytics view whose numbers are watched while a rollout lands,
+// and one TTL keeps the strip, the chart and the breakdowns from refreshing
+// against each other.
+export const aiToolSeriesResultAtom = makeQueryAtomFamily(getAiToolSeries, {
+	staleTime: 30_000,
+})
+
+export const aiToolTotalsResultAtom = makeQueryAtomFamily(getAiToolTotals, {
+	staleTime: 30_000,
+})
+
+export const aiToolBreakdownsResultAtom = makeQueryAtomFamily(getAiToolBreakdowns, {
+	staleTime: 30_000,
+})
+
+export const aiToolErrorsResultAtom = makeQueryAtomFamily(getAiToolErrors, {
+	staleTime: 30_000,
+})
+
+export const aiToolErrorDetailResultAtom = makeQueryAtomFamily(getAiToolErrorDetail, {
+	staleTime: 30_000,
+})
+
+export const aiToolErrorSamplesResultAtom = makeQueryAtomFamily(getAiToolErrorSamples, {
+	staleTime: 30_000,
 })
 
 export const replaysFacetsResultAtom = makeQueryAtomFamily(getReplaysFacets, {
@@ -379,9 +437,32 @@ export const webAnalyticsBreakdownsResultAtom = makeQueryAtomFamily(getWebAnalyt
 	staleTime: 30_000,
 })
 
+export const webAnalyticsAiReferralsResultAtom = makeQueryAtomFamily(getWebAnalyticsAiReferrals, {
+	staleTime: 30_000,
+})
+
+// Crawlers visit a few times a day at most; a minute of staleness hides nothing.
+export const webAnalyticsAiCrawlersResultAtom = makeQueryAtomFamily(getWebAnalyticsAiCrawlers, {
+	staleTime: 60_000,
+})
+
 // The event-name list backs the step builder's autocomplete and changes only
 // when someone ships a new `track()` call, so it can sit for a minute.
 export const productEventNamesResultAtom = makeQueryAtomFamily(getProductEventNames, {
+	staleTime: 60_000,
+})
+
+export const getProductEventAttributeKeysResultAtom = makeQueryAtomFamily(getProductEventAttributeKeys, {
+	staleTime: 60_000,
+})
+
+// A completed trace's product events never change, so this is only ever refetched
+// because the trace is still open. 60s matches the route cache behind it.
+export const productEventsForTraceResultAtom = makeQueryAtomFamily(getProductEventsForTrace, {
+	staleTime: 60_000,
+})
+
+export const productEventTraceSamplesResultAtom = makeQueryAtomFamily(getProductEventTraceSamples, {
 	staleTime: 60_000,
 })
 
@@ -627,6 +708,18 @@ export const cloudflareTopTrafficResultAtom = makeQueryAtomFamily(getCloudflareT
 // environments in one fetch. The chart grid and the environment switcher read
 // this atom with the same input key, so they share a single round-trip.
 export const getServiceDetailOverviewResultAtom = makeQueryAtomFamily(getServiceDetailOverview, {
+	staleTime: 30_000,
+})
+
+// Releases page: per-commit rows + swimlane timeline in one fetch. The list
+// takes `namespaces`, so the org-global pin lands in its key; the detail is
+// scoped to one service and needs no pin.
+export const getReleasesResultAtom = makeQueryAtomFamily(getReleases, {
+	staleTime: 30_000,
+	globalNamespace: "top",
+})
+
+export const getReleaseDetailResultAtom = makeQueryAtomFamily(getReleaseDetail, {
 	staleTime: 30_000,
 })
 

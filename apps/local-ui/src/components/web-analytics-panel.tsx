@@ -42,6 +42,7 @@ import {
 } from "../lib/web-analytics"
 import { VisitorMap } from "./visitor-map"
 import { EmptyState, ErrorState, ListSkeleton } from "./view-states"
+import { useTimeWindow } from "../hooks/use-time-window"
 
 /** The three acquisition tags, behind one selector rather than three near-identical cards. */
 const UTM_DIMENSIONS = [
@@ -108,8 +109,9 @@ export function WebAnalyticsPanel({ range, environment, utm, onUtmChange }: WebA
 	// Home's hook and the sessions tab's hook, called with this page's range —
 	// same objects they build, so these two are cache hits whenever the user
 	// arrived from either.
+	const { bounds } = useTimeWindow(range)
 	const summary = useLocalSessionsSummary(range, environment)
-	const facets = useLocalSessionFacets({ errorsOnly: false, range, env: environment })
+	const facets = useLocalSessionFacets({ errorsOnly: false, env: environment }, bounds)
 	const sessionsTimeseries = useLocalWebSessionsTimeseries(range, environment)
 	const pageviewsTimeseries = useLocalWebPageviewsTimeseries(range, environment)
 	const pages = useLocalWebPages(range, environment)

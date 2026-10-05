@@ -17,6 +17,18 @@ const traceRow = (traceId: string, startTime: string) => ({
 	services: ["api"],
 	rootSpanName: "GET /",
 	errorMessage: "boom",
+	errorSpanId: "span-err",
+	errorSpanName: "chat gpt-x",
+	errorServiceName: "api",
+	errorModel: "gpt-x",
+	errorToolName: "",
+	errorHttpMethod: "",
+	errorHttpRoute: "",
+	errorQueryContext: "",
+	errorType: "",
+	errorLabel: "RateLimitError",
+	exceptionType: "RateLimitError",
+	exceptionMessage: "429 from gpt-x",
 })
 
 const makeMockExecutor = (
@@ -74,6 +86,49 @@ describe("errorDetail", () => {
 			assert.lengthOf(logs, 1)
 			assert.strictEqual(logs[0]!.params.start_time, timeRange.startTime)
 			assert.strictEqual(logs[0]!.params.end_time, timeRange.endTime)
+		}),
+	)
+
+	it.effect("surfaces the failing span with only the attributes it carries", () =>
+		Effect.gen(function* () {
+			const captured: CapturedCalls = { pipeCalls: [] }
+			const result = yield* errorDetail({ fingerprintHash: "123", timeRange }).pipe(
+				Effect.provide(
+					makeLayer(makeMockExecutor(captured, [traceRow("t1", "2026-04-03 12:00:00")])),
+				),
+			)
+			const span = result.traces[0]!.errorSpan
+			assert.isDefined(span)
+			assert.strictEqual(span!.name, "chat gpt-x")
+			assert.strictEqual(span!.statusMessage, "boom")
+			assert.deepStrictEqual(span!.attributes, { "gen_ai.request.model": "gpt-x" })
+		}),
+	)
+
+	it.effect("names the error the sampled traces belong to", () =>
+		Effect.gen(function* () {
+			const captured: CapturedCalls = { pipeCalls: [] }
+			const result = yield* errorDetail({ fingerprintHash: "123", timeRange }).pipe(
+				Effect.provide(
+					makeLayer(makeMockExecutor(captured, [traceRow("t1", "2026-04-03 12:00:00")])),
+				),
+			)
+			assert.deepStrictEqual(result.error, {
+				label: "RateLimitError",
+				exceptionType: "RateLimitError",
+				message: "429 from gpt-x",
+				serviceName: "api",
+			})
+		}),
+	)
+
+	it.effect("leaves the error unnamed when no trace was sampled", () =>
+		Effect.gen(function* () {
+			const captured: CapturedCalls = { pipeCalls: [] }
+			const result = yield* errorDetail({ fingerprintHash: "123", timeRange }).pipe(
+				Effect.provide(makeLayer(makeMockExecutor(captured, []))),
+			)
+			assert.isUndefined(result.error)
 		}),
 	)
 })

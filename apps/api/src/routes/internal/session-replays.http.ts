@@ -8,7 +8,7 @@ import {
 } from "@maple/domain/http"
 import { Effect, Schema } from "effect"
 import { CH } from "@maple/query-engine"
-import { WarehouseQueryService } from "@/services/warehouse/WarehouseQueryService"
+import { WarehouseQueryService } from "@maple/backend/services/warehouse/WarehouseQueryService"
 
 const decodeTraceId = Schema.decodeSync(TraceId)
 
@@ -40,8 +40,11 @@ export const HttpSessionReplaysInternalLive = HttpApiBuilder.group(
 								userId: payload.userId,
 								userSearch: payload.userSearch,
 								groupName: payload.groupName,
+								visitorId: payload.visitorId,
 								hasErrors: payload.hasErrors,
 								search: payload.search,
+								pagePath: payload.pagePath,
+								tags: payload.tags,
 							}),
 							{
 								orgId: tenant.orgId,
@@ -73,7 +76,11 @@ export const HttpSessionReplaysInternalLive = HttpApiBuilder.group(
 							countries: pick("country"),
 							devices: pick("device"),
 							groups: pick("group"),
+							pages: pick("page"),
+							tags: pick("tag"),
 							errorCount: Number(rows.find((row) => row.facetType === "error")?.count ?? 0),
+							totalSessions: Number(rows.find((row) => row.facetType === "total")?.count ?? 0),
+							liveSessions: Number(rows.find((row) => row.facetType === "live")?.count ?? 0),
 							durationBuckets: pick("durationBucket"),
 							durationP50: stat("p50"),
 							durationP95: stat("p95"),

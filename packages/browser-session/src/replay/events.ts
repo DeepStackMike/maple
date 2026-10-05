@@ -1,7 +1,7 @@
 import type { SessionEventSink } from "../events/events-sink"
 import { startEventSink } from "../events/events-sink"
 import { installConsoleCapture } from "./capture/console"
-import { installNetworkCapture } from "../capture/network"
+import { installNetworkCapture } from "./capture/network"
 import type { IngestConfig } from "../platform/transport"
 
 // The buffer, seq counter and event shape live in `../events-sink`, which runs
@@ -31,11 +31,16 @@ export function startEventCapture(config: IngestConfig, sessionId: string): Even
 	const sink: SessionEventSink = startEventSink(config, sessionId)
 	const emit = sink.emit
 
-	// Network capture is not replay-only: a host that wires tracing installs it
-	// at init, *before* the tracer's fetch instrumentation, so the capture is the
-	// inner wrapper and sees the request's span. This call is the fallback for
-	// hosts that do not (it is a no-op when one is already installed).
-	const uninstall = [installConsoleCapture(emit), installNetworkCapture(emit, sink.ignoreUrl)]
+	const uninstall = [
+		installConsoleCapture(emit),
+		installNetworkCapture(
+			emit,
+			sink.ignoreUrl,
+			config.maskAllText || !config.networkBodies
+				? undefined
+				: { ...config.networkBodies, requestBodies: !config.maskAllInputs },
+		),
+	]
 
 	return {
 		// Only the capture listeners stop here — the sink outlives them, so

@@ -10,12 +10,15 @@ import {
 	PulseIcon,
 } from "@maple/ui/components/icons"
 import { Button } from "@maple/ui/components/ui/button"
+import { cn } from "@maple/ui/lib/utils"
 import type { SessionReplaysListOutput } from "@maple/query-engine/ch"
 import { useLocalSessions, useLocalSessionFacets } from "../hooks/use-local-sessions"
 import { useEnvironment } from "../hooks/use-environment"
+import { useRange } from "../hooks/use-range"
+import { useTimeWindow } from "../hooks/use-time-window"
 import { countryLabel, countryName, flagEmoji } from "../lib/geo"
-import { useQueryParams } from "../lib/router"
-import { DEFAULT_RANGE, formatRelativeTime } from "../lib/time"
+import { hrefFor, useQueryParams } from "../lib/router"
+import { formatLocalDateTime, formatRelativeTime, formatUtcTitle, WIDEST_RANGE } from "../lib/time"
 import { formatSessionDuration, gradientFor, hostFromUrl, isMobileDevice } from "@maple/ui/lib/replay-format"
 import {
 	FilterSection,
@@ -37,11 +40,8 @@ import {
 	TimeRangeSelect,
 	RefreshButton,
 } from "../components/toolbar"
-import { EmptyState, ErrorState, ListSkeleton } from "../components/view-states"
-
-interface SessionsListViewProps {
-	onSelectSession: (sessionId: string) => void
-}
+import { SignalEmptyState } from "../components/signal-empty-state"
+import { ErrorState, ListSkeleton } from "../components/view-states"
 
 /** Re-inject a selected value that the server-side facet branch excluded. */
 function withSelected(options: ReadonlyArray<FilterOption>, selected?: string): FilterOption[] {
@@ -50,9 +50,10 @@ function withSelected(options: ReadonlyArray<FilterOption>, selected?: string): 
 	return list
 }
 
-export function SessionsListView({ onSelectSession }: SessionsListViewProps) {
+export function SessionsListView() {
 	const [query, setParams] = useQueryParams()
-	const range = query.get("range") || DEFAULT_RANGE
+	const [range, setRange] = useRange()
+	const timeWindow = useTimeWindow(range)
 	const service = query.get("service") || undefined
 	const browser = query.get("browser") || undefined
 	const device = query.get("device") || undefined
@@ -66,14 +67,15 @@ export function SessionsListView({ onSelectSession }: SessionsListViewProps) {
 	// deployment — `unknown` included.
 	const [env] = useEnvironment()
 
-	const filters = { service, browser, device, country, errorsOnly, search, range, env }
-	const facets = useLocalSessionFacets(filters)
-	const { data, isPending, isError, error, refetch, fetchNextPage, hasNextPage, isFetchingNextPage } =
-		useLocalSessions(filters)
-	const sessions = data?.pages.flat() ?? []
+	const filters = { service, browser, device, country, errorsOnly, search, env }
+	const facets = useLocalSessionFacets(filters, timeWindow.bounds)
+	const list = useLocalSessions(filters, timeWindow.bounds)
+	const { isPending, isError, error, refetch, fetchNextPage, hasNextPage, isFetchingNextPage } = list
+	const sessions = list.data?.pages.flat() ?? []
 
 	const setSingle = (key: string, vals: string[]) => setParams({ [key]: vals.at(-1) ?? null })
-	const hasActiveFilters = !!service || !!browser || !!device || !!country || errorsOnly
+	const activeFilterCount = [service, browser, device, country, errorsOnly].filter(Boolean).length
+	const hasActiveFilters = activeFilterCount > 0
 	const facetData = facets.data
 
 	const sidebar = (
@@ -129,57 +131,54 @@ export function SessionsListView({ onSelectSession }: SessionsListViewProps) {
 				query={search ?? ""}
 				onSearch={(value) => setParams({ q: value ?? null })}
 				placeholder="Search by URL…"
+				className="min-w-48 flex-1"
 			/>
-			<ToolbarStats>
+			{/* Same shape as the other views so it stays on one row. The error
+			    count already sits on the sidebar's "Has errors" filter. */}
+			<ToolbarStats className="shrink-0">
 				<ToolbarStat value={sessions.length} label={hasNextPage ? "sessions+" : "sessions"} />
 				<ToolbarStat
 					value={sessions.filter((s) => s.status === "active").length}
 					label="active"
 					dot
 				/>
-				<ToolbarStat value={facetData?.errorCount ?? 0} label="with errors" danger />
-				<RefreshButton />
-				<TimeRangeSelect value={range} onChange={(next) => setParams({ range: next })} />
+				<RefreshButton advance={timeWindow.advance} since={list.dataUpdatedAt} />
+				<TimeRangeSelect value={range} onChange={setRange} />
 			</ToolbarStats>
 		</Toolbar>
 	)
 
 	return (
-		<PageShell sidebar={sidebar} toolbar={toolbar}>
+		<PageShell sidebar={sidebar} toolbar={toolbar} activeFilterCount={activeFilterCount}>
 			{isPending ? (
 				<ListSkeleton variant="card" rows={6} />
 			) : isError ? (
 				<ErrorState label="sessions" error={error} onRetry={() => refetch()} />
 			) : sessions.length === 0 ? (
-				<EmptyState
-					icon={<EyeIcon />}
-					title={hasActiveFilters || search ? "No matching sessions" : "No sessions recorded yet"}
-					hint={
-						hasActiveFilters || search ? (
-							"Try widening the time range or clearing filters."
-						) : (
-							<>
-								Install{" "}
-								<code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[0.8em]">
-									@maple-dev/browser
-								</code>{" "}
-								and call{" "}
-								<code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[0.8em]">
-									MapleBrowser.init()
-								</code>{" "}
-								to start capturing sessions.
-							</>
-						)
+				<SignalEmptyState
+					signal="sessions"
+					filtered={hasActiveFilters || !!search}
+					onClearFilters={() =>
+						setParams({
+							service: null,
+							browser: null,
+							device: null,
+							country: null,
+							errors: null,
+							q: null,
+						})
 					}
+					range={range}
+					onWidenRange={() => setRange(WIDEST_RANGE)}
 				/>
 			) : (
-				<div className="p-4">
+				<div className={cn("p-4", list.isPlaceholderData && "opacity-60 transition-opacity")}>
 					<div className="space-y-2">
 						{sessions.map((session) => (
 							<SessionCard
 								key={session.sessionId}
 								session={session}
-								onSelect={() => onSelectSession(session.sessionId)}
+								href={hrefFor(`/sessions/${encodeURIComponent(session.sessionId)}`, query)}
 							/>
 						))}
 					</div>
@@ -201,16 +200,15 @@ export function SessionsListView({ onSelectSession }: SessionsListViewProps) {
 	)
 }
 
-function SessionCard({ session, onSelect }: { session: SessionReplaysListOutput; onSelect: () => void }) {
+function SessionCard({ session, href }: { session: SessionReplaysListOutput; href: string }) {
 	const label = session.userId || "Anonymous"
 	const initial = (label[0] ?? "?").toUpperCase()
 	const isActive = session.status === "active"
 	const DeviceIcon = isMobileDevice(session.deviceType) ? MobileIcon : ComputerIcon
 
 	return (
-		<button
-			type="button"
-			onClick={onSelect}
+		<a
+			href={href}
 			className="group flex w-full items-center gap-4 rounded-xl border border-border bg-card px-4 py-3 text-left transition-all hover:-translate-y-px hover:border-primary/40 hover:bg-accent/40 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
 		>
 			<div
@@ -271,7 +269,10 @@ function SessionCard({ session, onSelect }: { session: SessionReplaysListOutput;
 			</div>
 
 			<div className="flex shrink-0 items-center gap-3">
-				<span className="inline-flex items-center gap-1.5 whitespace-nowrap text-sm text-muted-foreground">
+				<span
+					className="inline-flex items-center gap-1.5 whitespace-nowrap text-sm text-muted-foreground"
+					title={`${formatLocalDateTime(session.startTime)} (${formatUtcTitle(session.startTime)})`}
+				>
 					<ClockIcon className="size-3.5 opacity-60" />
 					{formatRelativeTime(session.startTime)}
 				</span>
@@ -279,7 +280,7 @@ function SessionCard({ session, onSelect }: { session: SessionReplaysListOutput;
 					<PlayGlyph />
 				</span>
 			</div>
-		</button>
+		</a>
 	)
 }
 

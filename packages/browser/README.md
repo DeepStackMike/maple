@@ -19,6 +19,7 @@ import { MapleBrowser } from "@maple-dev/browser"
 MapleBrowser.init({
 	ingestKey: "maple_pk_...", // public ingest key
 	serviceName: "acme-web",
+	region: "eu", // "us" (default) or "eu"; must match your organization's region
 	environment: "production",
 	replay: { enabled: true, sampleRate: 1.0 },
 	privacy: { maskAllInputs: true },
@@ -65,14 +66,27 @@ stack and no filename. Those are dropped rather than recorded: they all
 fingerprint to one contentless issue that buries the real ones. Add
 `crossorigin` to the script tag to get the real error instead.
 
+### Failed HTTP requests
+
+`fetch`/XHR responses with a 4xx or 5xx status are errors, typed by status, as the HTTP semantic
+conventions say for client spans. Narrow that with `errors: { captureHttpStatus: [[500, 599]] }`.
+A network failure is always an error.
+
+### Breadcrumbs
+
+The last 50 clicks, inputs, navigations and console lines are kept in memory and exported, as OTel
+log records linked to the error's span, only when an error is recorded. `breadcrumbs: false` turns
+this off; `logs: { captureConsole: ["warn", "error"] }` sends those console levels as logs right away.
+
 ## Bundle size
 
 Bundled, minified and gzipped, as your bundler would ship it:
 
 |                  | gzipped | what it is                                                |
 | ---------------- | ------- | --------------------------------------------------------- |
-| **eager**        | ~32 kB  | every page load, before any sampling decision             |
-| ↳ our code alone | ~3.5 kB | the marginal cost if your app already ships OpenTelemetry |
+| **eager**        | ~40 kB  | every page load, before any sampling decision             |
+| ↳ our code alone | ~16 kB  | the marginal cost if your app already ships OpenTelemetry |
+| **deferred**     | ~9 kB   | logs SDK, Web Vitals, document timing, after `init()`     |
 | **lazy**         | ~61 kB  | rrweb — downloaded only by sessions sampled into replay   |
 
 The eager figure is ~90% OpenTelemetry. If your app already uses the OTel web
@@ -117,6 +131,96 @@ a separate analytics silo. Calls before `init()` finishes are queued.
 MapleBrowser.track("checkout_completed", { plan: "pro", seats: 12 })
 ```
 
+## Logs
+
+`MapleBrowser.logger` writes OpenTelemetry log records, linked to the active span and the session.
+Calls before `init()` are queued.
+
+```ts
+MapleBrowser.logger.info("checkout started", { "cart.items": 3 })
+```
+
+## Web Vitals
+
+LCP, CLS, INP, FCP and TTFB are reported as `browser.web_vital` OpenTelemetry log events
+(browser semantic conventions), linked to the `pageload` span and the session. Opt out with
+`webVitals: false`.
+
+## Replay on error
+
+`replay: { sampleRate: 0.05, onErrorSampleRate: 1 }` records 5% of sessions, and has every other
+session keep the last minute in memory, uploading it and recording the rest of the session only if
+an error is recorded.
+
+## Trace sampling
+
+`tracing: { sampleRate: 0.25 }` exports the traces of ~25% of sessions. The decision is per
+session, so a sampled session keeps all of its traces. Reported errors (uncaught errors, unhandled
+rejections, `captureException`) are always exported.
+
+## Regions
+
+Maple runs separate US and EU instances, and an ingest key only works in the
+region it was created in. Set `region: "eu"` for an organization on
+`app.eu.maple.dev`; the SDK then sends to `https://ingest.eu.maple.dev`. An
+explicit `endpoint` (a proxy, or self-hosted ingest) always wins over `region`.
+
+## Tracing across origins
+
+`fetch` and XHR spans carry the W3C `traceparent` header to same-origin requests only.
+When your API lives on another origin, list it so browser and backend spans
+join one trace, and allow the `traceparent` header in the API's CORS policy:
+
+```ts
+MapleBrowser.init({
+	// ...
+	tracing: { propagateTraceHeaderCorsUrls: [/^https:\/\/api\.example\.com\//] },
+})
+```
+
+## Navigations and data loading
+
+Call these from your router's hooks to make one click one trace: a navigation
+span, the data-loading spans under it, and the `fetch` spans they start.
+[maple.dev/docs/frontend](https://maple.dev/docs/frontend) shows where for each
+framework.
+
+```ts
+MapleBrowser.startNavigation(location.pathname) // a navigation starts
+const data = await MapleBrowser.traced("loader /projects/:id", () => load(id), {
+	isFailure: (error) => !isRedirect(error), // redirects aren't failures
+})
+MapleBrowser.endNavigation("/projects/:id") // the route is ready: its template
+```
+
+- The first `startNavigation` opens a `pageload` span, joined to the server
+  render's trace from a `Server-Timing: traceparent;desc="…"` entry or a
+  `<meta name="traceparent">` tag; later calls open `navigate` spans, and end
+  one still open as `app.navigation.interrupted`.
+- The document's `pageload` starts at navigation start, and gets child spans
+  from the Navigation Timing entry once the page has loaded: `documentFetch`
+  (with `dns`, `connect`, `request` and `response` under it), `domProcessing`
+  and `loadEvent`.
+- `traced` returns `fn`'s result and rethrows its error unchanged. Only requests
+  started before `fn`'s first `await` nest under its span. An error it recorded
+  isn't reported again by `captureException` or the global handlers.
+- All three are no-ops on the server, before `init()`, with tracing disabled or
+  without consent (`traced` then only runs `fn`).
+
+## React
+
+`@maple-dev/browser/react` has `MapleErrorBoundary`, `mapleReactErrorHandler()` for React 19's
+`createRoot` error options, and router adapters that call `startNavigation`/`endNavigation` for you:
+
+```ts
+import { instrumentReactRouter, instrumentTanStackRouter } from "@maple-dev/browser/react"
+
+instrumentReactRouter(createBrowserRouter(routes)) // navigate /projects/:id
+instrumentTanStackRouter(router) // navigate /projects/$projectId
+```
+
+Attach them after `MapleBrowser.init`: a navigation reported earlier uses up the page load.
+
 ## Linking a marketing site to your app
 
 The visitor id lives in localStorage **and** a cookie scoped to your registered
@@ -130,6 +234,18 @@ stay per-origin; `VisitorId` is the join key. Override the scope with
 `maskAllInputs` (default **on**) masks every `<input>` value. Use rrweb's
 attribute hooks (`data-rr-block`, `.rr-block`, `.rr-ignore`) to block elements
 or subtrees from capture.
+
+URLs are redacted before they leave the page: the values of credential-shaped
+query and fragment parameters (`token`, `code`, `access_token`, `password`, …)
+become `REDACTED` in session rows, events, network events, replay meta events
+and span attributes. Add your own rewriting with `privacy.sanitizeUrl`, for
+example to collapse ids in paths:
+
+```ts
+privacy: {
+	sanitizeUrl: (url) => url.replace(/\/users\/\d+/, "/users/:id")
+}
+```
 
 `privacy.requireConsent` holds all capture until `MapleBrowser.setConsent(true)`.
 Global Privacy Control is honored by default and suppresses the persistent

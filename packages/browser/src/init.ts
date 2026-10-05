@@ -1,4 +1,5 @@
 import {
+	claimReplayMode,
 	clearPendingEvents,
 	clearSessionSink,
 	configurePrivacy,
@@ -7,7 +8,6 @@ import {
 	getSession,
 	hasConsent,
 	type IdentifyInput,
-	installNetworkCapture,
 	mayPersistIdentifier,
 	normalizeIdentity,
 	onConsentChange,
@@ -27,7 +27,10 @@ import {
 import type { ReplaySessionHandle } from "@maple/browser-session/replay"
 import { trace } from "@opentelemetry/api"
 import { type MapleBrowserConfig, type ResolvedConfig, resolveConfig } from "./config"
-import { setupErrorCapture } from "./errors"
+import { configureErrorFilters } from "./error-filters"
+import { onErrorRecorded, setupErrorCapture } from "./errors"
+import { setLogIdentity } from "./logs"
+import { resetNavigation } from "./navigation"
 import { setupTracing } from "./tracing"
 import { SDK_NAME, SDK_VERSION } from "./version"
 
@@ -54,6 +57,13 @@ let active: MapleBrowserHandle | undefined
 // Same object the session lifecycle's `getIdentity` reads, so `identify()`
 // mutations are seen by later metadata rows.
 let activeConfig: ResolvedConfig | undefined
+/**
+ * An `identify()` made before `init()`, applied when it runs. Auth callbacks
+ * routinely resolve before the SDK is initialized; dropping the call meant the
+ * whole first session went anonymous. Wrapped so a pending *clear* (`undefined`)
+ * is distinguishable from no call at all.
+ */
+let pendingIdentity: { readonly input: IdentifyInput } | undefined
 
 /**
  * Initialize Maple browser telemetry. With consent gating enabled the returned
@@ -67,8 +77,12 @@ export function init(rawConfig: MapleBrowserConfig): MapleBrowserHandle {
 	}
 
 	const config = resolveConfig(rawConfig)
+	// Called after `init` was written, so it is the newer statement of who is here.
+	if (pendingIdentity) config.identity = normalizeIdentity(pendingIdentity.input)
+	pendingIdentity = undefined
 	activeConfig = config
 	configurePrivacy(config)
+	configureErrorFilters(config.errorFilters)
 	if (!hasConsent()) clearPendingEvents()
 	setActiveTraceIdProvider(() => trace.getActiveSpan()?.spanContext().traceId)
 
@@ -76,14 +90,14 @@ export function init(rawConfig: MapleBrowserConfig): MapleBrowserHandle {
 	// metadata-only session (Web Analytics counts them, and the server-side
 	// classifier is what labels them a bot there), but no rrweb chunk and no
 	// uploads. See `isLikelyBot`.
-	const recordReplay =
-		config.replayEnabled && !isLikelyBot(navigator.userAgent) && Math.random() < config.replaySampleRate
+	const replayEligible = config.replayEnabled && !isLikelyBot(navigator.userAgent)
 	let runtime: BrowserRuntime | undefined
 	let stopped = false
 	let rotateOnNextStart = false
 	let shutdownTracing: (() => Promise<void>) | undefined
-	let stopNetworkCapture: (() => void) | undefined
 	let stopErrorCapture: (() => void) | undefined
+	let deferredPending: Promise<void> | undefined
+	let stopDeferred: (() => Promise<void>) | undefined
 	// Bumped by every start and stop, so a replay chunk that lands after a
 	// consent revoke (or a rotation) never attaches a recorder to a dead runtime.
 	let generation = 0
@@ -93,6 +107,11 @@ export function init(rawConfig: MapleBrowserConfig): MapleBrowserHandle {
 		setVisitorTracking(config.persistVisitorId && mayPersistIdentifier())
 		const session = (rotateOnNextStart ? rotateSession() : undefined) ?? getSession()
 		rotateOnNextStart = false
+		// Rolled once per session and persisted on it, so a reload or the next
+		// page of a multi-page app records (or skips) the same session consistently.
+		const replayMode = replayEligible
+			? claimReplayMode(config.replaySampleRate, config.replayOnErrorSampleRate)
+			: "off"
 		publishSessionSink(session.id)
 		const sink = startEventSink(
 			{
@@ -105,27 +124,23 @@ export function init(rawConfig: MapleBrowserConfig): MapleBrowserHandle {
 			},
 			session.id,
 		)
-		// BEFORE `setupTracing`, and installed once for the page rather than per
-		// runtime: whoever wraps `window.fetch` last is the *outer* wrapper, and
-		// only the inner one runs inside the span `FetchInstrumentation` opens
-		// around the request. Installed after it, the capture reads
-		// `activeTraceId()` with no span active and every network row lands with
-		// `trace_id: ""`, unlinkable from the trace it produced. The replay chunk
-		// still calls `installNetworkCapture` for hosts that never get here; that
-		// call is a no-op once this one has run.
-		//
-		// The emit resolves the live sink per event instead of capturing this
-		// one, so rows follow session rotation and stop when consent is revoked
-		// (no sink, no row) even though the patch outlives both.
-		if (recordReplay && !stopNetworkCapture) {
-			stopNetworkCapture = installNetworkCapture((ev) => getActiveSink()?.emit(ev), sink.ignoreUrl)
-		}
 		if (config.tracingEnabled && !shutdownTracing) shutdownTracing = setupTracing(config)
 		// After `setupTracing`: the handlers span through the global provider it
 		// registers, so registering them first would drop the errors of the very
 		// first moments into a no-op tracer.
 		if (config.tracingEnabled && config.tracingCaptureErrors && !stopErrorCapture) {
 			stopErrorCapture = setupErrorCapture()
+		}
+		if (!deferredPending) {
+			setLogIdentity(() => activeConfig?.identity?.id)
+			deferredPending = import("./deferred")
+				// Started even when shutdown() is already waiting on it, so queued records still flush.
+				.then(({ startDeferred }) => {
+					stopDeferred = startDeferred(config)
+				})
+				.catch(() => {
+					// A blocked chunk costs the deferred signals, never the page.
+				})
 		}
 		const shared = {
 			endpoint: config.endpoint,
@@ -147,7 +162,7 @@ export function init(rawConfig: MapleBrowserConfig): MapleBrowserHandle {
 				onSessionChange: publishSessionSink,
 			})
 
-		if (!recordReplay) {
+		if (replayMode === "off") {
 			runtime = { initialSessionId: session.id, sink, metadata: startMetadata() }
 			return
 		}
@@ -167,6 +182,9 @@ export function init(rawConfig: MapleBrowserConfig): MapleBrowserHandle {
 					...shared,
 					maskAllInputs: config.maskAllInputs,
 					maskAllText: config.maskAllText,
+					mode: replayMode,
+					canvasFps: config.canvasFps,
+					networkBodies: config.networkBodies,
 				})
 			})
 			.catch(() => {
@@ -198,6 +216,10 @@ export function init(rawConfig: MapleBrowserConfig): MapleBrowserHandle {
 		await Promise.all([replayShutdown, metadataShutdown, previous.replayPending])
 	}
 
+	// A buffered replay keeps itself the moment an error is recorded.
+	const stopReplayTrigger = onErrorRecorded(() => {
+		void runtime?.replay?.trigger()
+	})
 	startRuntime()
 	const stopConsentListener = config.requireConsent
 		? onConsentChange((allowed) => {
@@ -222,15 +244,19 @@ export function init(rawConfig: MapleBrowserConfig): MapleBrowserHandle {
 			if (stopped) return
 			stopped = true
 			stopConsentListener()
+			stopReplayTrigger()
 			await stopRuntime(true)
 			stopErrorCapture?.()
 			stopErrorCapture = undefined
+			configureErrorFilters(undefined)
+			// Before the provider shuts down, so an open navigation exports with it
+			resetNavigation()
+			await deferredPending
+			// Tracing first: its last flush may fail into the offline queue, which the deferred stop closes.
 			await shutdownTracing?.()
 			shutdownTracing = undefined
-			// After the tracing shutdown, not before: the instrumentation wraps this
-			// capture, so unwinding outside-in is what restores the native `fetch`.
-			stopNetworkCapture?.()
-			stopNetworkCapture = undefined
+			await stopDeferred?.()
+			stopDeferred = undefined
 			setActiveTraceIdProvider(() => undefined)
 			active = undefined
 			activeConfig = undefined
@@ -255,8 +281,15 @@ export function init(rawConfig: MapleBrowserConfig): MapleBrowserHandle {
  *
  * Each call replaces the identity rather than merging — merging would leak a
  * signed-out user's email into whoever signs in next on a shared device.
+ *
+ * Safe before `init()`: the latest call is held and applied when `init()` runs,
+ * taking precedence over the `user` passed to it.
  */
 export function identify(input?: IdentifyInput): void {
-	if (typeof window === "undefined" || !activeConfig) return
+	if (typeof window === "undefined") return
+	if (!activeConfig) {
+		pendingIdentity = { input }
+		return
+	}
 	activeConfig.identity = normalizeIdentity(input)
 }

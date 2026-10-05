@@ -4,10 +4,8 @@ import type { AiSessionGenAiValues, AiSessionSpan } from "@maple/domain/http"
 
 import { SessionViews } from "@/components/agent-sessions/session-detail/session-views"
 import { useMountEffect } from "@/hooks/use-mount-effect"
-import { buildSessionSummary } from "@/lib/agent-sessions/session-summary"
-import { buildSessionTurns } from "@/lib/agent-sessions/session-turns"
-import { agentSpan, llmSpan, toolSpan, userMessages } from "@/lib/agent-sessions/span-test-support"
-
+import { buildSessionSummary, buildSessionTurns } from "@maple/agent-sessions"
+import { agentSpan, llmSpan, toolSpan, userMessages } from "@maple/agent-sessions/testing"
 /**
  * The transcript view over a session big enough to hurt: tens of turns, every
  * call carrying its prompt and reply, every tool call carrying a result that
@@ -100,13 +98,20 @@ function markdownReply(random: () => number, paragraphs: number): string {
 		blocks.push(prose(random, 40 + Math.floor(random() * 50)))
 		if (p % 3 === 1) {
 			blocks.push(
-				["```ts", ...Array.from({ length: 12 }, (_, i) => `const step${i} = retry(${i}, { jitter: ${random().toFixed(3)} })`), "```"].join(
-					"\n",
-				),
+				[
+					"```ts",
+					...Array.from(
+						{ length: 12 },
+						(_, i) => `const step${i} = retry(${i}, { jitter: ${random().toFixed(3)} })`,
+					),
+					"```",
+				].join("\n"),
 			)
 		}
 		if (p % 4 === 2) {
-			blocks.push(Array.from({ length: 5 }, (_, i) => `- **item ${i}** — ${prose(random, 9)}`).join("\n"))
+			blocks.push(
+				Array.from({ length: 5 }, (_, i) => `- **item ${i}** — ${prose(random, 9)}`).join("\n"),
+			)
 		}
 	}
 	return blocks.join("\n\n")
@@ -129,7 +134,10 @@ function jsonResult(random: () => number, rows: number): Record<string, unknown>
 }
 
 function textResult(random: () => number, lines: number): string {
-	return Array.from({ length: lines }, (_, i) => `${String(i + 1).padStart(4, " ")}  ${prose(random, 10)}`).join("\n")
+	return Array.from(
+		{ length: lines },
+		(_, i) => `${String(i + 1).padStart(4, " ")}  ${prose(random, 10)}`,
+	).join("\n")
 }
 
 function usage(inputTokens: number, outputTokens: number): AiSessionGenAiValues {
@@ -189,9 +197,20 @@ export function buildLargeSessionFixture(turns: number, seed = 1): readonly AiSe
 								role: "assistant",
 								parts: [
 									...(call % 2 === 0
-										? [{ type: "reasoning", content: prose(random, 200 + Math.floor(random() * 200)) }]
+										? [
+												{
+													type: "reasoning",
+													content: prose(random, 200 + Math.floor(random() * 200)),
+												},
+											]
 										: []),
-									{ type: "text", content: markdownReply(random, closing ? 6 + Math.floor(random() * 6) : 1) },
+									{
+										type: "text",
+										content: markdownReply(
+											random,
+											closing ? 6 + Math.floor(random() * 6) : 1,
+										),
+									},
 									...(tool === undefined
 										? []
 										: [
@@ -201,7 +220,10 @@ export function buildLargeSessionFixture(turns: number, seed = 1): readonly AiSe
 													name: tool,
 													arguments: {
 														sql: `SELECT * FROM traces WHERE turn = ${turn} AND call = ${call}`,
-														filters: Array.from({ length: 12 }, (_, i) => ({ key: `attr.${i}`, value: prose(random, 3) })),
+														filters: Array.from({ length: 12 }, (_, i) => ({
+															key: `attr.${i}`,
+															value: prose(random, 3),
+														})),
 													},
 												},
 											]),
@@ -228,7 +250,10 @@ export function buildLargeSessionFixture(turns: number, seed = 1): readonly AiSe
 							toolCallId: callId,
 							toolCallArguments: {
 								sql: `SELECT * FROM traces WHERE turn = ${turn} AND call = ${call}`,
-								filters: Array.from({ length: 12 }, (_, i) => ({ key: `attr.${i}`, value: prose(random, 3) })),
+								filters: Array.from({ length: 12 }, (_, i) => ({
+									key: `attr.${i}`,
+									value: prose(random, 3),
+								})),
 							},
 							toolCallResult: textual
 								? textResult(random, 300 + Math.floor(random() * 300))
@@ -303,7 +328,9 @@ export function AgentTranscriptBench({ turns }: { turns: number }) {
 			mountCommitMs: 0,
 			countDom,
 			runScroll: async (steps = 160) => {
-				const scroller = document.querySelector<HTMLElement>('[data-transcript-bench] [data-slot="page-scroll-area"]')
+				const scroller = document.querySelector<HTMLElement>(
+					'[data-transcript-bench] [data-slot="page-scroll-area"]',
+				)
 				if (!scroller) throw new Error("Transcript benchmark scroller not found")
 				recorder.reset()
 				const frames: number[] = []
@@ -330,7 +357,9 @@ export function AgentTranscriptBench({ turns }: { turns: number }) {
 					scroller.scrollTop = maxScroll * (step / steps)
 					await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
 				}
-				await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+				await new Promise<void>((resolve) =>
+					requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+				)
 				running = false
 				cancelAnimationFrame(frameHandle)
 				observer?.disconnect()
@@ -340,7 +369,10 @@ export function AgentTranscriptBench({ turns }: { turns: number }) {
 					frameP95Ms: percentile(frames, 95),
 					droppedFrames: frames.filter((duration) => duration > (1000 / 60) * 1.5).length,
 					longTasks: longTasks.length,
-					totalBlockingMs: longTasks.reduce((sum, entry) => sum + Math.max(0, entry.duration - 50), 0),
+					totalBlockingMs: longTasks.reduce(
+						(sum, entry) => sum + Math.max(0, entry.duration - 50),
+						0,
+					),
 					reactCommits: react.commits,
 					reactDurationMs: react.duration,
 					reactMaxCommitMs: react.maxCommit,
@@ -382,7 +414,8 @@ export function AgentTranscriptBench({ turns }: { turns: number }) {
 							onViewChange={() => {}}
 							turns={sessionTurns}
 							summary={summary}
-							truncated={false}
+							progress={undefined}
+							totals={undefined}
 							selectedSpanId={selectedSpanId}
 							onSelectSpan={setSelectedSpanId}
 						/>

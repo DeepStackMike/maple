@@ -1,7 +1,6 @@
 import { Array as Arr, Effect, Schema, pipe } from "effect"
 import { TraceId, SpanId } from "@maple/domain"
-import type { ListTracesOutput } from "@maple/domain/tinybird"
-import type { SpanSearchOutput } from "../ch"
+import type { SpanSearchOutput, TracesRootListOutput } from "../ch"
 import { WarehouseValidationError } from "@maple/domain/http/warehouse-errors"
 import {
 	WarehouseExecutor,
@@ -98,20 +97,18 @@ const spanLevelSearch = (
 	return Effect.map(
 		executor.query<SpanSearchOutput>("span_search", params, { profile: "list" }),
 		(result): ReadonlyArray<SpanResult> =>
-			result.data.map(
-				(row): SpanResult => ({
-					traceId: Schema.decodeSync(TraceId)(row.traceId),
-					spanId: Schema.decodeSync(SpanId)(row.spanId),
-					spanName: row.spanName,
-					serviceName: row.serviceName,
-					durationMs: Number(row.durationMs),
-					statusCode: row.statusCode,
-					statusMessage: row.statusMessage ?? "",
-					attributes: row.spanAttributes ?? {},
-					resourceAttributes: row.resourceAttributes ?? {},
-					timestamp: String(row.timestamp),
-				}),
-			),
+			result.data.map((row): SpanResult => ({
+				traceId: Schema.decodeSync(TraceId)(row.traceId),
+				spanId: Schema.decodeSync(SpanId)(row.spanId),
+				spanName: row.spanName,
+				serviceName: row.serviceName,
+				durationMs: Number(row.durationMs),
+				statusCode: row.statusCode,
+				statusMessage: row.statusMessage ?? "",
+				attributes: row.spanAttributes ?? {},
+				resourceAttributes: row.resourceAttributes ?? {},
+				timestamp: String(row.timestamp),
+			})),
 	)
 }
 
@@ -149,7 +146,7 @@ const rootLevelSearch = (
 	}
 
 	return Effect.map(
-		executor.query<ListTracesOutput>("list_traces", params, { profile: "list" }),
+		executor.query<TracesRootListOutput>("list_traces", params, { profile: "list" }),
 		(result): ReadonlyArray<SpanResult> => pipe(result.data, Arr.map(toSpanResult)),
 	)
 }

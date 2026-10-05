@@ -1,8 +1,9 @@
+import { useMemo } from "react"
 import { keepPreviousData, useQuery } from "@tanstack/react-query"
 import { CH, coerceServiceOverviewRows } from "@maple/query-engine"
-import { executeLocalCompiledQuery } from "@/lib/query"
+import { boundsKey, executeLocalCompiledQuery, localParams } from "@/lib/query"
 import { LOCAL_ORG_ID } from "../lib/constants"
-import { boundsForRange, resolveRange, toClickHouseDateTime } from "../lib/time"
+import { resolveRangeWindow, toClickHouseDateTime, type TimeBounds } from "../lib/time"
 import {
 	baselineDelta,
 	currentVersion,
@@ -22,10 +23,8 @@ export interface ServiceCatalogFilters {
 	env?: string
 	/** Exact `service.namespace` resource attribute. */
 	ns?: string
-	/** Substring match on the service name (toolbar search, client-side). */
+	/** Substring match on the service name (client-side). */
 	search?: string
-	/** Time-range preset key (see `TIME_RANGES`). */
-	range?: string
 }
 
 export interface ServiceCatalogEntry {
@@ -38,100 +37,122 @@ export interface ServiceCatalogEntry {
 	p50LatencyMs: number
 	p95LatencyMs: number
 	p99LatencyMs: number
-	/** Log/trace volume from the usage rollup (0 when the service has none). */
+	/** Log volume from the usage rollup (0 when the service has none). */
 	logCount: number
 }
 
-export interface ServiceCatalogData {
-	entries: ServiceCatalogEntry[]
-	envFacets: Array<{ name: string; count: number }>
-	nsFacets: Array<{ name: string; count: number }>
-	totalErrorCount: number
-	/**
-	 * Every byte the usage rollup accounted for in the window, across all
-	 * signals and every service — including the ones absent from `entries`.
-	 *
-	 * `entries` is built from the entry-point span projection, so a Maple that
-	 * has only ever received logs or metrics has none. Home's "nothing ingested
-	 * yet" state is exactly the question this answers, and `serviceUsageQuery`
-	 * is already fetched here for the per-service log counts, so the total is a
-	 * sum over rows this hook was discarding rather than another query.
-	 */
+export function toCatalogEntry(row: CH.ServiceCatalogOutput, logCount: number): ServiceCatalogEntry {
+	const spanCount = Number(row.estimatedSpanCount) || Number(row.spanCount)
+	const errorCount = Number(row.estimatedErrorCount) || Number(row.errorCount)
+	return {
+		serviceName: row.serviceName,
+		serviceNamespaces: row.serviceNamespaces,
+		deploymentEnvironments: row.deploymentEnvironments,
+		spanCount,
+		errorCount,
+		errorRate: spanCount > 0 ? errorCount / spanCount : 0,
+		p50LatencyMs: Number(row.p50LatencyMs),
+		p95LatencyMs: Number(row.p95LatencyMs),
+		p99LatencyMs: Number(row.p99LatencyMs),
+		logCount,
+	}
+}
+
+interface CatalogResult {
+	entries: ReadonlyArray<ServiceCatalogEntry>
 	totalIngestedBytes: number
 }
 
-/**
- * Service catalog for the services list — one query over the
- * `service_overview_spans` entry-point rollup plus the usage rollup for log
- * volume. Facets derive from the (small) catalog result client-side.
- */
-export function useLocalServiceCatalog(filters: ServiceCatalogFilters) {
+function useCatalog(env: string | undefined, ns: string | undefined, bounds: TimeBounds) {
 	return useQuery({
-		queryKey: ["local", "services", "catalog", filters],
+		queryKey: ["local", "services", "catalog", env ?? null, ns ?? null, boundsKey(bounds)],
 		placeholderData: keepPreviousData,
-		queryFn: async (): Promise<ServiceCatalogData> => {
-			const { startTime, endTime } = boundsForRange(filters.range)
-			const params = { orgId: LOCAL_ORG_ID, startTime, endTime }
+		queryFn: async ({ signal }): Promise<CatalogResult> => {
+			const params = localParams(bounds)
 			const [catalogRows, usageRows] = await Promise.all([
 				executeLocalCompiledQuery(
 					CH.compile(
 						CH.serviceCatalogQuery({
-							deploymentEnvironment: filters.env,
-							serviceNamespace: filters.ns,
+							deploymentEnvironment: env,
+							serviceNamespace: ns,
 							limit: 200,
 						}),
 						params,
 					),
+					signal,
 				),
-				executeLocalCompiledQuery(CH.compile(CH.serviceUsageQuery({}), params)),
+				executeLocalCompiledQuery(CH.compile(CH.serviceUsageQuery({}), params), signal),
 			])
-
 			const logsByService = new Map(
 				usageRows.map((row) => [row.serviceName, Number(row.totalLogCount)]),
 			)
-
-			const all = catalogRows.map((row): ServiceCatalogEntry => {
-				const spanCount = Number(row.estimatedSpanCount) || Number(row.spanCount)
-				const errorCount = Number(row.estimatedErrorCount) || Number(row.errorCount)
-				return {
-					serviceName: row.serviceName,
-					serviceNamespaces: row.serviceNamespaces,
-					deploymentEnvironments: row.deploymentEnvironments,
-					spanCount,
-					errorCount,
-					errorRate: spanCount > 0 ? errorCount / spanCount : 0,
-					p50LatencyMs: Number(row.p50LatencyMs),
-					p95LatencyMs: Number(row.p95LatencyMs),
-					p99LatencyMs: Number(row.p99LatencyMs),
-					logCount: logsByService.get(row.serviceName) ?? 0,
-				}
-			})
-
-			const entries = filters.search
-				? all.filter((e) => e.serviceName.toLowerCase().includes(filters.search!.toLowerCase()))
-				: all
-
-			const countBy = (pick: (e: ServiceCatalogEntry) => readonly string[]) => {
-				const counts = new Map<string, number>()
-				for (const entry of all) {
-					for (const name of pick(entry)) {
-						counts.set(name, (counts.get(name) ?? 0) + 1)
-					}
-				}
-				return [...counts.entries()]
-					.map(([name, count]) => ({ name, count }))
-					.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
-			}
-
 			return {
-				entries,
-				envFacets: countBy((e) => e.deploymentEnvironments),
-				nsFacets: countBy((e) => e.serviceNamespaces),
-				totalErrorCount: entries.reduce((sum, e) => sum + e.errorCount, 0),
+				entries: catalogRows.map((row) =>
+					toCatalogEntry(row, logsByService.get(row.serviceName) ?? 0),
+				),
+				// Every byte the usage rollup accounted for in the window, across all
+				// signals and every service — including services with no entry-point
+				// spans (a Maple that has only received logs or metrics). Home's
+				// "nothing ingested yet" state reads this.
 				totalIngestedBytes: usageRows.reduce((sum, row) => sum + Number(row.totalSizeBytes), 0),
 			}
 		},
 	})
+}
+
+function countBy(
+	entries: ReadonlyArray<ServiceCatalogEntry>,
+	pick: (e: ServiceCatalogEntry) => readonly string[],
+) {
+	const counts = new Map<string, number>()
+	for (const entry of entries) for (const name of pick(entry)) counts.set(name, (counts.get(name) ?? 0) + 1)
+	return [...counts.entries()]
+		.map(([name, count]) => ({ name, count }))
+		.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+}
+
+/**
+ * Name-level service catalog (Home, and anything asking "which services
+ * exist"). Rows come from the env/ns-filtered query (its numbers are for that
+ * slice); facets come from the unfiltered one, each counted under the other
+ * facet only. With no filter both are one query.
+ *
+ * The Services page itself renders at the (service, environment) grain and
+ * reads {@link useLocalServiceList} instead.
+ */
+export function useLocalServiceCatalog(filters: ServiceCatalogFilters, bounds: TimeBounds) {
+	const { env, ns, search } = filters
+	const filtered = useCatalog(env, ns, bounds)
+	const unfiltered = useCatalog(undefined, undefined, bounds)
+
+	const entries = useMemo(() => {
+		const all = filtered.data?.entries ?? []
+		const needle = search?.toLowerCase()
+		return needle ? all.filter((e) => e.serviceName.toLowerCase().includes(needle)) : all
+	}, [filtered.data, search])
+
+	const facets = useMemo(() => {
+		const all = unfiltered.data?.entries ?? []
+		return {
+			envFacets: countBy(
+				ns ? all.filter((e) => e.serviceNamespaces.includes(ns)) : all,
+				(e) => e.deploymentEnvironments,
+			),
+			nsFacets: countBy(
+				env ? all.filter((e) => e.deploymentEnvironments.includes(env)) : all,
+				(e) => e.serviceNamespaces,
+			),
+		}
+	}, [unfiltered.data, env, ns])
+
+	return {
+		query: filtered,
+		facetsFetching: unfiltered.isFetching,
+		entries,
+		...facets,
+		totalErrorCount: entries.reduce((sum, e) => sum + e.errorCount, 0),
+		totalIngestedBytes: filtered.data?.totalIngestedBytes ?? 0,
+	}
 }
 
 // Services list — the (service, environment) grain the hosted page renders
@@ -173,19 +194,20 @@ export interface ServiceListData {
  * "what is each deployment of each service doing", and answering it does not
  * need these four queries.
  */
-export function useLocalServiceList(range: string | undefined) {
+export function useLocalServiceList(
+	range: string | undefined,
+	timeWindow: { readonly bounds: TimeBounds; readonly anchorMs: number },
+) {
+	const { bounds, anchorMs } = timeWindow
 	return useQuery({
-		queryKey: ["local", "services", "list", range],
+		queryKey: ["local", "services", "list", range ?? null, boundsKey(bounds)],
 		placeholderData: keepPreviousData,
-		queryFn: async (): Promise<ServiceListData> => {
-			// One anchor for all four windows: `boundsForRange` would otherwise
-			// re-read the clock per call and the previous window would overlap the
-			// current one by however long the first query took to build.
-			const anchorMs = Date.now()
-			const { startTime, endTime } = boundsForRange(range, anchorMs)
-			const resolved = resolveRange(range, anchorMs)
+		queryFn: async ({ signal }): Promise<ServiceListData> => {
+			// One anchor for all four windows — the page's, so the previous window
+			// abuts the current one exactly and only moves on refresh.
+			const resolved = resolveRangeWindow(range, anchorMs)
 			const windowSeconds = rangeDurationSeconds(range)
-			const params = { orgId: LOCAL_ORG_ID, startTime, endTime }
+			const params = localParams(bounds)
 			// The window of the same length ending where this one begins. Not a
 			// fixed 7d baseline like the hosted page's: on a store holding an
 			// afternoon there is no trailing week to compare against, and a delta
@@ -201,8 +223,11 @@ export function useLocalServiceList(range: string | undefined) {
 			const bucketSeconds = bucketSecondsForRange(range)
 
 			const [overviewRows, previousRows, seriesRows, versionRows] = await Promise.all([
-				executeLocalCompiledQuery(CH.compile(CH.serviceOverviewQuery({}), params)),
-				executeLocalCompiledQuery(CH.compile(CH.serviceHealthBaselineQuery({}), previousParams)),
+				executeLocalCompiledQuery(CH.compile(CH.serviceOverviewQuery({}), params), signal),
+				executeLocalCompiledQuery(
+					CH.compile(CH.serviceHealthBaselineQuery({}), previousParams),
+					signal,
+				),
 				executeLocalCompiledQuery(
 					CH.compile(
 						CH.tracesTimeseriesQuery({
@@ -218,8 +243,9 @@ export function useLocalServiceList(range: string | undefined) {
 						}),
 						{ ...params, bucketSeconds },
 					),
+					signal,
 				),
-				executeLocalCompiledQuery(CH.compile(CH.serviceCatalogVersionsQuery({}), params)),
+				executeLocalCompiledQuery(CH.compile(CH.serviceCatalogVersionsQuery({}), params), signal),
 			])
 
 			// Namespace variants are merged rather than keyed on: the current

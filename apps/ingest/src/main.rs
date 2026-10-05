@@ -24,12 +24,15 @@ use aes_gcm::{Aes256Gcm, Nonce};
 use autumn::{AutumnEntitlements, AutumnTracker};
 use axum::body::Bytes;
 use axum::extract::DefaultBodyLimit;
+use axum::extract::MatchedPath;
+use axum::extract::Request;
 use axum::extract::Path;
 use axum::extract::Query;
 use axum::extract::State;
 use axum::http::header::{HeaderName, AUTHORIZATION, CONTENT_ENCODING, CONTENT_TYPE, RETRY_AFTER};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
+use axum::middleware::Next;
 use axum::routing::{get, post};
 use axum::Router;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
@@ -53,12 +56,12 @@ use maple_ingest::otlp_json;
 use maple_ingest::r2::{replay_object_key, ReplayBlobStore};
 use maple_ingest::session_analytics::{
     derive_referrer_host, sanitize_product_event, sanitize_session_event, sanitize_session_meta,
+    take_billable_session_start,
 };
 use maple_ingest::telemetry::{
     AttributeMappingRule, ClickHouseBreakerConfig, ClickHouseTarget, ClickHouseTargetProvider,
     DatasourceNames, ExportDestination, HttpClient, MappingOperation, MappingSourceContext,
     PipelineError, SamplingPolicy, TelemetryPipeline, TelemetrySignal, TinybirdConfig,
-    TinybirdMirrorConfig,
 };
 use maple_ingest::usage_metrics::{billable_gb, usage_cardinality_view, UsageMetrics};
 use maple_ingest::wal_store::WalSegmentStore;
@@ -149,6 +152,9 @@ struct AppConfig {
     tinybird: TinybirdConfig,
     max_request_body_bytes: usize,
     org_max_in_flight: u64,
+    /// Wall-clock deadline for one HTTP request, or `Duration::ZERO` to run
+    /// without one. See `request_timeout_middleware`.
+    request_timeout: Duration,
     require_tls: bool,
     key_store_backend: KeyStoreBackend,
     clickhouse_encryption_key: Option<[u8; 32]>,
@@ -188,6 +194,9 @@ struct AppConfig {
     /// window) or the drain is cut off mid-flight.
     shutdown_drain_secs: u64,
     wal_store: Option<WalStoreSettings>,
+    /// The 401 body for a key this instance does not know. See
+    /// `invalid_ingest_key_message`.
+    invalid_key_message: &'static str,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -285,51 +294,6 @@ impl AppConfig {
             10_000,
         )?;
 
-        // A second Tinybird workspace to mirror writes into during a workspace
-        // migration. Present only when both halves are set, so the feature is
-        // off everywhere that does not opt in; setting exactly one half is a
-        // deploy mistake and `validate_for_pipeline` rejects it rather than
-        // letting the lane 401 in silence.
-        let mirror_host = std::env::var("TINYBIRD_MIRROR_HOST")
-            .unwrap_or_default()
-            .trim()
-            .trim_end_matches('/')
-            .to_owned();
-        let mirror_token = std::env::var("TINYBIRD_MIRROR_TOKEN")
-            .unwrap_or_default()
-            .trim()
-            .to_owned();
-        let mirror = if mirror_host.is_empty() && mirror_token.is_empty() {
-            None
-        } else {
-            Some(TinybirdMirrorConfig {
-                endpoint: mirror_host,
-                token: mirror_token,
-                // Deliberately far below the primary's 20: the mirror holds a
-                // lane worker for the whole budget, and losing a mirror batch is
-                // cheaper than stalling the lane behind a sick workspace.
-                max_attempts: parse_u32(
-                    "INGEST_TINYBIRD_MIRROR_MAX_ATTEMPTS",
-                    std::env::var("INGEST_TINYBIRD_MIRROR_MAX_ATTEMPTS").ok(),
-                    5,
-                )?,
-                export_timeout: Duration::from_millis(parse_u64(
-                    "INGEST_TINYBIRD_MIRROR_TIMEOUT_MS",
-                    std::env::var("INGEST_TINYBIRD_MIRROR_TIMEOUT_MS").ok(),
-                    3_000,
-                )?),
-                // The ramp knob: start at 1, confirm rows land and nothing is
-                // shed, then climb. Sampling is by org hash, so an org is
-                // consistently in or out and its stream is never half-mirrored.
-                sample_percent: u8::try_from(parse_u32(
-                    "INGEST_TINYBIRD_MIRROR_SAMPLE_PERCENT",
-                    std::env::var("INGEST_TINYBIRD_MIRROR_SAMPLE_PERCENT").ok(),
-                    100,
-                )?)
-                .map_err(|_| "INGEST_TINYBIRD_MIRROR_SAMPLE_PERCENT must be 0..=100".to_owned())?,
-            })
-        };
-
         // Shared by the pipeline (which runs the heartbeat task) and the store
         // config (which decides how stale a heartbeat has to be).
         let heartbeat_secs = parse_u64(
@@ -348,7 +312,6 @@ impl AppConfig {
                 .unwrap_or_default()
                 .trim()
                 .to_owned(),
-            mirror,
             queue_dir: PathBuf::from(
                 std::env::var("INGEST_QUEUE_DIR")
                     .unwrap_or_else(|_| "/var/lib/maple-ingest/wal".to_owned()),
@@ -379,6 +342,16 @@ impl AppConfig {
                 maple_ingest::telemetry::WAL_SEGMENT_MAX_BYTES,
             )?,
             wal_store_heartbeat_interval: Duration::from_secs(heartbeat_secs),
+            // 5 minutes. Telemetry that has waited this long has already missed
+            // the dashboards and alerts it was collected for, and exporting it
+            // competes with the fresh rows trying to catch up. 0 disables the
+            // bound, restoring the previous behaviour of queueing until the byte
+            // caps or the channel slots run out.
+            queue_max_age: Duration::from_secs(parse_u64(
+                "INGEST_QUEUE_MAX_AGE_SECS",
+                std::env::var("INGEST_QUEUE_MAX_AGE_SECS").ok(),
+                300,
+            )?),
             batch_max_rows: parse_usize(
                 "INGEST_BATCH_MAX_ROWS",
                 std::env::var("INGEST_BATCH_MAX_ROWS").ok(),
@@ -437,8 +410,6 @@ impl AppConfig {
         if write_mode.uses_tinybird() {
             tinybird.validate()?;
         } else {
-            // The mirror is a Tinybird destination, so a half-configured one is
-            // still a deploy mistake in forward-only mode.
             tinybird.validate_for_pipeline(false)?;
         }
 
@@ -455,6 +426,15 @@ impl AppConfig {
         if org_max_in_flight == 0 {
             return Err("INGEST_ORG_MAX_IN_FLIGHT must be greater than 0".to_owned());
         }
+
+        // 30s. Comfortably above a healthy p99 (single-digit ms) and below the
+        // load balancer idle timeout, so the gateway answers rather than having
+        // the connection cut out from under it. 0 disables the deadline.
+        let request_timeout = Duration::from_secs(parse_u64(
+            "INGEST_REQUEST_TIMEOUT_SECS",
+            std::env::var("INGEST_REQUEST_TIMEOUT_SECS").ok(),
+            30,
+        )?);
 
         let require_tls = parse_bool(
             "INGEST_REQUIRE_TLS",
@@ -657,6 +637,9 @@ impl AppConfig {
             }
         };
 
+        let invalid_key_message =
+            invalid_ingest_key_message(std::env::var("MAPLE_REGION").ok().as_deref())?;
+
         let shutdown_drain_secs = parse_u64(
             "INGEST_SHUTDOWN_DRAIN_SECS",
             std::env::var("INGEST_SHUTDOWN_DRAIN_SECS").ok(),
@@ -672,6 +655,7 @@ impl AppConfig {
             tinybird,
             max_request_body_bytes,
             org_max_in_flight,
+            request_timeout,
             require_tls,
             key_store_backend,
             clickhouse_encryption_key,
@@ -689,6 +673,7 @@ impl AppConfig {
             trust_proxy_geo,
             shutdown_drain_secs,
             wal_store,
+            invalid_key_message,
         })
     }
 }
@@ -794,6 +779,41 @@ struct ClickHouseTargetResolver {
     store: Arc<dyn KeyStore>,
     encryption_key: Option<[u8; 32]>,
     cache: Cache<String, ClickHouseTarget>,
+    /// Orgs that resolved to "no ready target" — no row, or a row stamped with a
+    /// schema revision this binary predates.
+    ///
+    /// Without this, `None` was the one outcome nothing remembered, so the export
+    /// retry loop re-queried Postgres on every one of its
+    /// `INGEST_EXPORT_MAX_ATTEMPTS` attempts, for every batch, for as long as the
+    /// org stayed unresolvable — against the same pool (`max_size(8)`, no checkout
+    /// timeout) the accept path resolves ingest keys through. The TTL is short
+    /// because the fix for an unresolvable org is a row change that should take
+    /// effect without a deploy.
+    negative_cache: Cache<String, ()>,
+}
+
+/// How long a resolved ClickHouse target is reused.
+const CLICKHOUSE_TARGET_TTL: Duration = Duration::from_mins(1);
+/// How long "no ready ClickHouse target" is remembered. Matches the ingest-key
+/// negative cache: long enough to collapse a retry storm, short enough that
+/// provisioning an org's target takes effect promptly.
+const CLICKHOUSE_TARGET_NEGATIVE_TTL: Duration = Duration::from_secs(30);
+
+impl ClickHouseTargetResolver {
+    fn new(store: Arc<dyn KeyStore>, encryption_key: Option<[u8; 32]>, capacity: u64) -> Self {
+        Self {
+            store,
+            encryption_key,
+            cache: Cache::builder()
+                .time_to_live(CLICKHOUSE_TARGET_TTL)
+                .max_capacity(capacity)
+                .build(),
+            negative_cache: Cache::builder()
+                .time_to_live(CLICKHOUSE_TARGET_NEGATIVE_TTL)
+                .max_capacity(capacity)
+                .build(),
+        }
+    }
 }
 
 /// Database-agnostic surface used by the resolvers. Implementations:
@@ -1335,6 +1355,22 @@ static INGEST_BAD_REQUEST: FailureKind = FailureKind {
     retry_after_seconds: None,
 };
 
+/// A replay chunk whose body was never a gzip stream. The SDK validates the
+/// gzip magic before it posts, so this only ever comes from something else
+/// executing the beacon — crawlers rendering the page and tearing it down
+/// mid-flush account for ~10k a day. Its own `error_kind` keeps it out of
+/// `rejection_loses_data`: refusing it loses no telemetry, so the span stays
+/// `Ok` like every other caller-side rejection.
+static INGEST_REPLAY_BODY_NOT_GZIP: FailureKind = FailureKind {
+    tag: "@maple/ingest/ReplayBodyNotGzip",
+    code: "ingest_replay_body_not_gzip",
+    title: "Replay chunk is not a gzip stream",
+    recovery: "fix_request",
+    retryable: false,
+    error_kind: "malformed_body",
+    retry_after_seconds: None,
+};
+
 static INGEST_PLAN_LIMIT_REACHED: FailureKind = FailureKind {
     tag: "@maple/ingest/PlanLimitReached",
     code: "ingest_plan_limit_reached",
@@ -1393,6 +1429,21 @@ static INGEST_INTERNAL_ERROR: FailureKind = FailureKind {
     retryable: false,
     error_kind: "error",
     retry_after_seconds: None,
+};
+
+/// The request outran `INGEST_REQUEST_TIMEOUT_SECS` and was abandoned.
+///
+/// 503 rather than 504: nothing upstream timed out, this gateway gave up on its
+/// own work. Retryable — the batch was not acknowledged, so resending it is the
+/// correct response.
+static INGEST_REQUEST_TIMEOUT: FailureKind = FailureKind {
+    tag: "@maple/ingest/RequestTimeout",
+    code: "ingest_request_timeout",
+    title: "Ingest request timed out",
+    recovery: "retry",
+    retryable: true,
+    error_kind: "timeout",
+    retry_after_seconds: Some(5),
 };
 
 /// The per-org byte budget is full: the caller's batch was refused, nothing was
@@ -1573,6 +1624,56 @@ impl IntoResponse for ApiError {
         }
         response
     }
+}
+
+/// Abandon a request that has outrun `timeout` and answer 503.
+///
+/// Without this the gateway had no deadline anywhere on the accept path, so
+/// saturation did not surface as errors at all: requests queued on the WAL
+/// append and sat there. p95 went to tens of seconds while every per-route error
+/// rate stayed flat near zero, because a hung request is not a failed one. The
+/// per-org in-flight cap, the only limiter that fires under this, is a
+/// concurrency bound with no time bound, so its permits were held for the whole
+/// stall rather than turning anything away.
+///
+/// Dropping the handler future is what makes this shed rather than merely
+/// report: the WAL append it was waiting on is abandoned and
+/// `OrgBytesReservation` returns the bytes it had reserved. The `spawn_blocking`
+/// already in flight is not cancellable and still completes its write; that
+/// frame is simply never sent to its lane, and the lane's cursor passes over it.
+async fn request_timeout_middleware(
+    State(timeout): State<Duration>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let method = request.method().clone();
+    let path = request.uri().path().to_owned();
+    // The metric gets the matched route pattern, not the raw path: one route
+    // carries a path parameter (`/v1/logpush/cloudflare/http_requests/{connector_id}`),
+    // and labelling by raw path would add a metric series per connector. This
+    // layer sits on the `Router`, so routing has already run and the extension is
+    // populated; "unknown" only appears if that ever stops being true.
+    let matched_path = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map_or("unknown", MatchedPath::as_str)
+        .to_owned();
+    let Ok(response) = tokio::time::timeout(timeout, next.run(request)).await else {
+        metrics::request_timed_out(&matched_path);
+        warn!(
+            %method,
+            path,
+            timeout_secs = timeout.as_secs(),
+            "Abandoning ingest request that exceeded the gateway timeout"
+        );
+        return ApiError::tagged(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &INGEST_REQUEST_TIMEOUT,
+            "Ingest gateway timed out while accepting this request",
+        )
+        .into_response();
+    };
+    response
 }
 
 /// OTEL span status (`otel.status_code`) for a rejected request.
@@ -2103,14 +2204,11 @@ async fn main() {
         matches!(config.key_store_backend, KeyStoreBackend::Postgres { .. });
     let clickhouse_target_provider: Option<Arc<dyn ClickHouseTargetProvider>> =
         if direct_clickhouse_possible {
-            Some(Arc::new(ClickHouseTargetResolver {
-                store: Arc::clone(&store),
-                encryption_key: config.clickhouse_encryption_key,
-                cache: Cache::builder()
-                    .time_to_live(Duration::from_mins(1))
-                    .max_capacity(10_000)
-                    .build(),
-            }) as Arc<dyn ClickHouseTargetProvider>)
+            Some(Arc::new(ClickHouseTargetResolver::new(
+                Arc::clone(&store),
+                config.clickhouse_encryption_key,
+                10_000,
+            )) as Arc<dyn ClickHouseTargetProvider>)
         } else {
             None
         };
@@ -2296,6 +2394,7 @@ async fn main() {
         ]);
 
     let grpc_state = Arc::clone(&state);
+    let request_timeout = config.request_timeout;
     let app = Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
@@ -2313,6 +2412,19 @@ async fn main() {
         .layer(cors)
         .layer(DefaultBodyLimit::max(config.max_request_body_bytes))
         .with_state(state);
+
+    // Outermost, and applied after `with_state` so it carries its own state: the
+    // deadline has to cover the whole stack, body collection included, or a
+    // request stalled before it reaches a handler is still unbounded.
+    let app = if request_timeout.is_zero() {
+        warn!("INGEST_REQUEST_TIMEOUT_SECS=0: serving without a request deadline");
+        app
+    } else {
+        app.layer(axum::middleware::from_fn_with_state(
+            request_timeout,
+            request_timeout_middleware,
+        ))
+    };
 
     let listener = match tokio::net::TcpListener::bind(("0.0.0.0", config.port)).await {
         Ok(listener) => listener,
@@ -2712,7 +2824,7 @@ async fn resolve_grpc_ingest_key(
         .resolve_ingest_key(&token)
         .await
         .map_err(|_| tonic::Status::unavailable("Ingest authentication unavailable"))?
-        .ok_or_else(|| tonic::Status::unauthenticated("Invalid ingest key"))
+        .ok_or_else(|| tonic::Status::unauthenticated(state.config.invalid_key_message))
 }
 
 /// Liveness only — deliberately independent of Postgres.
@@ -2894,10 +3006,30 @@ fn replay_gunzip_rejection(headers: &HeaderMap, body: &[u8], error: &std::io::Er
             truncate_chars(&content_type, CLIENT_IDENTITY_MAX_LEN),
         );
     }
-    ApiError::bad_request(format!("failed to gunzip replay chunk: {error}"))
+    let message = format!("failed to gunzip replay chunk: {error}");
+    if looks_like_gzip_member(body) {
+        ApiError::bad_request(message)
+    } else {
+        ApiError::tagged(StatusCode::BAD_REQUEST, &INGEST_REPLAY_BODY_NOT_GZIP, message)
+    }
 }
 
 const REPLAY_BODY_PREFIX_BYTES: usize = 16;
+
+/// A gzip member is a 10-byte header (`1f 8b`, compression method `08`, a
+/// flags byte with its three reserved high bits clear) plus an 8-byte trailer.
+/// A body shorter than that, or whose header says otherwise, was never a
+/// stream the SDK produced; a body that passes may still be a truncated real
+/// recording, which is a lost chunk and stays an `Error`.
+const GZIP_MEMBER_MIN_LEN: usize = 18;
+const GZIP_METHOD_DEFLATE: u8 = 0x08;
+const GZIP_RESERVED_FLAGS: u8 = 0xe0;
+
+fn looks_like_gzip_member(body: &[u8]) -> bool {
+    body.len() >= GZIP_MEMBER_MIN_LEN
+        && body.starts_with(&[0x1f, 0x8b, GZIP_METHOD_DEFLATE])
+        && body[3] & GZIP_RESERVED_FLAGS == 0
+}
 
 fn hex_prefix(body: &[u8], n: usize) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
@@ -2974,7 +3106,7 @@ async fn resolve_replay_key(
         .resolve_ingest_key(&ingest_key)
         .await
         .map_err(|_| ApiError::service_unavailable("Ingest authentication unavailable"))?
-        .ok_or_else(|| ApiError::unauthorized("Invalid ingest key"))?;
+        .ok_or_else(|| ApiError::unauthorized(state.config.invalid_key_message))?;
     Ok(Some(resolved))
 }
 
@@ -3069,13 +3201,10 @@ async fn handle_replay_meta_inner(
     // NDJSON: one session-metadata object per line. The org_id is always taken
     // from the authenticated key, never from the client-supplied body.
     //
-    // Count session-start rows so we can meter one browser session per session to
-    // Autumn. The browser SDK posts a start row (`version: 1` / `status: "active"`)
-    // at session start and an end row (`version: 2`) at unload; counting only starts
-    // avoids double-counting. Caveat: an in-tab reload recreates the SDK session sink
-    // and re-posts a start row for the same SessionId, so reloads can slightly
-    // over-count — consistent with the at-least-once metering used for the
-    // logs/traces/metrics signals.
+    // Meter one browser session per visit to Autumn: the SDK claims a visit once
+    // per visitor per 30-minute idle window across tabs and subdomains, and marks
+    // the claiming session's rows `billable_start: 1`. See
+    // `take_billable_session_start` for the rule and its legacy-SDK fallback.
     let country = derive_country(headers, state.config.trust_proxy_geo);
     let mut rows: Vec<Vec<u8>> = Vec::new();
     let mut session_starts: u64 = 0;
@@ -3120,7 +3249,7 @@ async fn handle_replay_meta_inner(
         // LowCardinality columns. Clamp before it reaches the warehouse — the
         // SDK's own trimming ships in customer JavaScript.
         sanitize_session_meta(obj);
-        if obj.get("version").and_then(serde_json::Value::as_u64) == Some(1) {
+        if take_billable_session_start(obj) {
             session_starts += 1;
         }
         rows.push(
@@ -4071,7 +4200,10 @@ async fn handle_signal_inner(
         .ok_or_else(|| {
             warn!("Unknown ingest key");
             record_stage_error(&auth_span_handle, "auth", "Unknown ingest key", false);
-            (ApiError::unauthorized("Invalid ingest key"), "auth")
+            (
+                ApiError::unauthorized(state.config.invalid_key_message),
+                "auth",
+            )
         })?;
     metrics::key_resolution_duration(key_resolve_start.elapsed().as_secs_f64());
     auth_span_handle.record("maple.ingest.key_type", resolved_key.key_type.as_str());
@@ -4708,6 +4840,7 @@ fn current_time_unix_nano() -> u64 {
 fn string_attribute(key: &str, value: &str) -> KeyValue {
     KeyValue {
         key: key.to_owned(),
+        key_strindex: 0,
         value: Some(AnyValue {
             value: Some(any_value::Value::StringValue(value.to_owned())),
         }),
@@ -4984,6 +5117,7 @@ fn upsert_string_attribute(attributes: &mut Vec<KeyValue>, key: &str, value: &st
 
     attributes.push(KeyValue {
         key: key.to_owned(),
+        key_strindex: 0,
         value: Some(AnyValue {
             value: Some(any_value::Value::StringValue(value.to_owned())),
         }),
@@ -5582,11 +5716,17 @@ impl ClickHouseTargetProvider for ClickHouseTargetResolver {
         if let Some(target) = self.cache.get(org_id).await {
             return Ok(Some(target));
         }
+        // Checked after the positive cache so a resolvable org never pays for it.
+        if self.negative_cache.get(org_id).await.is_some() {
+            return Ok(None);
+        }
 
         let Some(row) = self.store.fetch_clickhouse_target(org_id).await? else {
+            self.negative_cache.insert(org_id.to_owned(), ()).await;
             return Ok(None);
         };
         if !schema_revision_is_compatible(&row.schema_version) {
+            self.negative_cache.insert(org_id.to_owned(), ()).await;
             return Ok(None);
         }
 
@@ -6288,6 +6428,26 @@ fn spawn_key_store_reprobe(store: Arc<PostgresKeyStore>, ready: Arc<AtomicBool>)
     });
 }
 
+/// Keys live in one region's database, so a valid key sent to the other
+/// region's ingest is indistinguishable from a bogus one here. `MAPLE_REGION`
+/// is set only on the hosted prd fleets; unset (self-hosted, local, previews)
+/// keeps the plain message, since there is no sibling instance to point at.
+fn invalid_ingest_key_message(region: Option<&str>) -> Result<&'static str, String> {
+    let region = region.unwrap_or_default().trim().to_ascii_lowercase();
+    match region.as_str() {
+        "" => Ok("Invalid ingest key"),
+        "us" => Ok(concat!(
+            "Invalid ingest key. Keys are region-specific: if your Maple org is in the EU, ",
+            "send to https://ingest.eu.maple.dev."
+        )),
+        "eu" => Ok(concat!(
+            "Invalid ingest key. Keys are region-specific: if your Maple org is in the US, ",
+            "send to https://ingest.maple.dev."
+        )),
+        other => Err(format!("MAPLE_REGION must be us or eu, got {other:?}")),
+    }
+}
+
 fn parse_bool(name: &str, raw: Option<String>, default: bool) -> Result<bool, String> {
     let Some(raw) = raw else {
         return Ok(default);
@@ -6388,6 +6548,26 @@ mod tests {
     use std::sync::atomic::AtomicBool;
 
     #[test]
+    fn invalid_key_message_points_at_the_other_region() {
+        assert_eq!(invalid_ingest_key_message(None), Ok("Invalid ingest key"));
+        assert_eq!(
+            invalid_ingest_key_message(Some("us")),
+            Ok(concat!(
+                "Invalid ingest key. Keys are region-specific: if your Maple org is in the EU, ",
+                "send to https://ingest.eu.maple.dev."
+            ))
+        );
+        assert_eq!(
+            invalid_ingest_key_message(Some(" EU ")),
+            Ok(concat!(
+                "Invalid ingest key. Keys are region-specific: if your Maple org is in the US, ",
+                "send to https://ingest.maple.dev."
+            ))
+        );
+        assert!(invalid_ingest_key_message(Some("apac")).is_err());
+    }
+
+    #[test]
     fn postgres_target_is_derived_from_the_connection_string() {
         let config = "postgres://user:pw@psbouncer.example.com:6432/maple_prod"
             .parse::<tokio_postgres::Config>()
@@ -6450,6 +6630,7 @@ mod tests {
         assert_eq!(otel_status_for_rejection(400, "enrich"), "Error");
         assert_eq!(otel_status_for_rejection(400, "decode"), "Error");
         assert_eq!(otel_status_for_rejection(400, "bad_request"), "Error");
+        assert_eq!(otel_status_for_rejection(400, "malformed_body"), "Ok"); // never a gzip stream
 
         assert!(rejection_loses_data("enrich"));
         assert!(rejection_loses_data("decode"));
@@ -6617,12 +6798,14 @@ mod tests {
         let mut attributes = vec![
             KeyValue {
                 key: "org_id".to_owned(),
+                key_strindex: 0,
                 value: Some(AnyValue {
                     value: Some(any_value::Value::StringValue("spoofed".to_owned())),
                 }),
             },
             KeyValue {
                 key: "maple_org_id".to_owned(),
+                key_strindex: 0,
                 value: Some(AnyValue {
                     value: Some(any_value::Value::StringValue("spoofed".to_owned())),
                 }),
@@ -7035,6 +7218,7 @@ mod tests {
         ingest_key_fetches: AtomicU64,
         connector_fetches: AtomicU64,
         routing_fetches: AtomicU64,
+        target_fetches: AtomicU64,
         routing_errors: AtomicBool,
     }
 
@@ -7125,6 +7309,7 @@ mod tests {
             &self,
             org_id: &str,
         ) -> Result<Option<ClickHouseTargetRow>, String> {
+            self.target_fetches.fetch_add(1, Ordering::Relaxed);
             Ok(self.targets.lock().unwrap().get(org_id).cloned())
         }
         async fn fetch_org_routing(&self, org_id: &str) -> Result<Option<OrgRouting>, String> {
@@ -7268,7 +7453,6 @@ mod tests {
         TinybirdConfig {
             endpoint: String::new(),
             token: String::new(),
-            mirror: None,
             queue_dir,
             queue_max_bytes: 1024 * 1024,
             org_queue_max_bytes: 1024 * 1024,
@@ -7278,6 +7462,7 @@ mod tests {
             wal_store_heartbeat_interval: maple_ingest::wal_store::DEFAULT_HEARTBEAT_INTERVAL,
             batch_max_rows: 100,
             batch_max_bytes: 1024 * 1024,
+            queue_max_age: Duration::ZERO,
             batch_max_wait: Duration::from_millis(1),
             export_concurrency_per_shard: 1,
             export_max_attempts: 1,
@@ -7297,6 +7482,7 @@ mod tests {
                 resource: Some(Resource {
                     attributes: vec![KeyValue {
                         key: "service.name".to_owned(),
+                        key_strindex: 0,
                         value: Some(AnyValue {
                             value: Some(any_value::Value::StringValue("routing-test".to_owned())),
                         }),
@@ -7349,14 +7535,8 @@ mod tests {
         let tinybird = test_tinybird_config(queue_dir);
         let key_store: Arc<dyn KeyStore> = Arc::<FakeKeyStore>::clone(&store);
         let routing = make_routing_resolver(Arc::clone(&store), routing_ttl);
-        let clickhouse_targets = Arc::new(ClickHouseTargetResolver {
-            store: Arc::clone(&key_store),
-            encryption_key: None,
-            cache: Cache::builder()
-                .time_to_live(Duration::from_mins(1))
-                .max_capacity(16)
-                .build(),
-        });
+        let clickhouse_targets =
+            Arc::new(ClickHouseTargetResolver::new(Arc::clone(&key_store), None, 16));
         let http_client = Client::builder()
             .timeout(Duration::from_secs(5))
             .build()
@@ -7382,6 +7562,7 @@ mod tests {
                 tinybird,
                 max_request_body_bytes: 1024 * 1024,
                 org_max_in_flight: 100,
+                request_timeout: Duration::from_secs(30),
                 require_tls: false,
                 key_store_backend: KeyStoreBackend::Static {
                     org_id: "org_test".to_owned(),
@@ -7400,6 +7581,7 @@ mod tests {
                 trust_proxy_geo: false,
                 shutdown_drain_secs: 1,
             wal_store: None,
+                invalid_key_message: "Invalid ingest key",
             },
             #[expect(
                 clippy::useless_conversion,
@@ -7767,11 +7949,7 @@ mod tests {
             1,
             1,
         ));
-        state.autumn_tracker = Some(AutumnTracker::spawn(
-            "am_sk_test".to_string(),
-            &api_url,
-            1,
-        ));
+        state.autumn_tracker = Some(AutumnTracker::spawn("am_sk_test".to_string(), &api_url, 1));
         (state, rx)
     }
 
@@ -8001,6 +8179,148 @@ mod tests {
             "message must keep the stable fingerprint prefix, got {:?}",
             rejection.message
         );
+        // Never a gzip stream: a caller-side rejection, no telemetry lost.
+        assert_eq!(rejection.error_kind(), "malformed_body");
+        assert_eq!(
+            otel_status_for_rejection(rejection.status.as_u16(), rejection.error_kind()),
+            "Ok"
+        );
+
+        // The crawler signatures seen in production: a valid zero-MTIME header
+        // missing the `8b`, and a body that stops after the magic bytes.
+        // Plus a right-magic header with an unknown compression method, and one
+        // with a reserved flag bit set: neither is a stream deflate ever wrote.
+        for body in [
+            &b"\x1f\x08\x00\x00\x00\x00\x00\x00\x03\xec\xbd\x89\x28\x2b\x1c\x39\x00\x00\x00\x00"[..],
+            &b"\x1f\x8b\x08"[..],
+            &b"\x1f\x8b\x07\x00\x00\x00\x00\x00\x00\x03\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"[..],
+            &b"\x1f\x8b\x08\x80\x00\x00\x00\x00\x00\x03\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"[..],
+        ] {
+            let error = decompressed_len(body).expect_err("crawler body must be rejected");
+            let rejection = replay_gunzip_rejection(&HeaderMap::new(), body, &error);
+            assert_eq!(rejection.error_kind(), "malformed_body", "{:?}", body);
+        }
+
+        // A real stream cut short is a recording chunk we lost: still an `Error`.
+        use std::io::Write as _;
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&vec![b'x'; 4096]).unwrap();
+        let gzipped = encoder.finish().unwrap();
+        let truncated = &gzipped[..gzipped.len() / 2];
+        let error = decompressed_len(truncated).expect_err("truncated gzip must be rejected");
+        let rejection = replay_gunzip_rejection(&HeaderMap::new(), truncated, &error);
+        assert_eq!(rejection.error_kind(), "bad_request");
+        assert_eq!(
+            otel_status_for_rejection(rejection.status.as_u16(), rejection.error_kind()),
+            "Error"
+        );
+    }
+
+    #[tokio::test]
+    async fn unresolvable_clickhouse_target_is_only_looked_up_once_per_ttl() {
+        // The export retry loop calls this on every attempt of every batch, and a
+        // `None` used to be the one outcome nothing cached — so an org with no
+        // target row (or one stamped with a schema revision this binary predates)
+        // drove `INGEST_EXPORT_MAX_ATTEMPTS` Postgres queries per batch, against
+        // the same 8-connection pool the accept path resolves ingest keys
+        // through.
+        let store = Arc::new(FakeKeyStore::default());
+        let resolver =
+            ClickHouseTargetResolver::new(Arc::clone(&store) as Arc<dyn KeyStore>, None, 16);
+
+        for _ in 0..20 {
+            assert!(resolver
+                .resolve_clickhouse_target("org_missing")
+                .await
+                .unwrap()
+                .is_none());
+        }
+        assert_eq!(
+            store.target_fetches.load(Ordering::Relaxed),
+            1,
+            "a missing target must be remembered, not re-queried on every attempt"
+        );
+
+        // A row stamped with a revision this binary refuses — here the legacy
+        // content-hash shape, which parses to -1 — is equally unresolvable, and
+        // equally pointless to re-query.
+        store.insert_clickhouse_target(
+            "org_legacy_revision",
+            ClickHouseTargetRow {
+                ch_url: "https://ch.example.com".to_owned(),
+                ch_user: "ingest".to_owned(),
+                ch_password_ciphertext: None,
+                ch_password_iv: None,
+                ch_password_tag: None,
+                ch_database: "maple".to_owned(),
+                schema_version: "2967fa9b".to_owned(),
+            },
+        );
+        for _ in 0..20 {
+            assert!(resolver
+                .resolve_clickhouse_target("org_legacy_revision")
+                .await
+                .unwrap()
+                .is_none());
+        }
+        assert_eq!(
+            store.target_fetches.load(Ordering::Relaxed),
+            2,
+            "a refused schema revision must be remembered too"
+        );
+    }
+
+    #[tokio::test]
+    async fn request_timeout_sheds_a_stalled_request_as_a_retryable_503() {
+        // The condition this exists for: a handler that neither fails nor
+        // returns. Before the deadline the request simply sat there, so the
+        // stall showed up as p95 in the tens of seconds with a per-route error
+        // rate of zero — a hung request is not a failed one, and nothing on the
+        // accept path was counting the difference.
+        // A parameterised route, so the middleware's `MatchedPath` lookup is
+        // exercised on the shape that would otherwise put one metric label on
+        // every connector id.
+        let app = Router::new()
+            .route(
+                "/v1/logpush/cloudflare/http_requests/{connector_id}",
+                post(|| async {
+                    std::future::pending::<()>().await;
+                    StatusCode::OK
+                }),
+            )
+            .layer(axum::middleware::from_fn_with_state(
+                Duration::from_millis(50),
+                request_timeout_middleware,
+            ));
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let response = Client::new()
+            .post(format!(
+                "http://{addr}/v1/logpush/cloudflare/http_requests/conn_abc123"
+            ))
+            .body("x")
+            .send()
+            .await
+            .expect("the gateway must answer rather than hang");
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        // Retry-After and a retryable tag are the difference between a client
+        // that backs off and one that hammers a saturated gateway.
+        assert_eq!(
+            response
+                .headers()
+                .get(RETRY_AFTER)
+                .and_then(|value| value.to_str().ok()),
+            Some("5")
+        );
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["error"]["_tag"], "@maple/ingest/RequestTimeout");
+        assert_eq!(body["error"]["retryable"], true);
     }
 
     #[test]
@@ -8814,14 +9134,7 @@ mod tests {
             },
         );
 
-        let resolver = ClickHouseTargetResolver {
-            store,
-            encryption_key: None,
-            cache: Cache::builder()
-                .time_to_live(Duration::from_mins(1))
-                .max_capacity(16)
-                .build(),
-        };
+        let resolver = ClickHouseTargetResolver::new(store, None, 16);
 
         let target = resolver
             .resolve_clickhouse_target("org_old")
@@ -8846,17 +9159,10 @@ mod tests {
             },
         );
 
-        let resolver = ClickHouseTargetResolver {
-            store,
-            encryption_key: Some(
+        let resolver = ClickHouseTargetResolver::new(store, Some(
                 parse_base64_aes256_gcm_key("BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU=")
                     .unwrap(),
-            ),
-            cache: Cache::builder()
-                .time_to_live(Duration::from_mins(1))
-                .max_capacity(16)
-                .build(),
-        };
+            ), 16);
 
         let target = resolver
             .resolve_clickhouse_target("org_ready")
@@ -8885,17 +9191,10 @@ mod tests {
             },
         );
 
-        let resolver = ClickHouseTargetResolver {
-            store,
-            encryption_key: Some(
+        let resolver = ClickHouseTargetResolver::new(store, Some(
                 parse_base64_aes256_gcm_key("BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU=")
                     .unwrap(),
-            ),
-            cache: Cache::builder()
-                .time_to_live(Duration::from_mins(1))
-                .max_capacity(16)
-                .build(),
-        };
+            ), 16);
 
         let error = resolver
             .resolve_clickhouse_target("org_insecure")

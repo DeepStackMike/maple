@@ -1,11 +1,15 @@
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query"
+import { keepPreviousData, useInfiniteQuery, useQuery } from "@tanstack/react-query"
 import { CH } from "@maple/query-engine"
-import { executeLocalCompiledQuery } from "@/lib/query"
-import { LOCAL_ORG_ID } from "../lib/constants"
-import { boundsForRange } from "../lib/time"
 import type { FilterOption } from "@maple/ui/components/filters/filter-section"
+import { boundsKey, executeLocalCompiledQuery, localParams, noCursor } from "@/lib/query"
+import type { TimeBounds } from "../lib/time"
 
 const PAGE_SIZE = 50
+
+interface SessionCursor {
+	startTime: string
+	sessionId: string
+}
 
 export interface SessionFilters {
 	service?: string
@@ -27,17 +31,15 @@ export interface SessionFilters {
 	errorsOnly?: boolean
 	/** Substring match on the initial page URL. */
 	search?: string
-	/** Time-range preset key (see `TIME_RANGES`). */
-	range?: string
 }
 
 /** Infinite list of browser sessions, newest first (keyset on StartTime). */
-export function useLocalSessions(filters: SessionFilters) {
+export function useLocalSessions(filters: SessionFilters, bounds: TimeBounds) {
 	return useInfiniteQuery({
-		queryKey: ["local", "sessions", filters],
-		initialPageParam: undefined as string | undefined,
-		queryFn: async ({ pageParam }) => {
-			const { startTime, endTime } = boundsForRange(filters.range)
+		queryKey: ["local", "sessions", filters, boundsKey(bounds)],
+		initialPageParam: noCursor<SessionCursor>(),
+		placeholderData: keepPreviousData,
+		queryFn: async ({ pageParam, signal }) => {
 			const compiled = CH.compile(
 				CH.sessionReplaysListQuery({
 					limit: PAGE_SIZE,
@@ -50,12 +52,18 @@ export function useLocalSessions(filters: SessionFilters) {
 					hasErrors: filters.errorsOnly,
 					search: filters.search,
 				}),
-				{ orgId: LOCAL_ORG_ID, startTime, endTime },
+				localParams(bounds),
 			)
-			return executeLocalCompiledQuery(compiled)
+			return executeLocalCompiledQuery(compiled, signal)
 		},
-		getNextPageParam: (lastPage) =>
-			lastPage.length === PAGE_SIZE ? lastPage[lastPage.length - 1]?.startTime : undefined,
+		// (StartTime, SessionId), not StartTime alone: the SDK stamps start times
+		// from a JS `Date`, so they are only millisecond-resolution and two
+		// sessions sharing one is ordinary. A page boundary landing inside such a
+		// tie would drop every session on the far side of it.
+		getNextPageParam: (lastPage) => {
+			const last = lastPage.length === PAGE_SIZE ? lastPage[lastPage.length - 1] : undefined
+			return last ? { startTime: last.startTime, sessionId: last.sessionId } : undefined
+		},
 	})
 }
 
@@ -82,12 +90,11 @@ const EMPTY_FACETS: SessionFacets = {
  * active filter so selecting it doesn't collapse the option list (handled in
  * the DSL query).
  */
-export function useLocalSessionFacets(filters: SessionFilters) {
+export function useLocalSessionFacets(filters: SessionFilters, bounds: TimeBounds) {
 	return useQuery<SessionFacets>({
-		queryKey: ["local", "session-facets", filters],
+		queryKey: ["local", "session-facets", filters, boundsKey(bounds)],
 		staleTime: 30_000,
-		queryFn: async () => {
-			const { startTime, endTime } = boundsForRange(filters.range)
+		queryFn: async ({ signal }) => {
 			const compiled = CH.compileUnion(
 				CH.sessionReplaysFacetsQuery({
 					serviceName: filters.service,
@@ -98,9 +105,9 @@ export function useLocalSessionFacets(filters: SessionFilters) {
 					hasErrors: filters.errorsOnly,
 					search: filters.search,
 				}),
-				{ orgId: LOCAL_ORG_ID, startTime, endTime },
+				localParams(bounds),
 			)
-			const rows = await executeLocalCompiledQuery(compiled)
+			const rows = await executeLocalCompiledQuery(compiled, signal)
 
 			const pick = (facetType: string): ReadonlyArray<FilterOption> =>
 				rows
@@ -115,6 +122,6 @@ export function useLocalSessionFacets(filters: SessionFilters) {
 				errorCount: rows.find((row) => row.facetType === "error")?.count ?? 0,
 			}
 		},
-		placeholderData: EMPTY_FACETS,
+		placeholderData: (previous) => previous ?? EMPTY_FACETS,
 	})
 }

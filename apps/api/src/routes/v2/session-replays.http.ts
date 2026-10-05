@@ -24,9 +24,11 @@ import type {
 	V2SessionTranscriptEvent,
 } from "@maple/domain/http/v2"
 import { CH, formatWarehouseDateTime } from "@maple/query-engine"
+import { sessionTagsOf } from "@maple/domain/query-engine"
 import { Effect, Layer, Option, Schema } from "effect"
-import { WarehouseQueryService } from "@/services/warehouse/WarehouseQueryService"
-import { ReplayBlobStore, ReplayBlobStoreLive } from "@/platform/ReplayBlobStore"
+import { decodeKeysetCursor, encodeKeysetCursor } from "@/routes/v2/keyset-cursor"
+import { WarehouseQueryService } from "@maple/backend/services/warehouse/WarehouseQueryService"
+import { ReplayBlobStore } from "@maple/backend/platform/ReplayBlobStore"
 
 const decodeSessionId = Schema.decodeSync(SessionId)
 const decodeTraceId = Schema.decodeSync(TraceId)
@@ -112,106 +114,120 @@ const HttpV2SessionReplaysGroup = HttpApiBuilder.group(MapleApiV2, "sessionRepla
 					const tenant = yield* CurrentTenant.Context
 					const startTime = yield* toTinybird(payload.start_time, "start_time")
 					const endTime = yield* toTinybird(payload.end_time, "end_time")
-					const page = yield* paginateOffsetQuery(payload, ({ limit, offset }) =>
-						Effect.gen(function* () {
-							const compiled = CH.compile(
-								CH.sessionReplaysListQuery({
-									...(payload.service_name !== undefined
-										? {
-												serviceName: payload.service_name,
-											}
-										: undefined),
-									...(payload.browser !== undefined
-										? { browser: payload.browser }
-										: undefined),
-									...(payload.country !== undefined
-										? { country: payload.country }
-										: undefined),
-									...(payload.device_type !== undefined
-										? { deviceType: payload.device_type }
-										: undefined),
-									...(payload.user_id !== undefined
-										? { userId: payload.user_id }
-										: undefined),
-									...(payload.user_search !== undefined
-										? { userSearch: payload.user_search }
-										: undefined),
-									...(payload.group_name !== undefined
-										? { groupName: payload.group_name }
-										: undefined),
-									...(payload.visitor_id !== undefined
-										? { visitorId: payload.visitor_id }
-										: undefined),
-									...(payload.has_errors !== undefined
-										? { hasErrors: payload.has_errors }
-										: undefined),
-									...(payload.search !== undefined
-										? { search: payload.search }
-										: undefined),
-									...(payload.duration_min_ms !== undefined
-										? {
-												durationMinMs: payload.duration_min_ms,
-											}
-										: undefined),
-									...(payload.duration_max_ms !== undefined
-										? {
-												durationMaxMs: payload.duration_max_ms,
-											}
-										: undefined),
-									...(payload.active_time_min_ms !== undefined
-										? {
-												activeTimeMinMs: payload.active_time_min_ms,
-											}
-										: undefined),
-									...(payload.active_time_max_ms !== undefined
-										? {
-												activeTimeMaxMs: payload.active_time_max_ms,
-											}
-										: undefined),
-									limit,
-									offset,
-								}),
-								{ orgId: tenant.orgId, startTime, endTime },
-							)
-							return yield* warehouse
-								.compiledQuery(tenant, compiled, {
-									profile: "list",
-									context: "v2SearchReplays",
-								})
-								.pipe(
-									Effect.map(
-										(rows): ReadonlyArray<V2SessionReplayListItem> =>
-											rows.map((row) => ({
-												id: decodeSessionId(row.sessionId),
-												object: "session_replay" as const,
-												start_time: chToIso(row.startTime),
-												end_time: chToIsoOrNull(row.endTime),
-												duration_ms: row.durationMs,
-												status: row.status,
-												user_id: nullableUserId(row.userId),
-												user_name: row.userName,
-												user_email: row.userEmail,
-												group_id: row.groupId,
-												group_name: row.groupName,
-												url_initial: row.urlInitial,
-												browser_name: row.browserName,
-												os_name: row.osName,
-												device_type: row.deviceType,
-												country: row.country,
-												service_name: row.serviceName,
-												page_views: row.pageViews,
-												click_count: row.clickCount,
-												error_count: row.errorCount,
-												// `length()` is UInt64 — ClickHouse JSON-quotes it as a string.
-												trace_count: Number(row.traceCount),
-											})),
-									),
-								)
+					// Keyset, not offset. This list is newest-first over a table the
+					// SDK is writing to continuously, so by the time the reader asks
+					// for the next page the sessions that arrived since page one have
+					// pushed everything down — an offset then re-slices the shifted
+					// window and returns rows page one already showed. The keyset
+					// walks (StartTime, SessionId) instead, which no insert at the
+					// head can disturb.
+					const limit = payload.limit ?? LIST_LIMIT_DEFAULT
+					const cursorParts = yield* decodeKeysetCursor(payload.cursor, "ses", 2)
+					const compiled = CH.compile(
+						CH.sessionReplaysListQuery({
+							...(payload.service_name !== undefined
+								? {
+										serviceName: payload.service_name,
+									}
+								: undefined),
+							...(payload.browser !== undefined ? { browser: payload.browser } : undefined),
+							...(payload.country !== undefined ? { country: payload.country } : undefined),
+							...(payload.device_type !== undefined
+								? { deviceType: payload.device_type }
+								: undefined),
+							...(payload.user_id !== undefined ? { userId: payload.user_id } : undefined),
+							...(payload.user_search !== undefined
+								? { userSearch: payload.user_search }
+								: undefined),
+							...(payload.group_name !== undefined
+								? { groupName: payload.group_name }
+								: undefined),
+							...(payload.visitor_id !== undefined
+								? { visitorId: payload.visitor_id }
+								: undefined),
+							...(payload.has_errors !== undefined
+								? { hasErrors: payload.has_errors }
+								: undefined),
+							...(payload.search !== undefined ? { search: payload.search } : undefined),
+							...(payload.page_path !== undefined
+								? { pagePath: payload.page_path }
+								: undefined),
+							...(payload.tags !== undefined ? { tags: payload.tags } : undefined),
+							...(payload.duration_min_ms !== undefined
+								? {
+										durationMinMs: payload.duration_min_ms,
+									}
+								: undefined),
+							...(payload.duration_max_ms !== undefined
+								? {
+										durationMaxMs: payload.duration_max_ms,
+									}
+								: undefined),
+							...(payload.active_time_min_ms !== undefined
+								? {
+										activeTimeMinMs: payload.active_time_min_ms,
+									}
+								: undefined),
+							...(payload.active_time_max_ms !== undefined
+								? {
+										activeTimeMaxMs: payload.active_time_max_ms,
+									}
+								: undefined),
+							cursor: cursorParts
+								? { startTime: cursorParts[0]!, sessionId: cursorParts[1]! }
+								: undefined,
+							// One row of lookahead decides `has_more` without a
+							// second count query.
+							limit: limit + 1,
 						}),
+						{ orgId: tenant.orgId, startTime, endTime },
 					)
+					const rows = yield* warehouse.compiledQuery(tenant, compiled, {
+						profile: "list",
+						context: "v2SearchReplays",
+					})
+
+					const dataRows = rows.slice(0, limit)
+					const last = dataRows.at(-1)
+					const hasMore = rows.length > limit
 					return {
 						object: "list" as const,
-						...page,
+						data: dataRows.map((row): V2SessionReplayListItem => ({
+							id: decodeSessionId(row.sessionId),
+							object: "session_replay" as const,
+							start_time: chToIso(row.startTime),
+							end_time: chToIsoOrNull(row.endTime),
+							duration_ms: row.durationMs,
+							status: row.status,
+							last_activity_at: chToIsoOrNull(row.lastActivityAt),
+							user_id: nullableUserId(row.userId),
+							user_name: row.userName,
+							user_email: row.userEmail,
+							group_id: row.groupId,
+							group_name: row.groupName,
+							visitor_id: row.visitorId,
+							utm_source: row.utmSource,
+							entry_path: row.entryPath,
+							recorded:
+								row.recorded === "true" ? true : row.recorded === "false" ? false : null,
+							url_initial: row.urlInitial,
+							browser_name: row.browserName,
+							os_name: row.osName,
+							device_type: row.deviceType,
+							country: row.country,
+							service_name: row.serviceName,
+							page_views: row.pageViews,
+							click_count: row.clickCount,
+							error_count: row.errorCount,
+							// `length()` is UInt64 — ClickHouse JSON-quotes it as a string.
+							trace_count: Number(row.traceCount),
+							tags: sessionTagsOf(row),
+						})),
+						has_more: hasMore,
+						next_cursor:
+							hasMore && last
+								? encodeKeysetCursor("ses", [last.startTime, last.sessionId])
+								: null,
 					}
 				}),
 			)
@@ -266,6 +282,21 @@ const HttpV2SessionReplaysGroup = HttpApiBuilder.group(MapleApiV2, "sessionRepla
 						user_email: data.userEmail,
 						group_id: data.groupId,
 						group_name: data.groupName,
+						visitor_id: data.visitorId,
+						visitor_is_new: Number(data.visitorIsNew) === 1,
+						user_traits: data.userTraits,
+						referrer: data.referrer,
+						referrer_host: data.referrerHost,
+						utm_source: data.utmSource,
+						utm_medium: data.utmMedium,
+						utm_campaign: data.utmCampaign,
+						utm_term: data.utmTerm,
+						utm_content: data.utmContent,
+						host: data.host,
+						entry_path: data.entryPath,
+						exit_path: data.exitPath,
+						language: data.language,
+						last_activity_at: chToIsoOrNull(data.lastActivityAt),
 						url_initial: data.urlInitial,
 						browser_name: data.browserName,
 						os_name: data.osName,
@@ -418,18 +449,17 @@ const HttpV2SessionReplaysGroup = HttpApiBuilder.group(MapleApiV2, "sessionRepla
 									// Blob-backed rows (empty `events`) get their payload from
 									// R2; pre-cutover rows already carry it inline.
 									Effect.flatMap((rows) => blobs.hydrate(tenant.orgId, params.id, rows)),
-									Effect.map(
-										(rows): ReadonlyArray<V2SessionReplayChunk> =>
-											rows.map((row) => ({
-												object: "session_replay.event_chunk" as const,
-												chunk_seq: Number(row.chunkSeq),
-												timestamp: chToIso(row.timestamp),
-												duration_ms: Number(row.durationMs),
-												event_count: Number(row.eventCount),
-												byte_size: Number(row.byteSize),
-												is_checkpoint: Number(row.isCheckpoint) !== 0,
-												events: row.events,
-											})),
+									Effect.map((rows): ReadonlyArray<V2SessionReplayChunk> =>
+										rows.map((row) => ({
+											object: "session_replay.event_chunk" as const,
+											chunk_seq: Number(row.chunkSeq),
+											timestamp: chToIso(row.timestamp),
+											duration_ms: Number(row.durationMs),
+											event_count: Number(row.eventCount),
+											byte_size: Number(row.byteSize),
+											is_checkpoint: Number(row.isCheckpoint) !== 0,
+											events: row.events,
+										})),
 									),
 								)
 						}),
@@ -464,36 +494,36 @@ const HttpV2SessionReplaysGroup = HttpApiBuilder.group(MapleApiV2, "sessionRepla
 											? requireSession(tenant, params.id, windowStart, windowEnd)
 											: Effect.void,
 									),
-									Effect.map(
-										(rows): ReadonlyArray<V2SessionTranscriptEvent> =>
-											rows.map((row) => ({
-												object: "session_replay.transcript_event" as const,
-												timestamp: chToIso(row.timestamp),
-												seq: row.seq,
-												type: row.type,
-												url: row.url,
-												trace_id: row.traceId ? decodeTraceId(row.traceId) : null,
-												level: row.level === "" ? null : row.level,
-												message: row.message === "" ? null : row.message,
-												target_selector:
-													row.targetSelector === "" ? null : row.targetSelector,
-												target_text: row.targetText === "" ? null : row.targetText,
-												net_method:
-													row.type === "network" && row.netMethod !== ""
-														? row.netMethod
-														: null,
-												net_url:
-													row.type === "network" && row.netUrl !== ""
-														? row.netUrl
-														: null,
-												net_status: row.type === "network" ? row.netStatus : null,
-												net_duration_ms:
-													row.type === "network" ? row.netDurationMs : null,
-												error_stack:
-													row.type === "error" && row.errorStack !== ""
-														? row.errorStack
-														: null,
-											})),
+									Effect.map((rows): ReadonlyArray<V2SessionTranscriptEvent> =>
+										rows.map((row) => ({
+											object: "session_replay.transcript_event" as const,
+											timestamp: chToIso(row.timestamp),
+											seq: row.seq,
+											attributes: row.attributes,
+											type: row.type,
+											url: row.url,
+											trace_id: row.traceId ? decodeTraceId(row.traceId) : null,
+											level: row.level === "" ? null : row.level,
+											message: row.message === "" ? null : row.message,
+											target_selector:
+												row.targetSelector === "" ? null : row.targetSelector,
+											target_text: row.targetText === "" ? null : row.targetText,
+											net_method:
+												row.type === "network" && row.netMethod !== ""
+													? row.netMethod
+													: null,
+											net_url:
+												row.type === "network" && row.netUrl !== ""
+													? row.netUrl
+													: null,
+											net_status: row.type === "network" ? row.netStatus : null,
+											net_duration_ms:
+												row.type === "network" ? row.netDurationMs : null,
+											error_stack:
+												row.type === "error" && row.errorStack !== ""
+													? row.errorStack
+													: null,
+										})),
 									),
 								)
 						}),
@@ -518,14 +548,13 @@ const HttpV2SessionReplaysGroup = HttpApiBuilder.group(MapleApiV2, "sessionRepla
 									context: "v2ReplaysForTrace",
 								})
 								.pipe(
-									Effect.map(
-										(rows): ReadonlyArray<V2SessionReplayRef> =>
-											rows.map((row) => ({
-												object: "session_replay.ref" as const,
-												id: decodeSessionId(row.sessionId),
-												start_time: chToIso(row.startTime),
-												duration_ms: row.durationMs,
-											})),
+									Effect.map((rows): ReadonlyArray<V2SessionReplayRef> =>
+										rows.map((row) => ({
+											object: "session_replay.ref" as const,
+											id: decodeSessionId(row.sessionId),
+											start_time: chToIso(row.startTime),
+											duration_ms: row.durationMs,
+										})),
 									),
 								)
 						}),
@@ -544,4 +573,4 @@ const HttpV2SessionReplaysGroup = HttpApiBuilder.group(MapleApiV2, "sessionRepla
 // rather than pushed onto every caller that builds this group — the v2 route
 // tests construct their own layer stack and would otherwise have to know about
 // a storage detail of one handler.
-export const HttpV2SessionReplaysLive = HttpV2SessionReplaysGroup.pipe(Layer.provide(ReplayBlobStoreLive))
+export const HttpV2SessionReplaysLive = HttpV2SessionReplaysGroup.pipe(Layer.provide(ReplayBlobStore.layer))

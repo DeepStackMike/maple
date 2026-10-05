@@ -6,6 +6,7 @@ import { approximateSize } from "../platform/approximate-size"
 import { markActivity, noteNavigation } from "../session/session"
 import { activeTraceId } from "./trace-id"
 import { getVisitorId } from "../identity/visitor"
+import { scrubUrl } from "../platform/url-privacy"
 
 /**
  * A distilled, structured session event. Sparse: only the fields relevant to
@@ -27,6 +28,27 @@ export interface SessionEvent {
 	net?: { method: string; url: string; status: number; durationMs: number }
 	errorStack?: string
 	attrs?: Record<string, string>
+}
+
+type SessionEventListener = (ev: SessionEvent) => void
+
+/** On `globalThis` like the sink: every bundled copy of this module must see the same listeners. */
+const LISTENERS_KEY = "__MAPLE_SESSION_EVENT_LISTENERS__"
+
+function listeners(): Set<SessionEventListener> {
+	const global = globalThis as typeof globalThis & Record<string, Set<SessionEventListener> | undefined>
+	let set = global[LISTENERS_KEY]
+	if (!set) {
+		set = new Set()
+		global[LISTENERS_KEY] = set
+	}
+	return set
+}
+
+/** Observe every event the live sink records, e.g. for an error's breadcrumb trail. Returns an unsubscribe. */
+export function onSessionEvent(listener: SessionEventListener): () => void {
+	listeners().add(listener)
+	return () => listeners().delete(listener)
 }
 
 const FLUSH_INTERVAL_MS = 5_000
@@ -142,6 +164,12 @@ export function startEventSink(config: IngestConfig, sessionId: string): Session
 		buffer.push({ ev, seq: seq++ })
 		bufferBytes += approximateSize(ev)
 		if (bufferBytes >= FLUSH_BYTES) void flush()
+		for (const listener of listeners()) {
+			// A listener must never break capture.
+			try {
+				listener(ev)
+			} catch {}
+		}
 	}
 
 	// Navigation is observed by the sink rather than by a capture module: page
@@ -317,14 +345,14 @@ function toRow(
 		timestamp: formatCHDateTime(new Date(ev.timestamp ?? Date.now())),
 		seq,
 		type: ev.type,
-		url: ev.url ?? (typeof location !== "undefined" ? location.href : ""),
+		url: scrubUrl(ev.url ?? (typeof location !== "undefined" ? location.href : "")),
 		trace_id: ev.traceId ?? activeTraceId() ?? "",
 		level: ev.level ?? "",
 		message: ev.message ?? "",
 		target_selector: ev.targetSelector ?? "",
 		target_text: ev.targetText ?? "",
 		net_method: ev.net?.method ?? "",
-		net_url: ev.net?.url ?? "",
+		net_url: ev.net ? scrubUrl(ev.net.url) : "",
 		net_status: ev.net?.status ?? 0,
 		net_duration_ms: ev.net?.durationMs ?? 0,
 		error_stack: ev.errorStack ?? "",

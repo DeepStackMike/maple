@@ -1,13 +1,13 @@
 // ClickHouse Query DSL — Maple facade
 //
 // The generic, reusable query builder now lives in the standalone
-// @maple-dev/clickhouse-builder package. This module re-exports that public API
+// @maple-dev/effect-clickhouse package. This module re-exports that public API
 // and layers Maple's OpenTelemetry-specific table definitions, the named-query
 // ("pipe") registry, and the pre-built query templates on top of it.
 
 // Generic DSL — types, table, expressions, functions, params, query builder,
 // compilation, and unions — re-exported from the standalone library.
-export * from "@maple-dev/clickhouse-builder"
+export * from "@maple-dev/effect-clickhouse"
 
 // Handwritten SQL. Shadows the builder's `rawCompiledQuery`, whose `reason`
 // is any string, with one that pins Maple's closed `RawSqlReason` union — the
@@ -39,6 +39,7 @@ export {
 	traceListQuery,
 	traceServicesByTraceIdsQuery,
 	resourceNamespacesQuery,
+	traceSpanStatsByTraceIdsQuery,
 	traceSummariesQuery,
 	slowTracesQuery,
 	spanSearchQuery,
@@ -56,6 +57,8 @@ export {
 	type TraceServicesByTraceIdsOutput,
 	type ResourceNamespacesOpts,
 	type ResourceNamespacesOutput,
+	type TraceSpanStatsByTraceIdsOpts,
+	type TraceSpanStatsByTraceIdsOutput,
 	type TraceSummariesOpts,
 	type TraceSummaryOutput,
 	type SlowTracesOpts,
@@ -208,6 +211,22 @@ export {
 // left to be imported from `@maple/domain` alongside the query: a consumer that
 // decodes these rows should not need a second dependency to label them.
 export { WEB_ANALYTICS_UNSET } from "@maple/domain/query-engine"
+// Queries: Web Analytics AI tab (AI referrals and AI crawler fetches)
+export {
+	webAnalyticsAiReferralsQuery,
+	webAnalyticsAiCrawlersQuery,
+	webAnalyticsAiCrawlerFormatsQuery,
+	webAnalyticsAiCrawledPagesQuery,
+	aiReferralProductExpr,
+	aiContentFormatExpr,
+	type WebAnalyticsAiReferralsOpts,
+	type WebAnalyticsAiReferralsOutput,
+	type WebAnalyticsAiCrawlerFilters,
+	type WebAnalyticsAiCrawlersOutput,
+	type WebAnalyticsAiCrawlerFormatsOutput,
+	type WebAnalyticsAiCrawledPagesOpts,
+	type WebAnalyticsAiCrawledPagesOutput,
+} from "./queries/web-analytics-ai"
 
 // Queries — Product events (funnels over `product_events`)
 export {
@@ -223,13 +242,24 @@ export {
 	productEventPropertyKeysRowSchema,
 	productEventPropertyValuesQuery,
 	productEventPropertyValuesRowSchema,
+	productEventsForTraceQuery,
+	productEventTraceSamplesQuery,
+	productEventsFunnelTimingQuery,
+	productEventsFunnelTimingRowSchema,
+	productEventsFunnelLeaversQuery,
+	productEventsFunnelLeaversRowSchema,
 	ProductEventsFunnelError,
 	FUNNEL_MAX_STEPS,
 	FUNNEL_BREAKDOWN_MAX_GROUPS,
+	FUNNEL_LEAVERS_PER_STEP,
 	type FunnelStep,
 	type FunnelKeyBy,
 	type FunnelSessionDimension,
 	type FunnelBreakdownBy,
+	type ProductEventsForTraceOpts,
+	type ProductEventForTraceOutput,
+	type ProductEventTraceSamplesOpts,
+	type ProductEventTraceSampleOutput,
 	type ProductEventsFunnelOpts,
 	type ProductEventsFunnelOutput,
 	type ProductEventsFunnelBreakdownOpts,
@@ -242,7 +272,44 @@ export {
 	type ProductEventPropertyKeysOutput,
 	type ProductEventPropertyValuesOpts,
 	type ProductEventPropertyValuesOutput,
+	type ProductEventsFunnelTimingOutput,
+	type ProductEventsFunnelLeaversOutput,
 } from "./queries/product-events"
+
+// Queries — Product events (paths after / before an anchor)
+export {
+	productEventsPathsQuery,
+	productEventsPathsRowSchema,
+	PATHS_MAX_DEPTH,
+	PATHS_MAX_BRANCHES,
+	PATHS_OTHER,
+	type PathsAnchor,
+	type PathsDirection,
+	type PathsInclude,
+	type ProductEventsPathsOpts,
+	type ProductEventsPathsOutput,
+} from "./queries/product-events-paths"
+
+// Queries — Product events as a query-builder source (timeseries / breakdown / list)
+export {
+	productEventsTimeseriesQuery,
+	productEventsBreakdownQuery,
+	productEventsListQuery,
+	productEventAttributeKeysQuery,
+	productEventAttributeValuesQuery,
+	type ProductEventsQueryOpts,
+	type ProductEventsGroupByKey,
+	type ProductEventsTimeseriesOpts,
+	type ProductEventsTimeseriesOutput,
+	type ProductEventsBreakdownOpts,
+	type ProductEventsBreakdownOutput,
+	type ProductEventsListOpts,
+	type ProductEventsListOutput,
+	type ProductEventAttributeKeysOpts,
+	type ProductEventAttributeKeysOutput,
+	type ProductEventAttributeValuesOpts,
+	type ProductEventAttributeValuesOutput,
+} from "./queries/product-events-explore"
 
 // Queries — Services
 export {
@@ -284,6 +351,22 @@ export {
 	type ServiceCatalogVersionsOpts,
 	type ServiceCatalogVersionsOutput,
 } from "./queries/service-catalog-versions"
+// Queries — Releases
+export {
+	releasesListQuery,
+	releasesListRowSchema,
+	releasesTimelineQuery,
+	releaseErrorFingerprintsQuery,
+	releaseErrorFingerprintsRowSchema,
+	RELEASES_LIST_CAP,
+	PLACEHOLDER_COMMIT_SHAS,
+	type ReleasesListOpts,
+	type ReleasesListOutput,
+	type ReleasesTimelineOpts,
+	type ReleasesTimelineOutput,
+	type ReleaseErrorFingerprintsOpts,
+	type ReleaseErrorFingerprintsOutput,
+} from "./queries/releases"
 
 // Queries — Errors
 export {
@@ -299,6 +382,7 @@ export {
 	spanDetailQuery,
 	traceTimeProbeQuery,
 	tracesDurationStatsQuery,
+	canUseTraceFacetsRollup,
 	tracesFacetsQuery,
 	errorsFacetsQuery,
 	errorsSummaryQuery,
@@ -388,15 +472,9 @@ export {
 	serviceDbTopQueriesSQL,
 	servicePlatformsSQL,
 	serviceMapEdgeJoinQuery,
-	serviceMapEdgesQuery,
-	serviceMapNodeStatsQuery,
 	type ServiceDependenciesOpts,
 	type ServiceDependenciesForServiceOpts,
 	type ServiceDependenciesOutput,
-	type ServiceMapEdgesOpts,
-	type ServiceMapEdgesOutput,
-	type ServiceMapNodeStatsOpts,
-	type ServiceMapNodeStatsOutput,
 	type ServiceDbEdgesOpts,
 	type ServiceDbEdgesForServiceOpts,
 	type ServiceDbEdgesOutput,
@@ -417,6 +495,14 @@ export {
 	serviceMapEdgesExistingHoursSQL,
 	serviceMapResolutionsExistingHoursSQL,
 	serviceMapResolutionsRollupSQL,
+	SERVICE_MAP_ROLLUP_HOUR_MS,
+	SERVICE_MAP_ROLLUP_LOOKBACK_HOURS,
+	serviceMapRollupCandidateHours,
+	serviceMapHourSet,
+	serviceMapRollupMissingHours,
+	serviceMapResolutionRepairHours,
+	serviceMapRollupHourParams,
+	serviceMapRollupWindowParams,
 	type ServiceMapEdgesRollupParams,
 	type ServiceMapEdgesHourlyOutput,
 	type ServiceMapEdgesExistingHour,
@@ -473,6 +559,13 @@ export {
 	type AlertChecksSummaryOutput,
 } from "./queries/alert-checks"
 
+// Queries — Audit log (org-wide audit trail, admin-only)
+export {
+	auditLogEntriesQuery,
+	type AuditLogEntriesOpts,
+	type AuditLogEntriesOutput,
+} from "./queries/audit-log"
+
 // Queries — Cloudflare integration usage (integrations-page ingest proof)
 
 // Queries — Cloudflare service-map stats (per-zone / per-Worker node rollups)
@@ -501,6 +594,13 @@ export {
 	type ServiceLivenessOutput,
 	type TelemetryPulseOutput,
 } from "./queries/liveness"
+
+// Queries — Signal presence (what the org has ever sent, per signal; drives every empty state)
+export {
+	signalPresenceQuery,
+	type SignalPresenceOutput,
+	type TelemetrySignal,
+} from "./queries/signal-presence"
 
 // Queries — Top Operations (per-service operation ranking by metric)
 export {

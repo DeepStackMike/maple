@@ -12,18 +12,22 @@ import { QueryEngineExecuteResponse } from "@maple/query-engine"
 import { ConfigProvider, Context, Effect, Layer, ManagedRuntime, Option, Schema } from "effect"
 import { HttpRouter } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
-import { Env } from "@/platform/Env"
-import { cleanupTestDbs, createTestDb, type TestDb } from "@/platform/test-pglite"
-import { ApiAuthorizationV2Layer } from "@/services/auth/ApiAuthorizationV2Layer"
-import { ApiKeysService } from "@/services/org/ApiKeysService"
-import { AuthService } from "@/services/auth/AuthService"
-import { DashboardPersistenceService } from "@/services/dashboards/DashboardPersistenceService"
-import { ErrorIssueReadModelsService } from "@/services/errors/ErrorIssueReadModelsService"
-import { LiveActivitiesService } from "@/services/push/LiveActivitiesService"
-import { MobileDevicesService } from "@/services/push/MobileDevicesService"
-import { SharedDashboardService } from "@/services/dashboards/SharedDashboardService"
-import { QueryEngineService, type QueryEngineServiceApi } from "@/services/warehouse/QueryEngineService"
-import { WarehouseQueryService } from "@/services/warehouse/WarehouseQueryService"
+import { Env } from "@maple/backend/platform/Env"
+import { cleanupTestDbs, createTestDb, type TestDb } from "@maple/backend/platform/test-pglite"
+import { ApiAuthorizationV2Layer } from "@maple/backend/services/auth/ApiAuthorizationV2Layer"
+import { AuditLogService } from "@maple/backend/services/audit/AuditLogService"
+import { ApiKeysService } from "@maple/backend/services/org/ApiKeysService"
+import { AuthService } from "@maple/backend/services/auth/AuthService"
+import { DashboardPersistenceService } from "@maple/backend/services/dashboards/DashboardPersistenceService"
+import { ErrorIssueReadModelsService } from "@maple/backend/services/errors/ErrorIssueReadModelsService"
+import { LiveActivitiesService } from "@maple/backend/services/push/LiveActivitiesService"
+import { MobileDevicesService } from "@maple/backend/services/push/MobileDevicesService"
+import { SharedDashboardService } from "@maple/backend/services/dashboards/SharedDashboardService"
+import {
+	QueryEngineService,
+	type QueryEngineServiceApi,
+} from "@maple/backend/services/warehouse/QueryEngineService"
+import { WarehouseQueryService } from "@maple/backend/services/warehouse/WarehouseQueryService"
 import { V2TransportErrorBoundaryLive } from "./error-envelope"
 import {
 	AlertsServiceStubLayer,
@@ -32,7 +36,6 @@ import {
 	ConfigResourceServiceStubsLayer,
 	makeWarehouseServiceStub,
 	PlanetScaleServiceStubsLayer,
-	SlackIntegrationServiceStubLayer,
 } from "./v2-test-support"
 import { compiledQueryOf } from "@maple/query-engine/execution"
 
@@ -185,11 +188,11 @@ const makeHarness = (options: {
 		Layer.provide(AllV2GroupLayersLive),
 		Layer.provide(readsLive),
 		Layer.provide(V2TransportErrorBoundaryLive),
-		Layer.provide(SlackIntegrationServiceStubLayer),
 		Layer.provide(PlanetScaleServiceStubsLayer),
 		Layer.provide(AlertsServiceStubLayer),
 		Layer.provide(ConfigResourceServiceStubsLayer),
 		Layer.provideMerge(ApiAuthorizationV2Layer),
+		Layer.provideMerge(AuditLogService.layerMemory),
 		Layer.provideMerge(ApiV2RateLimiterAllowAllLayer),
 		Layer.provideMerge(servicesLive),
 	)
@@ -326,6 +329,7 @@ describe("GET /v2/widget_summary", () => {
 		let issuesEnv: string | undefined
 		let catalogSql = ""
 		const seriesEnvironments: Array<ReadonlyArray<string> | undefined> = []
+		const seriesRootOnly: Array<boolean | undefined> = []
 
 		const harness = makeHarness({
 			listIssues: (_orgId, opts) => {
@@ -349,6 +353,7 @@ describe("GET /v2/widget_summary", () => {
 			}) as WarehouseQueryService,
 			queryEngine: queryEngineStub((tenant, request) => {
 				seriesEnvironments.push(request.query.filters?.environments)
+				seriesRootOnly.push(request.query.filters?.rootSpansOnly)
 				return seriesEngine.execute(tenant, request)
 			}),
 		})
@@ -363,6 +368,9 @@ describe("GET /v2/widget_summary", () => {
 			// headline it sits under would describe different populations.
 			expect(seriesEnvironments).toHaveLength(2)
 			expect(seriesEnvironments).toEqual([["staging"], ["staging"]])
+			// Entry spans, like the catalog; also what keeps the read on the rollups
+			// rather than a raw scan of every span in the org.
+			expect(seriesRootOnly).toEqual([true, true])
 			// Echoed so the client can prove the payload belongs to the snapshot
 			// slot it is about to overwrite.
 			expect(summary.body.deployment_environment).toBe("staging")

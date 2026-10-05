@@ -1,136 +1,109 @@
-import { alertChartIdFromPath, ogIdFromPath, shareTokenFromPath } from "./og/share-links"
-import { renderAlertChartImage } from "./og/alert-chart"
-import { fetchShareOgMeta, renderShareOgImage, shareOgMetaRewriter } from "./og/share-preview"
-import { apiTarget, type ApiTarget, type WebWorkerEnv } from "./worker-env"
-
 /**
- * Frame and referrer policy, applied to document responses.
+ * The dashboard's Worker, deployed from its own Vite project.
  *
- * The app is a single-page bundle, so every route is the same index.html and
- * there is no per-route server render to hang a header on — the path is all
- * this layer knows. That is enough for the split that matters:
+ * `Cloudflare.Website.Vite` owns the build: one `vite build` through the
+ * Cloudflare Vite plugin produces the client assets and the server bundle, and
+ * alchemy uploads both. It replaced a `Command.Build` that shelled out to
+ * `bun run build` and an `assets` block pointed at its `dist/`.
  *
- *   - Everything except `/share/` refuses framing outright. The authed app has
- *     no reason to be in anyone's iframe, and until now nothing said so.
- *   - `/share/` allows framing at the document level, because embedding a
- *     public chart is a feature. *Which* links may be framed is decided by the
- *     API (`embeddable` on the resolve response) and enforced by the page, which
- *     is the only layer that knows which token it is holding.
+ * The reason for the move is dev, not deploy. A vite source is served by
+ * alchemy's own vite child, so `bun dev` runs this Worker in workerd against a
+ * real vite dev server instead of spawning a bare `vite dev` beside the stack.
+ * That bare spawn inherited the alchemy CLI's `NODE_ENV=production`, which Vite
+ * reads for `import.meta.env.DEV`/`PROD` rather than taking from `--mode`, so
+ * the dev server served `MODE: "development"` next to `DEV: false, PROD: true`.
+ * Every dev-only branch was dead and every production branch live; `/lab` 404ing
+ * through `bun dev` was the visible half. Alchemy's vite child strips the
+ * variable and says why (`Cloudflare/Workers/ViteChild.ts`); it simply never ran
+ * for us, because we were not using a vite source.
  *
- * `Referrer-Policy: no-referrer` is share-specific and load-bearing rather than
- * hygienic: the token is in the share URL, so without it every cross-origin
- * request the page makes hands the token to a third party in `Referer`. The API
- * deliberately keeps tokens out of its own URLs; this is the other half.
+ * `VITE_*` keys in `env` are inlined into the client bundle as
+ * `import.meta.env.*` by the vite source, which is the same job the removed
+ * `Command.Build`'s env did through `vite.config.ts`'s `define`. Non-prefixed
+ * keys stay ordinary Worker bindings.
  */
-const SHARE_PATH_PREFIX = "/share/"
+import {
+	ApiWorker,
+	MapleStack,
+	resolveRegionAppUrls,
+	resolveWorkerName,
+	resolveWorkerPlacement,
+} from "@maple/infra/cloudflare"
+import { plainFrom } from "@maple/infra/env"
+import * as Cloudflare from "alchemy/Cloudflare"
+import { Effect } from "effect"
 
-const isShareDocument = (pathname: string): boolean =>
-	pathname === "/share" || pathname.startsWith(SHARE_PATH_PREFIX)
+/** This app's own root, which is where its `vite.config.ts` lives. */
+const rootDir = new URL("..", import.meta.url).pathname
 
-/** HTML only. A script or stylesheet is not framed, and `frame-ancestors` on one means nothing. */
-const isHtmlResponse = (response: Response): boolean =>
-	(response.headers.get("content-type") ?? "").includes("text/html")
-
-const applyDocumentSecurityHeaders = (response: Response, pathname: string): Response => {
-	if (!isHtmlResponse(response)) return response
-
-	// Rebuilt field by field: a `Response` works as a `ResponseInit` (the spec
-	// reads status/statusText/headers off it), but a spread does not — those are
-	// prototype getters, so `{ ...response }` is an empty object and the result
-	// would silently become a 200 with no headers at all.
-	const headers = new Headers(response.headers)
-
-	if (isShareDocument(pathname)) {
-		headers.set("Referrer-Policy", "no-referrer")
-	} else {
-		headers.set("Content-Security-Policy", "frame-ancestors 'none'")
-		headers.set("X-Frame-Options", "DENY")
+const props = Effect.gen(function* () {
+	const { stage, region, domains, urls } = yield* MapleStack
+	const api = yield* ApiWorker
+	return {
+		name: resolveWorkerName("web", stage, region),
+		rootDir,
+		// The deployed entry. A vite source owns the Worker entry, so the Effect
+		// implementation this class used to take as a third argument moved into
+		// this module; it was only unwrapping a request and three bindings.
+		main: "src/worker-entry.ts",
+		assets: {
+			// Deep links must serve the shell at the requested URL: without this the
+			// binding 404s, the handler fetches /index.html, and the assets layer's
+			// trailing-slash normalization 307s that to "/" on every hard reload.
+			notFoundHandling: "single-page-application" as const,
+		},
+		// The default memo scope hashes this app's own tree and the lockfile, which
+		// would not notice an edit to the `@maple/*` packages the bundle compiles
+		// in. `lockfile` is restated because providing `include` drops it.
+		memo: {
+			include: ["**/*", "../../packages/*/src/**", "../../lib/*/src/**"],
+			lockfile: true,
+		},
+		placement: resolveWorkerPlacement(region),
+		workersDev: true,
+		domain: domains.web,
+		env: {
+			// Bindings. The share-preview lookups ride the service binding; the URL is
+			// still bound because bindings address requests by absolute URL. A dev
+			// stage without an api domain binds neither and previews degrade to the
+			// generic card.
+			...(urls.api === "" ? undefined : { MAPLE_API_BASE_URL: urls.api }),
+			API: api,
+			// Inlined into the client bundle as `import.meta.env.*`. These were the
+			// removed `Command.Build`'s env, and they remain build inputs: a stage's
+			// URLs or the commit changing rebuilds with no source change.
+			VITE_API_BASE_URL: urls.api,
+			VITE_INGEST_URL: urls.ingest,
+			VITE_ELECTRIC_SYNC_URL: urls.electricSync,
+			// Which instance this dashboard is, and where the others are: an organization that
+			// lives in another region is sent there rather than served here.
+			VITE_MAPLE_REGION: region,
+			VITE_MAPLE_REGION_APP_URLS: JSON.stringify(resolveRegionAppUrls(stage)),
+			VITE_MAPLE_AUTH_MODE: yield* plainFrom(
+				["VITE_MAPLE_AUTH_MODE", "MAPLE_AUTH_MODE"],
+				"self_hosted",
+			),
+			VITE_CLERK_PUBLISHABLE_KEY: yield* plainFrom(
+				["VITE_CLERK_PUBLISHABLE_KEY", "CLERK_PUBLISHABLE_KEY"],
+				"",
+			),
+			VITE_MAPLE_INGEST_KEY: yield* plainFrom(
+				["VITE_MAPLE_INGEST_KEY", "MAPLE_OTEL_PUBLIC_INGEST_KEY"],
+				"",
+			),
+			// Stamped onto browser telemetry as `vcs.ref.head.revision` / `service.version`.
+			VITE_COMMIT_SHA: yield* plainFrom(["VITE_COMMIT_SHA", "COMMIT_SHA", "GITHUB_SHA"], ""),
+		},
 	}
+}).pipe(
+	// `Website.Vite` takes props whose error channel is `never`, where
+	// `Cloudflare.Worker` tolerated one. The only failure in here is a
+	// `ConfigError` from `plainFrom`, and every one of those calls carries a
+	// default, so reaching the error channel at all means the stack cannot read
+	// its own configuration. There is nothing for a caller to do with that.
+	Effect.orDie,
+)
 
-	return new Response(response.body, {
-		status: response.status,
-		statusText: response.statusText,
-		headers,
-	})
-}
-
-/**
- * Inline a share link's own `og:*` tags, when it has any.
- *
- * Applied to every viewer, not only to crawlers: sniffing user agents to serve
- * different HTML is cloaking, and the tags change nothing for a human — the app
- * replaces the head as soon as it boots.
- */
-const applyShareOgMeta = async (
-	response: Response,
-	url: URL,
-	api: ApiTarget | undefined,
-): Promise<Response> => {
-	const token = shareTokenFromPath(url.pathname)
-	if (api === undefined || token === undefined || !isHtmlResponse(response)) return response
-
-	const meta = await fetchShareOgMeta(api, token)
-	// No meta means an org-only link, a dead one, or an API that did not answer.
-	// All three keep the generic card, and none of them is worth a broken page.
-	return meta === undefined ? response : shareOgMetaRewriter(meta, url.origin).transform(response)
-}
-
-export default {
-	async fetch(request: Request, env: WebWorkerEnv): Promise<Response> {
-		const url = new URL(request.url)
-		const api = apiTarget(env)
-
-		// Ahead of the assets lookup: this path has no asset behind it, and the
-		// 404 the assets layer returns for it would fall through to the SPA shell.
-		const ogId = ogIdFromPath(url.pathname)
-		if (ogId !== undefined) {
-			return api === undefined
-				? new Response(null, { status: 404 })
-				: renderShareOgImage(api, ogId, env.ASSETS)
-		}
-
-		// Also ahead of the assets lookup, and for the same reason: `/alerts/…` is
-		// a real SPA route, so the shell would answer this path with HTML in an
-		// `<img>` slot rather than a 404 anyone could diagnose.
-		const chartId = alertChartIdFromPath(url.pathname)
-		if (chartId !== undefined) {
-			return api === undefined
-				? new Response(null, { status: 404 })
-				: renderAlertChartImage(api, chartId, env.ASSETS)
-		}
-
-		const assetResponse = await env.ASSETS.fetch(request)
-		if (assetResponse.status !== 404) {
-			// `/version.json` is the one asset whose whole job is to be stale-free:
-			// clients poll it to learn a newer bundle is deployed. Served from any
-			// cache it would report the deploy the tab is already running, which is
-			// exactly the answer that makes the check useless.
-			if (url.pathname === "/version.json") {
-				const response = new Response(assetResponse.body, assetResponse)
-				response.headers.set("Cache-Control", "no-store, must-revalidate")
-				return response
-			}
-			// `/` resolves to a real asset and returns here rather than through the
-			// fallback below, so the headers have to be applied on both paths — this
-			// one is the app's own front door.
-			//
-			// `/share/<token>` also lands here, not in the fallback: with
-			// `not_found_handling: single-page-application` the assets layer answers
-			// unknown paths with the shell itself, at status 200. The share preview
-			// therefore has to be applied on this branch too — putting it only on
-			// the fallback below silently disables it in every deployment.
-			return applyShareOgMeta(applyDocumentSecurityHeaders(assetResponse, url.pathname), url, api)
-		}
-
-		// Fetch "/" rather than "/index.html": the assets layer's
-		// auto-trailing-slash handling answers explicit /index.html requests
-		// with a 307 to "/", which would bounce deep links to the root.
-		//
-		// Every SPA route lands here, which is what makes this the one place the
-		// document's security headers can be set from the requested path.
-		const document = await env.ASSETS.fetch(new Request(new URL("/", url), request))
-		// Reached when the assets layer 404s rather than serving the shell — a
-		// deployment without SPA not-found handling, or a request it declines.
-		return applyShareOgMeta(applyDocumentSecurityHeaders(document, url.pathname), url, api)
-	},
-}
+// The logical id stays `app`: it names the deployed resource, and a rename would
+// plan a delete + create of the Worker behind `app.maple.dev`.
+export default class Web extends Cloudflare.Website.Vite<Web>()("app", props) {}

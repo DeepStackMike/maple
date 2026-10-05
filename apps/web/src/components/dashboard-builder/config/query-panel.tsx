@@ -1,4 +1,4 @@
-import { useMemo } from "react"
+import { useMemo, useState } from "react"
 
 import { Button } from "@maple/ui/components/ui/button"
 import { Input } from "@maple/ui/components/ui/input"
@@ -14,16 +14,19 @@ import {
 	AddOnToggleBar,
 	QUERY_BUILDER_PANEL_SOURCES,
 	QueryPanelShell,
-	isQueryBuilderDataSource,
-	type QueryPanelSource,
 } from "@/components/dashboard-builder/config/query-panel-shell"
 import { GroupByMultiSelect } from "@/components/query-builder/group-by-multi-select"
+import { SignalEmptyState } from "@/components/common/signal-empty-state"
+import { DocsLink } from "@/components/common/docs-link"
+import { useSignalPresence } from "@/hooks/use-signal-presence"
 import { WhereClauseEditor } from "@/components/query-builder/where-clause-editor"
 import { useMetricScopedAutocomplete } from "@/hooks/use-metric-scoped-autocomplete"
+import { CircleWarningIcon } from "@/components/icons"
 import type { WhereClauseAutocompleteValues } from "@/lib/query-builder/where-clause-autocomplete"
 import {
 	AGGREGATIONS_BY_SOURCE,
 	QUERY_BUILDER_METRIC_TYPES,
+	buildTimeseriesQuerySpec,
 	getMetricsAggregations,
 	type QueryBuilderAddOnKey,
 	type QueryBuilderDataSource,
@@ -43,6 +46,7 @@ interface AutocompleteValues {
 	traces: WhereClauseAutocompleteValues
 	logs: WhereClauseAutocompleteValues
 	metrics: WhereClauseAutocompleteValues
+	product_events: WhereClauseAutocompleteValues
 }
 
 interface QueryPanelProps {
@@ -62,13 +66,6 @@ interface QueryPanelProps {
 	onClone: () => void
 	onRemove: () => void
 	onDataSourceChange: (ds: QueryBuilderDataSource) => void
-	/**
-	 * Sources beyond traces/logs/metrics the select offers, and what choosing
-	 * one does. Only the funnel widget passes these — picking "Product events"
-	 * swaps this panel for the funnel's.
-	 */
-	extraSourceOptions?: ReadonlyArray<Exclude<QueryPanelSource, QueryBuilderDataSource>>
-	onExtraSourceChange?: (source: Exclude<QueryPanelSource, QueryBuilderDataSource>) => void
 	showHeaderActions?: boolean
 	showVisibilityToggle?: boolean
 	/**
@@ -113,8 +110,6 @@ export function QueryPanel({
 	onClone,
 	onRemove,
 	onDataSourceChange,
-	extraSourceOptions = [],
-	onExtraSourceChange,
 	showHeaderActions = true,
 	showVisibilityToggle = true,
 	autoIntervalLabel,
@@ -126,6 +121,8 @@ export function QueryPanel({
 			: AGGREGATIONS_BY_SOURCE[query.dataSource]
 
 	const isMetrics = query.dataSource === "metrics"
+	// Clauses the builder could not apply as written, so they never silently change the chart.
+	const warnings = useMemo(() => buildTimeseriesQuerySpec(query).warnings, [query])
 
 	const metricValue =
 		isMetrics && query.metricName && query.metricType
@@ -137,11 +134,8 @@ export function QueryPanel({
 			name={query.name}
 			index={index}
 			source={query.dataSource}
-			sourceOptions={[...QUERY_BUILDER_PANEL_SOURCES, ...extraSourceOptions]}
-			onSourceChange={(source) => {
-				if (isQueryBuilderDataSource(source)) onDataSourceChange(source)
-				else onExtraSourceChange?.(source)
-			}}
+			sourceOptions={QUERY_BUILDER_PANEL_SOURCES}
+			onSourceChange={onDataSourceChange}
 			visibility={
 				showVisibilityToggle
 					? {
@@ -192,6 +186,19 @@ export function QueryPanel({
 				/>
 			)}
 
+			{query.dataSource === "product_events" && <ProductEventsAbsentHint />}
+
+			{warnings.length > 0 && (
+				<div className="flex gap-2 border border-warning/30 bg-warning/10 p-2 text-xs text-warning-foreground">
+					<CircleWarningIcon size={14} className="mt-0.5 shrink-0" />
+					<ul className="space-y-1">
+						{warnings.map((warning) => (
+							<li key={warning}>{warning}</li>
+						))}
+					</ul>
+				</div>
+			)}
+
 			{/* Add-on toggle bar */}
 			<AddOnToggleBar
 				items={ADD_ON_KEYS}
@@ -212,6 +219,42 @@ export function QueryPanel({
 		</QueryPanelShell>
 	)
 }
+
+/** The setup pointer an org that has never sent a product event sees under its panel. */
+function ProductEventsAbsentHint() {
+	const presence = useSignalPresence("product_events")
+	if (presence.status !== "absent") return null
+	return <SignalEmptyState signal="product_events" className="py-3" />
+}
+
+/** Empty metric picker: a search miss, an org that never sent metrics, or a plain empty page. */
+function MetricOptionsEmpty({ searchTerm }: { readonly searchTerm: string }) {
+	const presence = useSignalPresence("metrics")
+	const term = searchTerm.trim()
+	return (
+		<div className="flex flex-col items-center gap-2 px-3 py-4 text-center text-xs text-muted-foreground">
+			{term !== "" ? (
+				<span>No metric name contains "{term}".</span>
+			) : presence.status === "absent" ? (
+				<>
+					<span>
+						No metrics yet. Export OpenTelemetry metrics or add a Prometheus scrape target.
+					</span>
+					<DocsLink page="metrics" />
+				</>
+			) : (
+				<span>No metrics found.</span>
+			)}
+		</div>
+	)
+}
+
+const WHERE_PLACEHOLDER = {
+	traces: 'service.name = "checkout" AND status.code = "Error"',
+	logs: 'service.name = "checkout" AND severity = "ERROR"',
+	metrics: 'service.name = "checkout"',
+	product_events: 'event.name = "signup_completed" AND country = "DE"',
+} satisfies Record<QueryBuilderDataSource, string>
 
 // TracesLogsBody
 
@@ -246,7 +289,7 @@ function TracesLogsBody({
 							whereClause: nextWhereClause,
 						}))
 					}
-					placeholder='service.name = "checkout" AND status.code = "Error"'
+					placeholder={WHERE_PLACEHOLDER[query.dataSource]}
 					textareaClassName="min-h-[32px] resize-y text-xs"
 					ariaLabel={`Where clause for query ${query.name}`}
 				/>
@@ -378,6 +421,7 @@ function MetricsBody({
 			...metricSelectionOptions,
 		]
 	}, [metricValue, metricSelectionOptions, metricsQuery])
+	const [metricSearchTerm, setMetricSearchTerm] = useState("")
 
 	return (
 		<>
@@ -401,13 +445,14 @@ function MetricsBody({
 					<ComboboxInput
 						placeholder="Search metrics..."
 						className="h-8 flex-1 text-xs"
-						onChange={(e) => onMetricSearch?.(e.target.value)}
+						onChange={(e) => {
+							setMetricSearchTerm(e.target.value)
+							onMetricSearch?.(e.target.value)
+						}}
 					/>
 					<ComboboxContent>
 						{metricOptions.length === 0 ? (
-							<div className="py-4 text-center text-xs text-muted-foreground">
-								No metrics found.
-							</div>
+							<MetricOptionsEmpty searchTerm={metricSearchTerm} />
 						) : (
 							<ComboboxList>
 								{metricOptions.map((metric) => (

@@ -2,9 +2,10 @@ import { formatDuration } from "@maple/ui/lib/format"
 import { TableSkeleton } from "@maple/ui/components/ui/table-skeleton"
 import * as React from "react"
 import { Result } from "@/lib/effect-atom"
-import { Link, useNavigate } from "@tanstack/react-router"
+import { Link, linkOptions, useNavigate } from "@tanstack/react-router"
 import { ExcludedEmptyHint } from "@maple/ui/components/filters/excluded-empty-hint"
-import { traceFilterChips } from "@/lib/traces/trace-filter-chips"
+import { SignalEmptyState } from "@/components/common/signal-empty-state"
+import { removeTraceFilterChips, traceFilterChips } from "@/lib/traces/trace-filter-chips"
 import {
 	columnSizingFeature,
 	type ColumnDef,
@@ -15,7 +16,8 @@ import {
 import { useVirtualizer } from "@tanstack/react-virtual"
 
 import { Badge } from "@maple/ui/components/ui/badge"
-import { ArrowUpDownIcon } from "@/components/icons"
+import { ServicePills } from "@/components/common/service-pills"
+import { SortableHeader } from "@/components/common/sortable-header"
 import { type Trace } from "@/api/warehouse/traces"
 import type { TracesSearchParams } from "@/routes/traces"
 import { useTimezonePreference } from "@/hooks/use-timezone-preference"
@@ -25,7 +27,14 @@ import { formatRelativeTime } from "@maple/ui/lib/time-format"
 import { HttpSpanLabel } from "@maple/ui/components/traces/http-span-label"
 import { useInfiniteTraces, FETCH_THRESHOLD } from "@/hooks/use-infinite-traces"
 import { useListNavigation } from "@/hooks/use-list-navigation"
-import { ServiceDot } from "@maple/ui/components/service-dot"
+import { useIsMobile } from "@maple/ui/hooks/use-media-query"
+import { TracePeekSheet } from "@/components/traces/trace-peek-sheet"
+import { peekParamsFor, resolvePeek } from "@/lib/traces/peek"
+import {
+	applyTimeRangeSearch,
+	canWidenTimeRange,
+	WIDEN_TIME_PRESET,
+} from "@/components/time-range-picker/search"
 
 type TraceSortKey = NonNullable<TracesSearchParams["sortBy"]>
 type TraceSortDir = NonNullable<TracesSearchParams["sortDir"]>
@@ -39,6 +48,14 @@ interface TracesTableViewProps {
 	fetchNextPage: () => void
 	waiting: boolean
 	onTraceClick: (trace: Trace) => void
+	/**
+	 * Open a row in the peek sheet instead of leaving the page. A plain click
+	 * peeks; a modified click (⌘, ctrl, shift, middle) still follows the link,
+	 * so the row keeps being a link to the trace's page in every way that matters.
+	 */
+	onPeek?: (trace: Trace) => void
+	/** The row currently open in the peek sheet, by its span id (unique in both list modes). */
+	activeRowSpanId?: string
 	onShowNoise: () => void
 	sortBy: TraceSortKey
 	sortDir: TraceSortDir
@@ -46,7 +63,27 @@ interface TracesTableViewProps {
 	/** Flattened active exclusions, for the empty state's hint. */
 	excludedValues: ReadonlyArray<string>
 	clearExclusions: () => void
+	/** Any facet, attribute, where-clause or error/duration filter is narrowing the list. */
+	filtered: boolean
+	clearFilters: () => void
+	/** Absent when the range is already wide or custom. */
+	onWidenRange?: () => void
 }
+
+/**
+ * Where a row leads. Shared by the row's stretched link, the Trace ID link
+ * and keyboard open so they can never disagree.
+ */
+const traceLink = (trace: Trace) =>
+	linkOptions({
+		to: "/traces/$traceId",
+		params: { traceId: trace.traceId },
+		search: (prev: Record<string, unknown>) => ({
+			...prev,
+			t: trace.startTime,
+			spanId: deepLinkSpanId(trace),
+		}),
+	})
 
 /**
  * The span to pre-select on the detail page. With `rootOnly` off the list shows
@@ -57,6 +94,9 @@ interface TracesTableViewProps {
 function deepLinkSpanId(trace: Trace): string | undefined {
 	return trace.isRootSpan ? undefined : trace.spanId
 }
+
+const isPlainClick = (event: React.MouseEvent) =>
+	event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey
 
 function truncateId(id: string, length = 8): string {
 	if (id.length <= length) return id
@@ -94,43 +134,6 @@ function HttpStatusBadge({ statusCode }: { statusCode: number }) {
 		>
 			{statusCode}
 		</Badge>
-	)
-}
-
-/**
- * Clickable column header. Sorting is server-side — the list is paged, so
- * reordering the rows already fetched would only sort the current window.
- */
-function SortableHeader({
-	label,
-	sortKey,
-	activeKey,
-	dir,
-	onSort,
-}: {
-	label: string
-	sortKey: TraceSortKey
-	activeKey: TraceSortKey
-	dir: TraceSortDir
-	onSort: (key: TraceSortKey) => void
-}) {
-	const active = activeKey === sortKey
-	return (
-		<button
-			type="button"
-			onClick={() => onSort(sortKey)}
-			className={`inline-flex items-center gap-1 transition-colors ${
-				active ? "text-foreground" : "hover:text-foreground"
-			}`}
-		>
-			{label}
-			<ArrowUpDownIcon
-				size={10}
-				className={`transition-opacity ${active ? "opacity-100" : "opacity-40"} ${
-					active && dir === "asc" ? "rotate-180" : ""
-				}`}
-			/>
-		</button>
 	)
 }
 
@@ -236,12 +239,17 @@ function TracesTableView({
 	fetchNextPage,
 	waiting,
 	onTraceClick,
+	onPeek,
+	activeRowSpanId,
 	onShowNoise,
 	sortBy,
 	sortDir,
 	onSortChange,
 	excludedValues,
 	clearExclusions,
+	filtered,
+	clearFilters,
+	onWidenRange,
 }: TracesTableViewProps) {
 	const { effectiveTimezone } = useTimezonePreference()
 	const scrollContainerRef = React.useRef<HTMLDivElement>(null)
@@ -254,15 +262,8 @@ function TracesTableView({
 				size: 100,
 				cell: ({ row }) => (
 					<Link
-						to="/traces/$traceId"
-						params={{ traceId: row.original.traceId }}
-						search={(prev: Record<string, unknown>) => ({
-							...prev,
-							t: row.original.startTime,
-							spanId: deepLinkSpanId(row.original),
-						})}
-						className="font-mono text-xs text-primary underline decoration-primary/30 underline-offset-2 hover:decoration-primary"
-						onClick={(e) => e.stopPropagation()}
+						{...traceLink(row.original)}
+						className="relative z-10 font-mono text-xs text-primary underline decoration-primary/30 underline-offset-2 hover:decoration-primary"
 					>
 						{truncateId(row.original.traceId)}
 					</Link>
@@ -280,6 +281,25 @@ function TracesTableView({
 						screenName && !name.includes(screenName) ? `${name} · ${screenName}` : name
 					return (
 						<div className="flex flex-col min-w-0">
+							{/* Stretched over the <tr> so the whole row is a real anchor: modifier,
+							    middle and right click all behave like any link. A plain click peeks
+							    instead when the sheet is available; the underlined Trace ID stays a
+							    plain link to the page either way. */}
+							<Link
+								{...traceLink(row.original)}
+								className="after:absolute after:inset-0 after:content-['']"
+								tabIndex={-1}
+								aria-label={`Open trace ${row.original.traceId}`}
+								onClick={
+									onPeek
+										? (event) => {
+												if (!isPlainClick(event)) return
+												event.preventDefault()
+												onPeek(row.original)
+											}
+										: undefined
+								}
+							/>
 							<HttpSpanLabel
 								spanName={displayName}
 								spanAttributes={row.original.rootSpan.attributes}
@@ -319,26 +339,7 @@ function TracesTableView({
 				id: "services",
 				header: "Services",
 				size: 160,
-				cell: ({ row }) => (
-					<div className="flex min-w-0 flex-wrap gap-1">
-						{row.original.services.slice(0, 3).map((service: string) => (
-							<Badge
-								key={service}
-								variant="outline"
-								className="max-w-full font-mono text-[10px]"
-								title={service}
-							>
-								<ServiceDot serviceName={service} className="size-1.5" />
-								<span className="truncate">{service}</span>
-							</Badge>
-						))}
-						{row.original.services.length > 3 && (
-							<Badge variant="outline" className="text-[10px]">
-								+{row.original.services.length - 3}
-							</Badge>
-						)}
-					</div>
-				),
+				cell: ({ row }) => <ServicePills services={row.original.services} />,
 			},
 			{
 				accessorKey: "spanCount",
@@ -378,7 +379,7 @@ function TracesTableView({
 					),
 			},
 		],
-		[effectiveTimezone, sortBy, sortDir, onSortChange],
+		[effectiveTimezone, sortBy, sortDir, onSortChange, onPeek],
 	)
 
 	const table = useTable({
@@ -424,27 +425,20 @@ function TracesTableView({
 		return (
 			<div className="flex-1 min-h-0 flex flex-col gap-4">
 				<div className="rounded-md border">
-					<table className="w-full caption-bottom text-sm">
-						<thead className="[&_tr]:border-b">
-							<tr className="border-b transition-colors hover:bg-muted/50">
-								<th className={HEADER_CELL_CLASS} colSpan={TRACE_COLUMNS.length}>
-									<span className="sr-only">Trace columns</span>
-								</th>
-							</tr>
-						</thead>
-						<tbody>
-							<tr>
-								<td colSpan={TRACE_COLUMNS.length} className="px-4 py-8 text-center">
-									No traces found
-									<ExcludedEmptyHint
-										excluded={excludedValues}
-										onClear={clearExclusions}
-										className="mx-auto max-w-lg"
-									/>
-								</td>
-							</tr>
-						</tbody>
-					</table>
+					<SignalEmptyState
+						signal="traces"
+						filtered={filtered}
+						onClearFilters={clearFilters}
+						onWidenRange={onWidenRange}
+						// The hint names the excluded values, which the generic clear button cannot.
+						detail={
+							<ExcludedEmptyHint
+								excluded={excludedValues}
+								onClear={clearExclusions}
+								className="mx-auto max-w-lg"
+							/>
+						}
+					/>
 				</div>
 			</div>
 		)
@@ -462,7 +456,7 @@ function TracesTableView({
 				 * only column that should flex.
 				 */}
 				<table className="w-full table-fixed caption-bottom text-sm" aria-label="Traces">
-					<thead className="[&_tr]:border-b sticky top-0 z-10 bg-background">
+					<thead className="[&_tr]:border-b sticky top-0 z-20 bg-background">
 						{table.getHeaderGroups().map((headerGroup) => (
 							<tr key={headerGroup.id} className="border-b transition-colors hover:bg-muted/50">
 								{headerGroup.headers.map((header) => (
@@ -502,9 +496,9 @@ function TracesTableView({
 									ref={virtualizer.measureElement}
 									data-index={virtualRow.index}
 									data-focused={virtualRow.index === focusedIndex || undefined}
-									className="border-b transition-colors hover:bg-muted/50 data-[focused]:bg-muted/70 data-[focused]:ring-1 data-[focused]:ring-ring data-[focused]:ring-inset cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
+									data-active={row.original.spanId === activeRowSpanId || undefined}
+									className="relative border-b transition-colors hover:bg-muted/50 data-[active]:bg-primary/5 data-[focused]:bg-muted/70 data-[focused]:ring-1 data-[focused]:ring-ring data-[focused]:ring-inset cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
 									tabIndex={0}
-									onClick={() => onTraceClick(row.original)}
 									onKeyDown={(e) => {
 										if (e.key === "Enter" || e.key === " ") {
 											e.preventDefault()
@@ -597,29 +591,91 @@ export function TracesTable({ filters }: TracesTableProps) {
 	const excludedValues = excludedChips.flatMap((chip) => chip.values)
 	const clearExclusions = () =>
 		navigateTraces({
+			search: (prev) => removeTraceFilterChips(prev, excludedChips),
+		})
+
+	const search: TracesSearchParams = filters ?? {}
+	const filtered =
+		traceFilterChips(search).length > 0 ||
+		Boolean(search.whereClause?.trim()) ||
+		search.hasError === true ||
+		search.minDurationMs !== undefined ||
+		search.maxDurationMs !== undefined ||
+		search.minSpanCount !== undefined
+	const clearFilters = () =>
+		navigateTraces({
 			search: (prev) => ({
-				...prev,
-				...Object.fromEntries(excludedChips.map((chip) => [chip.param, undefined])),
+				...removeTraceFilterChips(prev, traceFilterChips(prev)),
+				whereClause: undefined,
+				hasError: undefined,
+				minDurationMs: undefined,
+				maxDurationMs: undefined,
+				minSpanCount: undefined,
 			}),
 		})
+	const canWiden = canWidenTimeRange(search, "12h")
+	const widenRange = () =>
+		navigateTraces({ search: (prev) => applyTimeRangeSearch(prev, { presetValue: WIDEN_TIME_PRESET }) })
 
 	const onShowNoise = React.useCallback(() => {
 		navigateTraces({ search: (prev) => ({ ...prev, hideNoise: false }) })
 	}, [navigateTraces])
 
+	// A phone has no room for a sheet beside the list: plain click takes the page there.
+	const isMobile = useIsMobile()
+	const peekEnabled = !isMobile
+
+	const onPeek = React.useCallback(
+		(trace: Trace) =>
+			navigateTraces({
+				search: (prev) => ({ ...prev, ...peekParamsFor(trace), peekSpan: deepLinkSpanId(trace) }),
+			}),
+		[navigateTraces],
+	)
+
+	// Mouse clicks go through the row's real link; this is the keyboard path.
 	const onTraceClick = React.useCallback(
-		(trace: Trace) => {
-			navigate({
-				to: "/traces/$traceId",
-				params: { traceId: trace.traceId },
-				search: (prev: Record<string, unknown>) => ({
-					...prev,
-					t: trace.startTime,
-					spanId: deepLinkSpanId(trace),
-				}),
-			})
+		(trace: Trace) => (peekEnabled ? onPeek(trace) : navigate(traceLink(trace))),
+		[navigate, onPeek, peekEnabled],
+	)
+
+	// The peek resolves against the rows on screen. A trace that is not among
+	// them (a shared link into a later page, or the filter changed under it)
+	// still opens from the URL's id, just without a position to step from.
+	const peek = peekEnabled ? resolvePeek(allData, filters ?? {}) : null
+	const peekIndex = peek?.position?.index ?? -1
+	// Stepping and span selection replace history: walking fifty rows must not
+	// leave fifty entries behind the back button.
+	const stepPeek = React.useCallback(
+		(delta: 1 | -1) => {
+			const next = peekIndex >= 0 ? allData[peekIndex + delta] : undefined
+			if (next) {
+				navigateTraces({
+					search: (prev) => ({ ...prev, ...peekParamsFor(next), peekSpan: deepLinkSpanId(next) }),
+					replace: true,
+				})
+			}
 		},
-		[navigate],
+		[allData, peekIndex, navigateTraces],
+	)
+	const closePeek = React.useCallback(
+		() =>
+			navigateTraces({
+				search: (prev) => ({
+					...prev,
+					peek: undefined,
+					peekRow: undefined,
+					peekT: undefined,
+					peekSpan: undefined,
+				}),
+				replace: true,
+			}),
+		[navigateTraces],
+	)
+	const selectPeekSpan = React.useCallback(
+		(spanId: string | undefined) =>
+			navigateTraces({ search: (prev) => ({ ...prev, peekSpan: spanId }), replace: true }),
+		[navigateTraces],
 	)
 
 	const sortBy = filters?.sortBy ?? "timestamp"
@@ -635,7 +691,7 @@ export function TracesTable({ filters }: TracesTableProps) {
 		[navigateTraces, sortBy, sortDir],
 	)
 
-	return Result.builder(firstPageResult)
+	const table = Result.builder(firstPageResult)
 		.onInitial(() => <LoadingState />)
 		.onError((error) => <QueryErrorState error={error} />)
 		.onSuccess((_response, result) => (
@@ -648,13 +704,32 @@ export function TracesTable({ filters }: TracesTableProps) {
 				fetchNextPage={fetchNextPage}
 				waiting={result.waiting ?? false}
 				onTraceClick={onTraceClick}
+				onPeek={peekEnabled ? onPeek : undefined}
+				activeRowSpanId={peek?.row?.spanId}
 				onShowNoise={onShowNoise}
 				sortBy={sortBy}
 				sortDir={sortDir}
 				onSortChange={onSortChange}
 				excludedValues={excludedValues}
 				clearExclusions={clearExclusions}
+				filtered={filtered}
+				clearFilters={clearFilters}
+				onWidenRange={canWiden ? widenRange : undefined}
 			/>
 		))
 		.render()
+
+	return (
+		<>
+			{table}
+			<TracePeekSheet
+				target={peek?.target ?? null}
+				position={peek?.position ?? null}
+				selectedSpanId={filters?.peekSpan}
+				onSelectSpan={selectPeekSpan}
+				onStep={stepPeek}
+				onClose={closePeek}
+			/>
+		</>
+	)
 }

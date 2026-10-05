@@ -1,7 +1,8 @@
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi"
+import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
 import { Schema } from "effect"
 import { SessionId, TraceId, UserId } from "../primitives"
-import { TinybirdDateTime } from "../query-engine"
+import { SessionTag, TinybirdDateTime } from "../query-engine"
+import { AuditedRead } from "./audit-log"
 import { Authorization, SessionAuthorization } from "./current-tenant"
 import { QueryEngineExecutionError, QueryEngineTimeoutError } from "./query-engine"
 import { warehouseHttpErrors } from "./warehouse"
@@ -36,6 +37,8 @@ export class ListReplaysRequest extends Schema.Class<ListReplaysRequest>("ListRe
 	visitorId: Schema.optional(Schema.String),
 	hasErrors: Schema.optional(Schema.Boolean),
 	search: Schema.optional(Schema.String),
+	/** Exact page path (no query/hash) the session navigated to at any point. */
+	pagePath: Schema.optional(Schema.String),
 	/**
 	 * Keyset cursor: the `StartTime` of the last row of the previous page.
 	 *
@@ -46,6 +49,16 @@ export class ListReplaysRequest extends Schema.Class<ListReplaysRequest>("ListRe
 	 * value is exactly what this boundary is for.
 	 */
 	cursor: Schema.optional(TinybirdDateTime),
+	/**
+	 * Tie-break for `cursor`: the `SessionId` of that same last row.
+	 *
+	 * `StartTime` comes off a JS `Date` in the SDK, so it is only
+	 * millisecond-resolution and sessions do share one. Sent alongside the
+	 * timestamp, the keyset walks `(StartTime, SessionId)` and a page boundary
+	 * inside a tie keeps the sessions on the far side of it; sent alone, the
+	 * cursor falls back to the plain `StartTime <` comparison it has always been.
+	 */
+	cursorSessionId: Schema.optional(SessionId),
 	// Session-time range filters (ms). `durationMin/Max` filter the stored
 	// wall-clock duration; `activeTimeMin/Max` filter active (non-idle) time
 	// computed from session_events gaps (server-side: setting either active bound
@@ -64,6 +77,10 @@ export const SessionReplayListItem = Schema.Struct({
 	endTime: Schema.NullOr(Schema.String),
 	durationMs: Schema.NullOr(Schema.Number),
 	status: Schema.String,
+	/** Heartbeat-refreshed. Read it with `status`: a session whose tab died without
+	 *  sending its unload row stays `"active"` for the rest of its retention, so
+	 *  `status` alone cannot say whether a session is happening now. */
+	lastActivityAt: Schema.NullOr(Schema.String),
 	userId: Schema.NullOr(UserId),
 	// identify() identity. `""` when the session was never identified (including
 	// every session recorded before the SDK had identify()) — the list falls back
@@ -109,8 +126,13 @@ export class ReplaysFacetsRequest extends Schema.Class<ReplaysFacetsRequest>("Re
 	userId: Schema.optional(Schema.String),
 	userSearch: Schema.optional(Schema.String),
 	groupName: Schema.optional(Schema.String),
+	/** Scopes every facet and both header counts to one browser, like the list. */
+	visitorId: Schema.optional(Schema.String),
 	hasErrors: Schema.optional(Schema.Boolean),
 	search: Schema.optional(Schema.String),
+	pagePath: Schema.optional(Schema.String),
+	/** Required tags; the tag facet itself ignores them so every tag keeps its count. */
+	tags: Schema.optional(Schema.Array(SessionTag)),
 }) {}
 
 export const ReplayFacetItem = Schema.Struct({
@@ -126,8 +148,20 @@ export class ReplaysFacetsResponse extends Schema.Class<ReplaysFacetsResponse>("
 	/** Identified groups (company / team), by session count. Empty for orgs that
 	 *  never call `identify()` with a group — the sidebar hides the section then. */
 	groups: Schema.Array(ReplayFacetItem),
+	/** Page paths visited, by sessions that reached them (top 200). */
+	pages: Schema.Array(ReplayFacetItem),
+	/** Sessions per rule-based tag (see `SESSION_TAGS`); tags with no sessions are absent. */
+	tags: Schema.Array(ReplayFacetItem),
 	/** Distinct sessions with at least one recorded error, within the current filter. */
 	errorCount: Schema.Number,
+	/** Every session in the window under the current filters — the header's own
+	 *  count, so it stops describing however many rows the client has scrolled
+	 *  into memory while the chips beside it describe the whole window. */
+	totalSessions: Schema.Number,
+	/** Sessions with activity inside the live window, on the same definition the
+	 *  analytics live badge uses. Slightly over-counts sessions that ended within
+	 *  that window; see the query. */
+	liveSessions: Schema.Number,
 	/** Session-length distribution: `name` is the bucket floor in ms, `count` the
 	 *  sessions in it. Buckets are half-octaves from 1s, so each ceiling is
 	 *  floor × √2. Unordered — the client sorts numerically. */
@@ -301,14 +335,18 @@ export class SessionReplaysApiGroup extends HttpApiGroup.make("sessionReplays")
 			payload: ListReplaysRequest,
 			success: ListReplaysResponse,
 			error: sessionReplayEndpointErrors,
-		}),
+		}).annotateMerge(
+			OpenApi.annotations({ deprecated: true, description: "Use POST /v2/session_replays/search." }),
+		),
 	)
 	.add(
 		HttpApiEndpoint.post("getReplay", "/get", {
 			payload: GetReplayRequest,
 			success: GetReplayResponse,
 			error: sessionReplayEndpointErrors,
-		}),
+		}).annotateMerge(
+			OpenApi.annotations({ deprecated: true, description: "Use GET /v2/session_replays/{id}." }),
+		),
 	)
 	// Replay payload reads live on v2 only: `GET /v2/session_replays/:id/manifest`
 	// then `GET /v2/session_replays/:id/events?from_chunk_seq=…`. There is no v1
@@ -320,17 +358,25 @@ export class SessionReplaysApiGroup extends HttpApiGroup.make("sessionReplays")
 			payload: ReplaysForTraceRequest,
 			success: ReplaysForTraceResponse,
 			error: sessionReplayEndpointErrors,
-		}),
+		}).annotateMerge(
+			OpenApi.annotations({ deprecated: true, description: "Use POST /v2/session_replays/for_trace." }),
+		),
 	)
 	.add(
 		HttpApiEndpoint.post("sessionTranscript", "/transcript", {
 			payload: SessionTranscriptRequest,
 			success: SessionTranscriptResponse,
 			error: sessionReplayEndpointErrors,
-		}),
+		}).annotateMerge(
+			OpenApi.annotations({
+				deprecated: true,
+				description: "Use GET /v2/session_replays/{id}/transcript.",
+			}),
+		),
 	)
 	.prefix("/api/session-replays")
-	.middleware(Authorization) {}
+	.middleware(Authorization)
+	.annotate(AuditedRead, "session_replay.read") {}
 
 /**
  * Session-replay helpers that exist for the dashboard and are not public API.
@@ -356,4 +402,5 @@ export class SessionReplaysInternalApiGroup extends HttpApiGroup.make("sessionRe
 		}),
 	)
 	.prefix("/internal/session-replays")
-	.middleware(SessionAuthorization) {}
+	.middleware(SessionAuthorization)
+	.annotate(AuditedRead, "session_replay.read") {}

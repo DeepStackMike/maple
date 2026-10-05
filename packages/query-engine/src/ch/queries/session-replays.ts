@@ -16,15 +16,17 @@
 // Stale-prone post-aggregation predicates (e.g. exact Status) are deliberately
 // not exposed as SQL filters since the DSL has no HAVING clause.
 
-import * as CH from "@maple-dev/clickhouse-builder/expr"
-import { compileFnCallCond } from "@maple-dev/clickhouse-builder"
-import * as T from "@maple-dev/clickhouse-builder/types"
-import { param } from "@maple-dev/clickhouse-builder"
-import { from, fromQuery, type ColumnAccessor, type CHQuery } from "@maple-dev/clickhouse-builder"
-import { unionAll, type CHUnionQuery } from "@maple-dev/clickhouse-builder"
-import { SessionReplays, SessionReplayEvents, TraceDetailSpans } from "../tables"
+import * as CH from "@maple-dev/effect-clickhouse/expr"
+import { compileFnCallCond } from "@maple-dev/effect-clickhouse"
+import * as T from "@maple-dev/effect-clickhouse/types"
+import { inSubquery, param } from "@maple-dev/effect-clickhouse"
+import { from, fromQuery, type ColumnAccessor, type CHQuery } from "@maple-dev/effect-clickhouse"
+import { unionAll, type CHUnionQuery } from "@maple-dev/effect-clickhouse"
+import { SESSION_LIVE_WINDOW_SECONDS, type SessionTag } from "@maple/domain/query-engine"
+import { ProductEvents, SessionReplays, SessionReplayEvents, TraceDetailSpans } from "../tables"
 import { resourceEnvLabel } from "./environment"
 import { sessionActivityAggregateQuery, sessionEventMatchQuery } from "./session-events"
+import { sessionQualityExpr, sessionTagFacet, taggedSessionIds } from "./session-tags"
 import type { FacetOutput } from "./query-helpers"
 
 // argMax(value, ordering) — finalize a ReplacingMergeTree column to its latest
@@ -76,8 +78,49 @@ function assumeNotNull<T>(value: CH.Expr<T | null>): CH.Expr<T> {
 
 // ifNotFinite(x, fallback) — quantile() over an empty set yields nan, and
 // casting that to an integer is a hard error.
-function ifNotFinite(value: CH.Expr<number>, fallback: number): CH.Expr<number> {
-	return CH.compileTypedFnCall<number>("ifNotFinite", T.float64.schema, value, CH.lit(fallback))
+function ifNotFinite(value: CH.Expr<number | null>, fallback: number): CH.Expr<number> {
+	return CH.ifNull(CH.ifNotFinite(value, fallback), CH.lit(fallback))
+}
+
+// Sessions that navigated to one page path inside the window.
+//
+// Reads `product_events`, not `session_events`: its sort key leads with
+// (OrgId, Timestamp), so the window is a primary-index range, and `PagePath` was
+// parsed at write time. `session_events` is sorted by SessionId, so the same
+// predicate there scans every event of every session in the window's partitions
+// and runs `path(Url)` on each (see `productEvents` in datasources.ts).
+//
+// Bounded by the list's own window, which bounds session *start*: a session that
+// began just before `endTime` and reached the page after it is missed. For the
+// usual "last N" windows `endTime` is now, so nothing is.
+function pageVisitSessions(pagePath: string) {
+	return from(ProductEvents)
+		.select(($) => ({ SessionId: $.SessionId }))
+		.where(($) => [
+			$.OrgId.eq(param.string("orgId")),
+			$.Timestamp.gte(param.dateTimeString("startTime")),
+			$.Timestamp.lte(param.dateTimeString("endTime")),
+			$.Kind.eq("navigation"),
+			$.PagePath.eq(pagePath),
+		])
+}
+
+// Sessions carrying every tag in `tags`. SessionId is version-invariant, so this
+// sits in WHERE like `pagePath`; the tags themselves are decided over the window's
+// finalized rows inside the subquery.
+function tagFilter(
+	tags: ReadonlyArray<SessionTag> | undefined,
+	$: ColumnAccessor<typeof SessionReplays.columns>,
+): CH.Condition | undefined {
+	if (tags === undefined || tags.length === 0) return undefined
+	return inSubquery(
+		$.SessionId,
+		taggedSessionIds(tags, ($$) => [
+			$$.OrgId.eq(param.string("orgId")),
+			$$.StartTime.gte(param.dateTimeString("startTime")),
+			$$.StartTime.lte(param.dateTimeString("endTime")),
+		]),
+	)
 }
 
 // List query
@@ -109,7 +152,6 @@ export interface SessionReplaysListOpts {
 	hasErrors?: boolean
 	/** Substring match on the initial page URL. */
 	search?: string
-	/** Keyset cursor: only sessions with StartTime strictly before this. */
 	/**
 	 * The session's deployment environment — `deployment.environment.name` (or
 	 * the deprecated `deployment.environment`) out of `ResourceAttributes`.
@@ -119,7 +161,22 @@ export interface SessionReplaysListOpts {
 	 * end row, so this is safe to apply before the `GROUP BY SessionId`.
 	 */
 	environment?: string
-	cursor?: string
+	/** Exact page path (no query/hash) the session navigated to at any point. */
+	pagePath?: string
+	/** Only sessions carrying every one of these tags (see session-tags.ts). */
+	tags?: ReadonlyArray<SessionTag>
+	/**
+	 * Keyset cursor: the (StartTime, SessionId) of the last row of the previous
+	 * page, matching this query's `ORDER BY startTime DESC, sessionId DESC`.
+	 *
+	 * The session id is the tie-break, and it is load-bearing rather than
+	 * defensive: the SDK stamps `start_time` from a JS `Date`, so StartTime lands
+	 * on millisecond boundaries and two sessions sharing one is ordinary at
+	 * traffic. Without it a page boundary that fell inside such a tie would drop
+	 * every session on the far side of it. `sessionId` is optional only for the
+	 * v1 endpoint, whose cursor is a bare timestamp.
+	 */
+	cursor?: { startTime: string; sessionId?: string }
 	/** Min/max wall-clock duration (ms). Filters on the stored DurationMs; only
 	 *  completed (Version=2) sessions carry it, so in-progress sessions are
 	 *  excluded when either bound is set. */
@@ -158,6 +215,17 @@ export interface SessionReplaysListOutput {
 	readonly endTime: string | null
 	readonly durationMs: number | null
 	readonly status: string
+	/**
+	 * Last heartbeat, or NULL on a session whose only row is the v1 start row.
+	 *
+	 * The pair (`status`, `lastActivityAt`) is what decides live-ness. `status`
+	 * alone cannot: it only reaches `"ended"` if the tab lived long enough to
+	 * send an unload row, so a killed tab, a crash or a slept phone leaves it
+	 * `"active"` for the rest of the session's retention. Reading this column is
+	 * also what recovers a duration for those sessions, whose `durationMs` stays
+	 * NULL forever.
+	 */
+	readonly lastActivityAt: string | null
 	readonly userId: string
 	// identify() identity (migration 0011). `''` when the session was never
 	// identified — the list renders its existing session-id/host line in that case,
@@ -184,6 +252,10 @@ export interface SessionReplaysListOutput {
 	/** The SDK's `maple.session.recorded` marker: `"true"`, `"false"`, or `""`
 	 *  for sessions written before the SDK stamped it (absent map key). */
 	readonly recorded: string
+	/** Quality tier: one of `SESSION_QUALITY_TAGS`, decided by `sessionQualityExpr`. */
+	readonly quality: string
+	/** 1 when the visitor id was minted on this session's first page load. */
+	readonly visitorIsNew: number
 	/** Count of distilled events matching the event predicates. Present only when an
 	 *  `event*` filter is set (the event INNER JOIN selects it); absent otherwise. */
 	readonly matchCount?: number
@@ -215,6 +287,10 @@ export function sessionReplaysListQuery(
 			endTime: argMax($.EndTime, $.Version),
 			durationMs: argMax($.DurationMs, $.Version),
 			status: argMax($.Status, $.Version),
+			// Heartbeat-refreshed, so it is the only column that can tell a session
+			// that is open right now from one whose `Status` merely never got its
+			// unload row. Every consumer of `status` needs it alongside.
+			lastActivityAt: argMax($.LastActivityAt, $.Version),
 			userId: argMax($.UserId, $.Version),
 			// identify() writes these on every row version (see meta-row.ts) — the
 			// ReplacingMergeTree replaces whole rows, so anything written on only one
@@ -242,6 +318,8 @@ export function sessionReplaysListQuery(
 			// already-selected resource map — no join against session_replay_events,
 			// which would undo this query's partition pruning.
 			recorded: argMax($.ResourceAttributes.get("maple.session.recorded"), $.Version),
+			quality: sessionQualityExpr($),
+			visitorIsNew: argMax($.VisitorIsNew, $.Version),
 		}))
 		.where(($) => [
 			$.OrgId.eq(param.string("orgId")),
@@ -270,7 +348,18 @@ export function sessionReplaysListQuery(
 			CH.when(opts.groupName, (v: string) => $.GroupName.eq(v)),
 			CH.whenTrue(opts.hasErrors, () => $.ErrorCount.gt(0)),
 			CH.when(opts.search, (v: string) => $.UrlInitial.ilike(`%${v}%`)),
-			CH.when(opts.cursor, (v: string) => $.StartTime.lt(v)),
+			// SessionId is version-invariant, so this is row-level like the rest.
+			CH.when(opts.pagePath, (v: string) => inSubquery($.SessionId, pageVisitSessions(v))),
+			tagFilter(opts.tags, $),
+			// Version-invariant, so the keyset can sit in WHERE ahead of the GROUP BY
+			// rather than becoming another post-aggregate predicate.
+			CH.when(opts.cursor, (c: { startTime: string; sessionId?: string }) =>
+				c.sessionId === undefined
+					? $.StartTime.lt(c.startTime)
+					: $.StartTime.lt(c.startTime).or(
+							$.StartTime.eq(c.startTime).and($.SessionId.lt(c.sessionId)),
+						),
+			),
 		])
 		.groupBy("sessionId")
 
@@ -309,6 +398,7 @@ export function sessionReplaysListQuery(
 				endTime: $.endTime,
 				durationMs: $.durationMs,
 				status: $.status,
+				lastActivityAt: $.lastActivityAt,
 				userId: $.userId,
 				userName: $.userName,
 				userEmail: $.userEmail,
@@ -328,6 +418,8 @@ export function sessionReplaysListQuery(
 				errorCount: $.errorCount,
 				traceCount: $.traceCount,
 				recorded: $.recorded,
+				quality: $.quality,
+				visitorIsNew: $.visitorIsNew,
 				matchCount: $.e.matchCount,
 			}))
 			.where(($: any) => {
@@ -373,6 +465,7 @@ export function sessionReplaysListQuery(
 				endTime: $.endTime,
 				durationMs: $.durationMs,
 				status: $.status,
+				lastActivityAt: $.lastActivityAt,
 				userId: $.userId,
 				userName: $.userName,
 				userEmail: $.userEmail,
@@ -392,6 +485,8 @@ export function sessionReplaysListQuery(
 				errorCount: $.errorCount,
 				traceCount: $.traceCount,
 				recorded: $.recorded,
+				quality: $.quality,
+				visitorIsNew: $.visitorIsNew,
 			}))
 			.where(($) => {
 				// The LEFT JOIN yields NULL activeTimeMs for sessions with no
@@ -422,6 +517,7 @@ export function sessionReplaysListQuery(
 			endTime: $.endTime,
 			durationMs: $.durationMs,
 			status: $.status,
+			lastActivityAt: $.lastActivityAt,
 			userId: $.userId,
 			userName: $.userName,
 			userEmail: $.userEmail,
@@ -441,6 +537,8 @@ export function sessionReplaysListQuery(
 			errorCount: $.errorCount,
 			traceCount: $.traceCount,
 			recorded: $.recorded,
+			quality: $.quality,
+			visitorIsNew: $.visitorIsNew,
 		}))
 		.where(($) => [
 			// durationMs is NULL for in-progress (Version=1-only) sessions; leaving
@@ -483,13 +581,25 @@ export interface SessionReplaysFacetsOpts {
 	 * end row, so this is safe to apply before the `GROUP BY SessionId`.
 	 */
 	environment?: string
+	/**
+	 * Exact match on the persistent visitor id, mirroring the list query.
+	 *
+	 * It has no facet branch of its own, so like `userId` it narrows every
+	 * dimension. Omitting it left the sidebar and the header counts describing
+	 * the whole org while the list beside them showed one browser's sessions.
+	 */
+	visitorId?: string
 	hasErrors?: boolean
 	search?: string
+	/** Exact visited page path — excluded from its own (page) branch. */
+	pagePath?: string
+	/** Required tags — excluded from their own (tag) branch. */
+	tags?: ReadonlyArray<SessionTag>
 }
 
 export type SessionReplaysFacetsOutput = FacetOutput
 
-type SessionFacetKey = "service" | "browser" | "country" | "device" | "group"
+type SessionFacetKey = "service" | "browser" | "country" | "device" | "group" | "page" | "tag"
 
 export function sessionReplaysFacetsQuery(
 	opts: SessionReplaysFacetsOpts,
@@ -514,8 +624,13 @@ export function sessionReplaysFacetsQuery(
 		// UserId has no facet branch (high cardinality), so it's never excluded — it
 		// narrows every dimension's counts to the selected user.
 		CH.when(opts.userId, (v: string) => $.UserId.eq(v)),
+		CH.when(opts.visitorId, (v: string) => $.VisitorId.eq(v)),
 		CH.whenTrue(opts.hasErrors, () => $.ErrorCount.gt(0)),
 		CH.when(opts.search, (v: string) => $.UrlInitial.ilike(`%${v}%`)),
+		exclude === "page"
+			? undefined
+			: CH.when(opts.pagePath, (v: string) => inSubquery($.SessionId, pageVisitSessions(v))),
+		exclude === "tag" ? undefined : tagFilter(opts.tags, $),
 	]
 
 	const makeFacet = (
@@ -533,6 +648,36 @@ export function sessionReplaysFacetsQuery(
 			.groupBy("name")
 			.orderBy(["count", "desc"])
 			.limit(limit)
+
+	// Pages visited, by sessions that reached them. Unlike the other facets this
+	// counts from `product_events` (a session visits many pages), narrowed to the
+	// sessions every other active filter admits. That session set is always
+	// applied, not only when a filter is set: it is what restricts the count to
+	// sessions that *started* in the window, which is the population the list and
+	// the other facets describe. 200 rather than 50 because the sidebar searches
+	// this list client-side, and paths are the one long-tailed dimension here.
+	const pageFacet = from(ProductEvents)
+		.select(($) => ({
+			name: $.PagePath,
+			count: CH.uniq($.SessionId),
+			facetType: CH.lit("page"),
+		}))
+		.where(($) => [
+			$.OrgId.eq(param.string("orgId")),
+			$.Timestamp.gte(param.dateTimeString("startTime")),
+			$.Timestamp.lte(param.dateTimeString("endTime")),
+			$.Kind.eq("navigation"),
+			$.PagePath.neq(""),
+			inSubquery(
+				$.SessionId,
+				from(SessionReplays)
+					.select(($$) => ({ SessionId: $$.SessionId }))
+					.where(($$) => baseWhere($$, "page")),
+			),
+		])
+		.groupBy("name")
+		.orderBy(["count", "desc"])
+		.limit(200)
 
 	// Session-length distribution, as half-octave log buckets from 1s:
 	//   floor_ms = round(pow(2, floor(log2(clamped_s) * 2) / 2) * 1000)
@@ -577,6 +722,47 @@ export function sessionReplaysFacetsQuery(
 			}))
 			.where(($) => [...baseWhere($), $.DurationMs.gt(0)])
 
+	// Window totals for the page header. The header used to count the rows the
+	// client had scrolled into memory while the chips beside it counted the whole
+	// window, so "50 sessions" sat next to "2,018 with errors" as if the two were
+	// comparable. Both branches carry every active filter, so the header always
+	// describes the same population as the list under it.
+	const totalSessions = from(SessionReplays)
+		.select(($) => ({
+			name: CH.lit("total"),
+			count: CH.uniq($.SessionId),
+			facetType: CH.lit("total"),
+		}))
+		.where(baseWhere)
+
+	// Sessions happening right now, on the same definition the analytics live
+	// badge uses: recent activity, not a `Status` that never got its unload row.
+	// `endTime` is the window's own anchor rather than now(), so the number a
+	// historical window reports stays put instead of decaying to zero.
+	//
+	// Counted over raw rows, so a session that *ended* inside the window still
+	// has an earlier `active` row and is counted. That over-counts by the
+	// sessions which finished in the last five minutes — bounded, and every one
+	// of them was live moments ago. Excluding them exactly would need argMax
+	// dedup, which no other branch of this flat UNION does.
+	const liveSessions = from(SessionReplays)
+		.select(($) => ({
+			name: CH.lit("live"),
+			count: CH.uniqIf(
+				$.SessionId,
+				$.Status.eq("active").and(
+					CH.coalesce($.LastActivityAt, $.StartTime).gte(
+						CH.intervalSub(
+							CH.toDateTime(param.dateTimeString("endTime")),
+							SESSION_LIVE_WINDOW_SECONDS,
+						),
+					),
+				),
+			),
+			facetType: CH.lit("live"),
+		}))
+		.where(baseWhere)
+
 	return unionAll(
 		makeFacet("service", ($) => $.ServiceName),
 		makeFacet("browser", ($) => $.BrowserName),
@@ -586,9 +772,13 @@ export function sessionReplaysFacetsQuery(
 		// the `= ''` rows, so sessions recorded before identify() never surface as a
 		// blank option.
 		makeFacet("group", ($) => $.GroupName),
+		pageFacet,
+		sessionTagFacet(($) => baseWhere($, "tag"), opts.tags),
 		durationHistogram,
 		durationStat("p50", 0.5),
 		durationStat("p95", 0.95),
+		totalSessions,
+		liveSessions,
 		// Distinct sessions with at least one recorded error (drives the "Has
 		// errors" toggle count). Its own hasErrors filter is omitted here.
 		from(SessionReplays)
@@ -611,11 +801,14 @@ export function sessionReplaysFacetsQuery(
 				CH.when(opts.country, (v: string) => $.Country.eq(v)),
 				CH.when(opts.deviceType, (v: string) => $.DeviceType.eq(v)),
 				CH.when(opts.userId, (v: string) => $.UserId.eq(v)),
+				CH.when(opts.visitorId, (v: string) => $.VisitorId.eq(v)),
 				CH.when(opts.groupName, (v: string) => $.GroupName.eq(v)),
 				CH.when(opts.userSearch, (v: string) =>
 					$.UserName.ilike(`%${v}%`).or($.UserEmail.ilike(`%${v}%`)),
 				),
 				CH.when(opts.search, (v: string) => $.UrlInitial.ilike(`%${v}%`)),
+				CH.when(opts.pagePath, (v: string) => inSubquery($.SessionId, pageVisitSessions(v))),
+				tagFilter(opts.tags, $),
 				$.ErrorCount.gt(0),
 			]),
 	).format("JSON")
@@ -1083,7 +1276,7 @@ export interface SessionTraceSummaryOutput {
 	readonly durationMs: number
 	readonly rootSpanName: string
 	readonly rootServiceName: string
-	/** Root span's OTel kind (e.g. SPAN_KIND_CLIENT), so the UI can format the HTTP label. */
+	/** Root span's OTel kind as stored (e.g. `Client`), so the UI can format the HTTP label. */
 	readonly rootSpanKind: string
 	/** Root span's attribute map, JSON-encoded — parsed by the UI for `getHttpInfo`. */
 	readonly rootSpanAttributes: string

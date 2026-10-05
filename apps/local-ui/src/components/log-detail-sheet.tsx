@@ -23,8 +23,9 @@ import {
 import { CopyableValue, AttributesSection, ResourceAttributesSection } from "@maple/ui/components/attributes"
 import { CopyButton } from "@maple/ui/components/ui/copy-button"
 import { cn } from "@maple/ui/lib/utils"
-import type { LocalLog } from "../lib/log-shape"
-import { navigate } from "../lib/router"
+import { logKey, type LocalLog } from "../lib/log-shape"
+import { hrefFor } from "../lib/router"
+import { formatLocalDateTime, formatUtcTitle } from "../lib/time"
 import { ErrorSection } from "@maple/ui/components/error-section"
 import { SearchInput } from "@maple/ui/components/ui/search-input"
 import { CodeBlock } from "./code-block"
@@ -48,13 +49,14 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
 	const sev = log.severityText.toUpperCase()
 	const showErrorBanner = sev === "ERROR" || sev === "FATAL"
 	// Identity used to remount the attributes panel (resets its search) per log.
-	const logKey = `${log.timestamp}-${log.spanId}-${log.body.slice(0, 24)}`
-
-	const openTrace = () => {
-		if (!log.traceId) return
-		navigate(`/traces/${encodeURIComponent(log.traceId)}`)
-		onOpenChange(false)
-	}
+	const identity = logKey(log)
+	const traceHref = log.traceId
+		? hrefFor(
+				`/traces/${encodeURIComponent(log.traceId)}`,
+				new URLSearchParams(log.spanId ? { spanId: log.spanId } : {}),
+			)
+		: undefined
+	const onOpenTrace = () => onOpenChange(false)
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
@@ -62,7 +64,7 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
 				<SheetTitle className="sr-only">Log: {log.body.slice(0, 80)}</SheetTitle>
 
 				<LogHeroHeader log={log} onClose={() => onOpenChange(false)} />
-				<LogMetaStrip log={log} onOpenTrace={openTrace} />
+				<LogMetaStrip log={log} traceHref={traceHref} onOpenTrace={onOpenTrace} />
 				{showErrorBanner && <LogErrorBanner log={log} />}
 
 				<Tabs defaultValue="attributes" className="flex min-h-0 flex-1 flex-col">
@@ -70,7 +72,7 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
 						<TabsTrigger value="attributes">
 							<CircleInfoIcon size={14} /> Attributes
 						</TabsTrigger>
-						{log.traceId && (
+						{traceHref && (
 							<TabsTrigger value="trace">
 								<PulseIcon size={14} /> Trace
 							</TabsTrigger>
@@ -83,16 +85,20 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
 					<TabsContent value="attributes" className="mt-0 min-h-0 flex-1">
 						<ScrollArea className="h-full">
 							<div className="p-3">
-								<LogAttributesPanel key={logKey} log={log} />
+								<LogAttributesPanel key={identity} log={log} />
 							</div>
 						</ScrollArea>
 					</TabsContent>
 
-					{log.traceId && (
+					{traceHref && (
 						<TabsContent value="trace" className="mt-0 min-h-0 flex-1">
 							<ScrollArea className="h-full">
 								<div className="p-3">
-									<LogTracePanel log={log} onOpenTrace={openTrace} />
+									<LogTracePanel
+										log={log}
+										traceHref={traceHref}
+										onOpenTrace={onOpenTrace}
+									/>
 								</div>
 							</ScrollArea>
 						</TabsContent>
@@ -144,7 +150,13 @@ function LogHeroHeader({ log, onClose }: { log: LocalLog; onClose: () => void })
 				<Badge variant="outline" className="font-mono text-[10px]">
 					<CopyableValue value={log.serviceName}>{log.serviceName}</CopyableValue>
 				</Badge>
-				<Button variant="ghost" size="icon" className="ml-auto shrink-0" onClick={onClose}>
+				<Button
+					variant="ghost"
+					size="icon"
+					className="ml-auto shrink-0"
+					aria-label="Close log details"
+					onClick={onClose}
+				>
 					<XmarkIcon size={16} />
 				</Button>
 			</div>
@@ -187,26 +199,34 @@ function LogHeroHeader({ log, onClose }: { log: LocalLog; onClose: () => void })
 	)
 }
 
-function LogMetaStrip({ log, onOpenTrace }: { log: LocalLog; onOpenTrace: () => void }) {
+function LogMetaStrip({
+	log,
+	traceHref,
+	onOpenTrace,
+}: {
+	log: LocalLog
+	traceHref: string | undefined
+	onOpenTrace: () => void
+}) {
 	return (
 		<div className="flex shrink-0 items-center gap-2 overflow-x-auto whitespace-nowrap border-b px-4 py-1.5 text-xs">
 			<div className="flex shrink-0 items-center gap-1.5">
 				<ClockIcon size={12} className="text-muted-foreground" />
-				<span className="font-mono">
-					<CopyableValue value={log.timestamp}>{log.timestamp}</CopyableValue>
+				<span className="font-mono" title={formatUtcTitle(log.timestamp)}>
+					<CopyableValue value={log.timestamp}>{formatLocalDateTime(log.timestamp)}</CopyableValue>
 				</span>
 			</div>
 
-			{log.traceId && (
-				<button
-					type="button"
+			{traceHref && (
+				<a
+					href={traceHref}
 					onClick={onOpenTrace}
 					className="inline-flex shrink-0 items-center gap-1 rounded border border-primary/20 bg-primary/5 px-1.5 py-0.5 font-mono text-[11px] text-primary transition-colors hover:bg-primary/10"
 					title={`View trace ${log.traceId}`}
 				>
 					<PulseIcon size={10} />
 					trace:{log.traceId.slice(0, 8)}
-				</button>
+				</a>
 			)}
 
 			{log.spanId && (
@@ -306,7 +326,15 @@ function LogAttributesPanel({ log }: { log: LocalLog }) {
 	)
 }
 
-function LogTracePanel({ log, onOpenTrace }: { log: LocalLog; onOpenTrace: () => void }) {
+function LogTracePanel({
+	log,
+	traceHref,
+	onOpenTrace,
+}: {
+	log: LocalLog
+	traceHref: string
+	onOpenTrace: () => void
+}) {
 	return (
 		<div className="space-y-3">
 			<div className="rounded-md border p-2 text-xs space-y-1">
@@ -325,7 +353,12 @@ function LogTracePanel({ log, onOpenTrace }: { log: LocalLog; onOpenTrace: () =>
 					</div>
 				)}
 			</div>
-			<Button variant="outline" size="sm" className="w-full gap-1.5" onClick={onOpenTrace}>
+			<Button
+				variant="outline"
+				size="sm"
+				className="w-full gap-1.5"
+				render={<a href={traceHref} onClick={onOpenTrace} />}
+			>
 				<PulseIcon size={14} />
 				Open trace
 			</Button>

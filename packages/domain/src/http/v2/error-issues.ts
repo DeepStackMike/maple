@@ -10,6 +10,7 @@ import {
 	WorkflowState,
 } from "../errors"
 import { SpanId, TraceId, UserId } from "../../primitives"
+import { AuditedRead } from "../audit-log"
 import { AuthorizationV2 } from "./auth"
 import { ListOf, ListQuery, Timestamp } from "./envelopes"
 import { V2CursorInvalid, V2CursorSortMismatch } from "./errors"
@@ -151,6 +152,9 @@ export const V2ErrorIssueListQuery = Schema.Struct({
 	// Also bounds the deployment_environment lookup.
 	start_time: Schema.optional(Timestamp),
 	end_time: Schema.optional(Timestamp),
+	// Only issues first seen or last regressed at or after this instant: what a
+	// deploy introduced, rather than everything still occurring.
+	introduced_after: Schema.optional(Timestamp),
 	actionable: Schema.optional(Schema.Literal("true")),
 	sort: Schema.optional(Schema.Literals(["last_seen", "severity"])),
 }).annotate({
@@ -242,6 +246,7 @@ export class V2ErrorIssuesApiGroup extends HttpApiGroup.make("errorIssues")
 	)
 	.prefix("/v2/error_issues")
 	.middleware(AuthorizationV2)
+	.annotate(AuditedRead, "telemetry.read")
 	.annotateMerge(
 		OpenApi.annotations({
 			title: "Error Issues",

@@ -16,6 +16,7 @@ import { serviceFilterChips } from "@/lib/services-list/service-filter-chips"
 import { useGlobalNamespace } from "@/hooks/use-global-namespace"
 import { ServicesFilterSidebar } from "@/components/services/services-filter-sidebar"
 import { TimeRangeSearchFields, applyTimeRangeSearch } from "@/components/time-range-picker/search"
+import { sessionTimeRangeSearchMiddleware } from "@/components/time-range-picker/session-time-range"
 import { PageRefreshProvider } from "@/components/time-range-picker/page-refresh-context"
 import { TimeRangeHeaderControls } from "@/components/time-range-picker/time-range-header-controls"
 import { useEffectiveTimeRange } from "@/hooks/use-effective-time-range"
@@ -79,6 +80,7 @@ export function servicesRouteAtoms(search: ServicesSearchParams) {
 export const Route = createFileRoute("/services/")({
 	component: ServicesPage,
 	validateSearch: Schema.toStandardSchemaV1(servicesSearchSchema),
+	search: { middlewares: [sessionTimeRangeSearchMiddleware({ maxRangeSeconds: ONE_YEAR_SECONDS })] },
 	loaderDeps: ({ search }) => search,
 	// A plain `loader`, not the `effectRoute` wrapper: TanStack's route
 	// code-splitting extracts `component` by statically matching
@@ -125,10 +127,7 @@ function ServicesPage() {
 					</DashboardLayout.Filters>
 					<DashboardLayout.Content>
 						<DashboardLayout.Sticky>
-							<DashboardLayout.Header
-								title="Services"
-								description="Overview of all services with key metrics."
-							>
+							<DashboardLayout.Header title="Services">
 								<TimeRangeHeaderControls
 									startTime={search.startTime ?? effectiveStartTime}
 									endTime={search.endTime ?? effectiveEndTime}

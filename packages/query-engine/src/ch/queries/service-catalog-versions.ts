@@ -20,8 +20,8 @@
 // `service_overview_spans` is built from, so a version row and an overview row
 // describe the same requests.
 
-import { from, param } from "@maple-dev/clickhouse-builder"
-import * as CH from "@maple-dev/clickhouse-builder/expr"
+import { from, param } from "@maple-dev/effect-clickhouse"
+import * as CH from "@maple-dev/effect-clickhouse/expr"
 import { deploymentEnvExpr } from "@maple/domain/tinybird/semconv-renames"
 import { Traces } from "../tables"
 

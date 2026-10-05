@@ -26,11 +26,12 @@ export const MAPLE_AI_SESSION_ID_ATTR = "maple_ai.session.id"
  * Prefix of the session id Maple synthesizes for a GenAI trace that carries no
  * {@link MAPLE_AI_SESSION_ID_ATTR}.
  *
- * The gateway stamps the session id only where the vendor exposes a session key
- * — haystack, litellm, llamaindex, semantic_kernel and effect_ai never do, and
- * the `unknown:*` buckets never do — so those traces have no session to belong
- * to. Each one IS its own session: `trace:<TraceId>`, with the single trace as
- * the whole context. The prefix is what keeps the two id spaces apart, and it
+ * The gateway stamps the session id only where the span carries a session key.
+ * haystack, litellm, llamaindex, semantic_kernel, effect_ai and the `unknown:*`
+ * buckets have none of their own and read only `gen_ai.conversation.id`, so a
+ * trace whose emitter never sets it has no session to belong to. Each one IS
+ * its own session: `trace:<TraceId>`, with the single trace as the whole
+ * context. The prefix is what keeps the two id spaces apart, and it
  * is a colon-bearing shape no framework's own key is: read the id back with
  * {@link traceSessionTraceId} rather than testing the prefix by hand.
  */
@@ -80,6 +81,41 @@ export const traceSessionTraceId = (sessionId: string): string | undefined => {
 export const MAPLE_NATIVE_SESSION_ID_ATTR = "maple_ai.session.id"
 /** Groups one turn's spans inside a session; lifted into `conversationId` read-side. */
 export const MAPLE_NATIVE_TURN_ID_ATTR = "maple_ai.turn.id"
+
+// `gen_ai.operation.name` is an open set. These group the semantic convention's
+// operation names — plus `agent_step`, which the Vercel AI SDK emits and
+// production data carries — into the five readings the product distinguishes.
+// Shared between the session summary query and the web's span classifier so an
+// "llm call" is the same span on the server and on the page.
+export const AI_INFERENCE_OPERATIONS = [
+	"chat",
+	"generate_content",
+	"text_completion",
+	"fetch_response",
+] as const
+/** Inference-shaped work that is not a model turn: an embedding is never an "llm call". */
+export const AI_RETRIEVAL_OPERATIONS = ["embeddings", "retrieval"] as const
+export const AI_TOOL_OPERATIONS = ["execute_tool"] as const
+export const AI_AGENT_OPERATIONS = [
+	"invoke_agent",
+	"create_agent",
+	"invoke_workflow",
+	"plan",
+	"agent_step",
+] as const
+/** The convention's memory-store operations: the agent's own bookkeeping, never
+ *  a model turn or a tool call. The ingest gateway decides this for the spans it
+ *  stamps (`KNOWN_OPS` in `apps/ingest/src/ai_session/usage.rs`); the span
+ *  classifier reads it for the spans ingested before. */
+export const AI_MEMORY_OPERATIONS = [
+	"search_memory",
+	"create_memory",
+	"update_memory",
+	"upsert_memory",
+	"delete_memory",
+	"create_memory_store",
+	"delete_memory_store",
+] as const
 /**
  * Count of whole oldest messages dropped from `gen_ai.input.messages` to fit
  * the emitter's attribute budget. Write-only diagnostics: nothing decodes it,
@@ -95,6 +131,136 @@ export const MAPLE_GENAI_INPUT_MESSAGES_DROPPED_ATTR = "maple_ai.input_messages_
  * or the gateway's namespace strip drops it.
  */
 export const MAPLE_GENAI_MODEL_DURATION_MS_ATTR = "maple_ai.model_duration_ms"
+
+/**
+ * Every fact Agent Sessions aggregates or filters on, as the ingest gateway
+ * decided it for one span (`apps/ingest/src/ai_session/facts.rs`, `usage.rs`).
+ * `ai_trace_index_mv` projects these and holds no vendor rule, and the detail
+ * page reads the same ones, so the list and the page cannot disagree.
+ *
+ * - `llmCall`: `"1"` on the model call, `"0"` on every other stamped span. Its
+ *   presence is what says the gateway decided the rest; a span ingested
+ *   before it did carries none, and its readers keep their op/name rules and
+ *   usage conventions for it until it ages out of the 30-day TTL.
+ * - `toolCall`, `error`: `"1"` where they hold, absent otherwise. `toolCall`
+ *   is `"0"` on the copy a call paused for a human's approval leaves, by its
+ *   framework's explicit mark (Google ADK, OpenAI Agents up to 0.22.0,
+ *   pydantic-ai, LlamaIndex's own tracer): that copy is neither a call nor a
+ *   failure, and a call rejected after it counts none.
+ * - `model`, `agentName`, `toolName`, `responseId`: the first non-empty value
+ *   across the dialects' keys; `responseId` on model calls.
+ * - `toolDescription` (on tool calls) and `toolErrorResult` (a failed tool
+ *   call's result), cut by the gateway.
+ * - The usage buckets, on the model call alone: `inputTokens` the uncached
+ *   prompt, `outputTokens` the visible completion, a span's total the plain
+ *   sum of the five; `cost` in USD as the emitter priced the call. An agent or
+ *   workflow wrapper repeating its calls' usage carries none.
+ *
+ * Gateway-owned: stripped from customer input with the rest of the namespace.
+ */
+export const MAPLE_AI_STAMP_ATTRS = {
+	llmCall: "maple_ai.llm_call",
+	toolCall: "maple_ai.tool_call",
+	error: "maple_ai.error",
+	model: "maple_ai.model",
+	agentName: "maple_ai.agent.name",
+	toolName: "maple_ai.tool.name",
+	responseId: "maple_ai.response.id",
+	toolDescription: "maple_ai.tool.description",
+	toolErrorResult: "maple_ai.tool.error_result",
+	inputTokens: "maple_ai.usage.input_tokens",
+	cacheReadTokens: "maple_ai.usage.cache_read_tokens",
+	cacheWriteTokens: "maple_ai.usage.cache_write_tokens",
+	outputTokens: "maple_ai.usage.output_tokens",
+	reasoningTokens: "maple_ai.usage.reasoning_tokens",
+	cost: "maple_ai.usage.cost",
+} as const
+
+// Usage conventions — which of a reporter's token figures already contain
+// which others.
+//
+// The five `gen_ai.usage.*` buckets are not disjoint on every wire. OpenAI's
+// `prompt_tokens` contains `prompt_tokens_details.cached_tokens` and its
+// `completion_tokens` contains `completion_tokens_details.reasoning_tokens`;
+// Anthropic's `input_tokens` EXCLUDES `cache_read_input_tokens` and
+// `cache_creation_input_tokens`; Gemini's `candidatesTokenCount` EXCLUDES
+// `thoughtsTokenCount`. A total that adds the five as if they were disjoint
+// bills a cache-heavy or reasoning-heavy call nearly twice. The ingest gateway
+// settles this per emitter and stamps disjoint buckets (`MAPLE_AI_STAMP_ATTRS`);
+// `spanTokenBuckets` resolves the reporter's convention here only for a span
+// ingested before it did, carving the contained buckets back out, so `input`
+// always means the uncached prompt, `output` the visible completion, and a
+// total is always the plain sum. Remove once those spans have aged out of the
+// 30-day TTL.
+
+export interface GenAiUsageConvention {
+	/** The prompt figure already contains the cache-read and cache-write buckets. */
+	readonly inputIncludesCache: boolean
+	/** The completion figure already contains the reasoning bucket. */
+	readonly outputIncludesReasoning: boolean
+}
+
+const NESTED: GenAiUsageConvention = { inputIncludesCache: true, outputIncludesReasoning: true }
+
+/**
+ * `gen_ai.provider.name` → the convention that provider's raw API reports
+ * under. Only providers whose wire shape was checked are listed; anything else
+ * takes {@link GENAI_DEFAULT_USAGE_CONVENTION}.
+ */
+const GENAI_PROVIDER_USAGE_CONVENTIONS: ReadonlyMap<string, GenAiUsageConvention> = new Map([
+	// Messages API: `input_tokens` excludes both cache buckets and is billed
+	// beside them; `output_tokens` includes the thinking tokens.
+	["anthropic", { inputIncludesCache: false, outputIncludesReasoning: true }],
+	["openai", NESTED],
+	// `promptTokenCount` contains `cachedContentTokenCount`, but
+	// `candidatesTokenCount` excludes `thoughtsTokenCount` — the total is the
+	// sum of the three.
+	["gcp.gemini", { inputIncludesCache: true, outputIncludesReasoning: false }],
+	["gcp.vertex_ai", { inputIncludesCache: true, outputIncludesReasoning: false }],
+	// OpenAI-shaped: `total_tokens` is `prompt_tokens + completion_tokens`, with
+	// the cache and reasoning counts reported as details of those two.
+	["openrouter", NESTED],
+])
+
+/**
+ * Vendors that re-normalise usage before emitting it, whichever provider ran
+ * the call — so the vendor, not the provider, decides.
+ */
+const GENAI_VENDOR_USAGE_CONVENTIONS: ReadonlyMap<string, GenAiUsageConvention> = new Map([
+	// The Vercel AI SDK emits `gen_ai.usage.input_tokens` as
+	// `usage.inputTokens.total` and the output as `outputTokens.total`, and its
+	// providers build both totals as the sum of their parts (`@ai-sdk/anthropic`
+	// sums noCache + cacheRead + cacheWrite): an Anthropic call made through the
+	// SDK nests even though the raw API does not. Verified against the installed
+	// packages — `ai/dist/index.mjs` for the attribute and `@ai-sdk/anthropic`
+	// (vendored under `eve`) for the sum.
+	["vercel_ai_sdk", NESTED],
+	// `@opencode-ai/ai` normalises `inputTokens` to the inclusive total for every
+	// provider (see `sumTokens` in its anthropic-messages/bedrock-converse
+	// protocols) and reports reasoning as a detail of the completion count, so
+	// Maple's own spans nest even when the provider's raw API does not — pinning
+	// it here keeps totals right the day a direct anthropic/bedrock provider is
+	// wired.
+	["maple", NESTED],
+])
+
+/** What most of the field does, and the side that errs toward the smaller
+ *  number rather than inventing tokens. */
+const GENAI_DEFAULT_USAGE_CONVENTION: GenAiUsageConvention = NESTED
+
+/**
+ * The convention a span's usage was reported under. The vendor is asked first
+ * — a framework that re-summed the buckets before emitting them has
+ * overwritten whatever its provider's own API said — then the provider, then
+ * the default.
+ */
+export const genAiUsageConvention = (
+	vendorId: string | undefined,
+	providerName: string | undefined,
+): GenAiUsageConvention =>
+	GENAI_VENDOR_USAGE_CONVENTIONS.get(vendorId ?? "") ??
+	GENAI_PROVIDER_USAGE_CONVENTIONS.get(providerName ?? "") ??
+	GENAI_DEFAULT_USAGE_CONVENTION
 
 export interface AiFieldDef {
 	/** Primary source attribute key (the semconv key where one exists). */
@@ -148,6 +314,17 @@ export const AI_GENAI_FIELDS = {
 	// none. Instrumentations that price calls themselves (OpenLLMetry,
 	// OpenInference, Logfire) each use their own key; this is OpenLLMetry's.
 	usageCost: { key: "gen_ai.usage.cost", type: "number" },
+	// The gateway's verdicts and disjoint usage buckets — see
+	// `MAPLE_AI_STAMP_ATTRS`.
+	mapleLlmCall: { key: MAPLE_AI_STAMP_ATTRS.llmCall, type: "number" },
+	mapleToolCall: { key: MAPLE_AI_STAMP_ATTRS.toolCall, type: "number" },
+	mapleError: { key: MAPLE_AI_STAMP_ATTRS.error, type: "number" },
+	mapleInputTokens: { key: MAPLE_AI_STAMP_ATTRS.inputTokens, type: "number" },
+	mapleCacheReadTokens: { key: MAPLE_AI_STAMP_ATTRS.cacheReadTokens, type: "number" },
+	mapleCacheWriteTokens: { key: MAPLE_AI_STAMP_ATTRS.cacheWriteTokens, type: "number" },
+	mapleOutputTokens: { key: MAPLE_AI_STAMP_ATTRS.outputTokens, type: "number" },
+	mapleReasoningTokens: { key: MAPLE_AI_STAMP_ATTRS.reasoningTokens, type: "number" },
+	mapleCost: { key: MAPLE_AI_STAMP_ATTRS.cost, type: "number" },
 
 	// conversation
 	conversationId: { key: "gen_ai.conversation.id", type: "string" },
@@ -202,6 +379,14 @@ export const AI_GENAI_FIELDS = {
 	// workflow
 	workflowName: { key: "gen_ai.workflow.name", type: "string" },
 
+	// gateway routing — a gateway that tries several upstream providers for one
+	// generation (OpenRouter Broadcast) emits one child span per attempt, with the
+	// provider it went to and the HTTP status that sent it to the next one. A
+	// failed attempt whose generation succeeded is a retry, not a failure.
+	attemptIndex: { key: "span.metadata.attempt_index", type: "number" },
+	attemptStatusCode: { key: "span.metadata.status_code", type: "number" },
+	attemptProvider: { key: "trace.metadata.openrouter.provider_name", type: "string" },
+
 	// core semconv attributes AI spans carry — see `AI_CORE_FIELDS`
 	errorType: { key: "error.type", type: "string" },
 	serverAddress: { key: "server.address", type: "string" },
@@ -211,11 +396,20 @@ export const AI_GENAI_FIELDS = {
 export type AiGenAiField = keyof typeof AI_GENAI_FIELDS
 
 /**
- * Plain core-semconv attributes that AI spans happen to carry, not AI signal.
- * Every ordinary HTTP client span in the trace has them too, which is why the
- * mapper refuses to treat one as evidence that a span is an AI span.
+ * Attributes AI spans happen to carry that are not AI signal: the plain
+ * core-semconv keys every ordinary HTTP client span in the trace has too, and
+ * a gateway's un-namespaced routing metadata, whose generic `span.metadata.*`
+ * keys any instrumentation might stamp. The mapper refuses to treat one as
+ * evidence that a span is an AI span.
  */
-export const AI_CORE_FIELDS: ReadonlySet<AiGenAiField> = new Set(["errorType", "serverAddress", "serverPort"])
+export const AI_CORE_FIELDS: ReadonlySet<AiGenAiField> = new Set([
+	"errorType",
+	"serverAddress",
+	"serverPort",
+	"attemptIndex",
+	"attemptStatusCode",
+	"attemptProvider",
+])
 
 /**
  * `gen_ai.prompt.variable.<name>` is a TEMPLATED attribute: the key carries the

@@ -31,6 +31,9 @@ import {
 	CloudflareInfraWorkersResponse,
 	ServiceDbQuerySummaryResponse,
 	ServiceDetailOverviewResponse,
+	ReleasesListResponse,
+	ReleaseDetailResponse,
+	type ReleaseRow,
 	ServiceDependenciesBundleResponse,
 	ServiceMapBundleResponse,
 	ServiceWorkloadsResponse,
@@ -74,9 +77,16 @@ import {
 	WebAnalyticsPagesResponse,
 	WebAnalyticsEventsResponse,
 	WebAnalyticsBreakdownsResponse,
+	WebAnalyticsAiReferralsResponse,
+	WebAnalyticsAiCrawlersResponse,
 	ProductEventsFunnelResponse,
 	ProductEventsFunnelBreakdownResponse,
+	ProductEventsFunnelTimingResponse,
+	ProductEventsFunnelLeaversResponse,
+	ProductEventsPathsResponse,
 	ProductEventNamesResponse,
+	ProductEventsForTraceResponse,
+	ProductEventTraceSamplesResponse,
 	CommitSha,
 	FingerprintHash,
 	ServiceName,
@@ -85,21 +95,25 @@ import {
 	TraceId,
 	SpanId,
 } from "@maple/domain/http"
-import { WEB_ANALYTICS_LIVE_WINDOW_SECONDS } from "@maple/domain/query-engine"
-import { Clock, Effect, Match, Option, Schema } from "effect"
-import { QueryEngineService } from "@/services/warehouse/QueryEngineService"
-import { isMissingProductEvents, isMissingServiceOperationsRollup } from "@/services/warehouse/missing-table"
-import { makeDirectRouteCachePolicy, makeExecuteRawSql } from "@maple/query-engine/runtime"
-import { WarehouseQueryService } from "@/services/warehouse/WarehouseQueryService"
-import { traceCacheTtlSeconds } from "@/services/warehouse/trace-detail-cache"
+import { SESSION_LIVE_WINDOW_SECONDS } from "@maple/domain/query-engine"
+import { isAiContentFormat } from "@maple/domain/ai-traffic"
+import { Cause, Clock, Effect, Option, Schema } from "effect"
+import { QueryEngineService } from "@maple/backend/services/warehouse/QueryEngineService"
+import {
+	isMissingProductEvents,
+	isMissingServiceOperationsRollup,
+} from "@maple/backend/services/warehouse/missing-table"
+import { makeExecuteRawSql } from "@maple/query-engine/runtime"
+import { describeFailure, recordRawSqlAudit } from "@maple/backend/services/audit/audit-access"
+import { WarehouseQueryService } from "@maple/backend/services/warehouse/WarehouseQueryService"
+import { traceCacheTtlSeconds } from "@maple/backend/services/warehouse/trace-detail-cache"
 import {
 	CH,
 	computeBucketSecondsForRange,
 	formatWarehouseDateTime,
-	parseWarehouseDateTime,
 	QueryEngineExecuteBatchResponse,
 } from "@maple/query-engine"
-import { LOGS_BODY_SEARCH_SETTINGS } from "@maple/query-engine/profiles"
+
 import {
 	containerMetricSpec,
 	hostMetricSpec,
@@ -108,24 +122,33 @@ import {
 	podMetricSpec,
 	toCloudflareFilters,
 	validateFunnelDefinition,
+	validatePathsDefinition,
 	workloadMetricSpec,
-} from "@/routes/query-helpers"
+} from "@maple/backend/queries/query-helpers"
 import { Queries } from "@/routes/queries"
-import { productEventsFunnelOpts, type QueryDefinition } from "@maple/query-engine/registry"
-import { makeQueryRunners } from "@/routes/query-runner"
+import {
+	productEventsFunnelOpts,
+	productEventsPathsOpts,
+	type QueryDefinition,
+} from "@maple/query-engine/registry"
+import { makeQueryRunners } from "@maple/backend/queries/query-runner"
 import { runQueryEngineBatch } from "@/routes/query-engine-batch"
 import type { ExecutionTenant, WarehouseExecutionError } from "@maple/query-engine/execution"
-import type { TenantContext } from "@/services/auth/AuthService"
+import type { TenantContext } from "@maple/backend/services/auth/AuthService"
 import * as Integrations from "@maple/query-engine-integrations"
 
 // `warehouse.sqlQuery` fails with the warehouse error union (distinct tagged
 // classes per failure mode). The typed error channel threads through unchanged
 // so HTTP status mapping stays accurate — every endpoint declares the full set
-// via `warehouseHttpErrors`; on failure the context string lands on the route
-// span so a failed request names which sub-query broke.
+// via `warehouseHttpErrors`; on any failure, defects included, the context
+// string lands on the route span so a failed request names which step broke.
 const mapExecError = <A, E, R>(effect: Effect.Effect<A, E, R>, context: string): Effect.Effect<A, E, R> =>
 	effect.pipe(
-		Effect.tapError(() => Effect.annotateCurrentSpan({ "maple.query_engine.failed_step": context })),
+		Effect.tapCause((cause) =>
+			Cause.hasInterruptsOnly(cause)
+				? Effect.void
+				: Effect.annotateCurrentSpan({ "maple.query_engine.failed_step": context }),
+		),
 	)
 
 /**
@@ -246,6 +269,32 @@ const toServicePlatformRow = (row: CH.ServicePlatformsOutput) => {
 		processRuntimeName,
 	}
 }
+
+const toReleaseRow = (row: CH.ReleasesListOutput): ReleaseRow => {
+	const spanCount = Number(row.spanCount)
+	const satisfied = Number(row.apdexSatisfiedCount)
+	const tolerating = Number(row.apdexToleratingCount)
+	return {
+		serviceName: decodeServiceName(String(row.serviceName ?? "")),
+		environment: String(row.environment ?? ""),
+		commitSha: decodeCommitSha(row.commitSha),
+		firstSeen: String(row.firstSeen),
+		spanCount,
+		errorCount: Number(row.errorCount),
+		p50LatencyMs: Number(row.p50LatencyMs),
+		p95LatencyMs: Number(row.p95LatencyMs),
+		p99LatencyMs: Number(row.p99LatencyMs),
+		apdexScore:
+			spanCount > 0 ? Math.round(((satisfied + tolerating * 0.5) / spanCount) * 10_000) / 10_000 : 0,
+	}
+}
+
+const toReleaseTimelinePoint = (row: CH.ReleasesTimelineOutput) => ({
+	bucket: String(row.bucket),
+	serviceName: decodeServiceName(String(row.serviceName ?? "")),
+	commitSha: decodeCommitSha(row.commitSha),
+	count: Number(row.count),
+})
 
 const toServiceWorkloadRow = (row: CH.ServiceWorkloadsOutput) => ({
 	serviceName: decodeServiceName(String(row.serviceName ?? "")),
@@ -1030,6 +1079,54 @@ export const HttpQueryEngineLive = HttpApiBuilder.group(MapleInternalApi, "query
 							environments: environmentRows
 								.map((row) => String(row.environment ?? ""))
 								.filter((env) => env !== ""),
+						})
+					}),
+				)
+				.handle("releasesList", ({ payload }) =>
+					Effect.gen(function* () {
+						const tenant = yield* CurrentTenant.Context
+						// One Worker invocation for the page: the per-commit rows and the
+						// swimlane timeline share a config resolution and run concurrently.
+						yield* warehouse.warmRoute(tenant)
+						const [rows, timelineRows] = yield* Effect.all(
+							[
+								runQuery(Queries.releasesList, tenant, payload),
+								runQuery(Queries.releasesTimeline, tenant, payload),
+							],
+							{ concurrency: 2 },
+						)
+						return new ReleasesListResponse({
+							releases: rows.map(toReleaseRow),
+							timeline: timelineRows.map(toReleaseTimelinePoint),
+							truncated: rows.length >= CH.RELEASES_LIST_CAP,
+						})
+					}),
+				)
+				.handle("releaseDetail", ({ payload }) =>
+					Effect.gen(function* () {
+						const tenant = yield* CurrentTenant.Context
+						yield* warehouse.warmRoute(tenant)
+						const [versionRows, timelineRows, timeseries, baselineTimeseries, fingerprintRows] =
+							yield* Effect.all(
+								[
+									runQuery(Queries.releaseVersions, tenant, payload),
+									runQuery(Queries.releaseTimeline, tenant, payload),
+									queryEngine.execute(tenant, payload.timeseries),
+									queryEngine.execute(tenant, payload.baselineTimeseries),
+									runQuery(Queries.releaseErrorFingerprints, tenant, payload),
+								],
+								{ concurrency: 5 },
+							)
+						return new ReleaseDetailResponse({
+							versions: versionRows.map(toReleaseRow),
+							timeline: timelineRows.map(toReleaseTimelinePoint),
+							timeseries,
+							baselineTimeseries,
+							errorFingerprints: fingerprintRows.map((row) => ({
+								fingerprintHash: decodeFingerprintHash(row.fingerprintHash),
+								count: Number(row.count),
+								firstSeen: String(row.firstSeen),
+							})),
 						})
 					}),
 				)
@@ -1890,7 +1987,7 @@ export const HttpQueryEngineLive = HttpApiBuilder.group(MapleInternalApi, "query
 							data: {
 								visitors: Number(row?.visitors) || 0,
 								sessions: Number(row?.sessions) || 0,
-								windowSeconds: WEB_ANALYTICS_LIVE_WINDOW_SECONDS,
+								windowSeconds: SESSION_LIVE_WINDOW_SECONDS,
 							},
 						})
 					}),
@@ -2020,6 +2117,71 @@ export const HttpQueryEngineLive = HttpApiBuilder.group(MapleInternalApi, "query
 						return new WebAnalyticsBreakdownsResponse({ data: buckets })
 					}),
 				)
+				.handle("webAnalyticsAiReferrals", ({ payload }) =>
+					Effect.gen(function* () {
+						const tenant = yield* CurrentTenant.Context
+						const rows = yield* withProductEventsFallback(
+							(t, pl) => runQuery(Queries.webAnalyticsAiReferrals, t, pl),
+							(t, pl) => runQuery(Queries.webAnalyticsAiReferralsRaw, t, pl),
+							tenant,
+							payload,
+						)
+						return new WebAnalyticsAiReferralsResponse({
+							data: rows.map((row) => ({
+								bucket: String(row.bucket),
+								product: row.product,
+								sessions: Number(row.sessions) || 0,
+							})),
+						})
+					}),
+				)
+				// No raw fallback: `ai_crawler_requests` is the only source, and a cluster
+				// without migration 0033 answers 502 while the referral half still renders.
+				.handle("webAnalyticsAiCrawlers", ({ payload }) =>
+					Effect.gen(function* () {
+						const tenant = yield* CurrentTenant.Context
+						yield* warehouse.warmRoute(tenant)
+						const [crawlers, formats, pages] = yield* Effect.all(
+							[
+								runQuery(Queries.webAnalyticsAiCrawlers, tenant, payload),
+								runQuery(Queries.webAnalyticsAiCrawlerFormats, tenant, payload),
+								runQuery(Queries.webAnalyticsAiCrawledPages, tenant, payload),
+							],
+							{ concurrency: 3 },
+						)
+						return new WebAnalyticsAiCrawlersResponse({
+							data: {
+								crawlers: crawlers.map((row) => ({
+									crawler: row.crawler,
+									requests: Number(row.requests) || 0,
+									failedRequests: Number(row.failedRequests) || 0,
+									pages: Number(row.pages) || 0,
+									lastSeen: String(row.lastSeen),
+								})),
+								formats: formats.flatMap((row) =>
+									isAiContentFormat(row.format)
+										? [
+												{
+													format: row.format,
+													requests: Number(row.requests) || 0,
+													failedRequests: Number(row.failedRequests) || 0,
+													pages: Number(row.pages) || 0,
+													crawlers: row.crawlers,
+												},
+											]
+										: [],
+								),
+								pages: pages.map((row) => ({
+									host: row.host,
+									path: row.path,
+									requests: Number(row.requests) || 0,
+									crawlers: row.crawlers,
+									lastSeen: String(row.lastSeen),
+								})),
+							},
+						})
+					}),
+				)
 				// Funnels have no raw-`session_events` fallback: server and mobile
 				// events exist only in `product_events`, so a cluster without the table
 				// surfaces the missing-table error instead of a silently smaller funnel.
@@ -2056,6 +2218,49 @@ export const HttpQueryEngineLive = HttpApiBuilder.group(MapleInternalApi, "query
 						})
 					}),
 				)
+				.handle("productEventsFunnelTiming", ({ payload }) =>
+					Effect.gen(function* () {
+						const tenant = yield* CurrentTenant.Context
+						yield* validateFunnelDefinition(productEventsFunnelOpts(payload), "details")
+						const rows = yield* runQuery(Queries.productEventsFunnelTiming, tenant, payload)
+						return new ProductEventsFunnelTimingResponse({
+							data: rows.map((row) => ({
+								step: Number(row.step) || 0,
+								p50Ms: Number(row.p50Ms) || 0,
+								p90Ms: Number(row.p90Ms) || 0,
+							})),
+						})
+					}),
+				)
+				.handle("productEventsFunnelLeavers", ({ payload }) =>
+					Effect.gen(function* () {
+						const tenant = yield* CurrentTenant.Context
+						yield* validateFunnelDefinition(productEventsFunnelOpts(payload), "details")
+						const rows = yield* runQuery(Queries.productEventsFunnelLeavers, tenant, payload)
+						return new ProductEventsFunnelLeaversResponse({
+							data: rows.map((row) => ({
+								step: Number(row.step) || 0,
+								next: String(row.next),
+								count: Number(row.count) || 0,
+							})),
+						})
+					}),
+				)
+				.handle("productEventsPaths", ({ payload }) =>
+					Effect.gen(function* () {
+						const tenant = yield* CurrentTenant.Context
+						yield* validatePathsDefinition(productEventsPathsOpts(payload))
+						const rows = yield* runQuery(Queries.productEventsPaths, tenant, payload)
+						return new ProductEventsPathsResponse({
+							data: rows.map((row) => ({
+								hop: Number(row.hop) || 0,
+								fromNode: String(row.fromNode),
+								toNode: String(row.toNode),
+								count: Number(row.count) || 0,
+							})),
+						})
+					}),
+				)
 				.handle("productEventNames", ({ payload }) =>
 					Effect.gen(function* () {
 						const tenant = yield* CurrentTenant.Context
@@ -2071,6 +2276,43 @@ export const HttpQueryEngineLive = HttpApiBuilder.group(MapleInternalApi, "query
 						})
 					}),
 				)
+				// Both directions of the trace ↔ product-event link.
+				.handle("productEventsForTrace", ({ payload }) =>
+					Effect.gen(function* () {
+						const tenant = yield* CurrentTenant.Context
+						const rows = yield* runQuery(Queries.productEventsForTrace, tenant, payload)
+						return new ProductEventsForTraceResponse({
+							data: rows.map((row) => ({
+								timestamp: String(row.timestamp),
+								eventName: String(row.eventName),
+								spanId: String(row.spanId),
+								serviceName: String(row.serviceName),
+								userId: String(row.userId),
+								groupId: String(row.groupId),
+								visitorId: String(row.visitorId),
+								sessionId: String(row.sessionId),
+								// Already decoded as Record<string, string> by the derived row schema.
+								attributes: row.attributes,
+							})),
+						})
+					}),
+				)
+				.handle("productEventTraceSamples", ({ payload }) =>
+					Effect.gen(function* () {
+						const tenant = yield* CurrentTenant.Context
+						const rows = yield* runQuery(Queries.productEventTraceSamples, tenant, payload)
+						return new ProductEventTraceSamplesResponse({
+							data: rows.map((row) => ({
+								traceId: String(row.traceId),
+								spanId: String(row.spanId),
+								timestamp: String(row.timestamp),
+								serviceName: String(row.serviceName),
+								userId: String(row.userId),
+								visitorId: String(row.visitorId),
+							})),
+						})
+					}),
+				)
 				.handle("executeRawSql", ({ payload }) =>
 					Effect.gen(function* () {
 						const tenant = yield* CurrentTenant.Context
@@ -2078,6 +2320,15 @@ export const HttpQueryEngineLive = HttpApiBuilder.group(MapleInternalApi, "query
 						const autoBucketSeconds = computeAutoBucketSeconds(payload.startTime, payload.endTime)
 						const granularitySeconds = payload.granularitySeconds ?? autoBucketSeconds
 
+						const audit = (result: Parameters<typeof recordRawSqlAudit>[0]["result"]) =>
+							recordRawSqlAudit({
+								tenant,
+								sql: payload.sql,
+								context: "rawSql",
+								startTime: payload.startTime,
+								endTime: payload.endTime,
+								result,
+							})
 						const result = yield* mapExecError(
 							executeRawSql(tenant, {
 								sql: payload.sql,
@@ -2087,7 +2338,19 @@ export const HttpQueryEngineLive = HttpApiBuilder.group(MapleInternalApi, "query
 								granularitySeconds,
 								workload: "interactive",
 								context: "rawSql",
-							}),
+							}).pipe(
+								// Every statement is audited, however it ended: a refused one as `denied`.
+								Effect.tap((executed) =>
+									audit({ _tag: "rows", rowCount: executed.rowCount }),
+								),
+								Effect.tapError((error) =>
+									audit(
+										error._tag === "@maple/http/errors/RawSqlValidationError"
+											? { _tag: "rejected", reason: error.message }
+											: { _tag: "failed", error: describeFailure(error) },
+									),
+								),
+							),
 							"rawSql query failed",
 						)
 

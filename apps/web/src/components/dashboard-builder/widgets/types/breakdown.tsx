@@ -128,6 +128,7 @@ export const funnelWidgetType: WidgetTypeDefinition = {
 	ConfigPanel: () => (
 		<>
 			<WidgetSettings.Divider />
+			<WidgetSettings.FunnelVariant />
 			<WidgetSettings.FunnelStepPercent />
 			<WidgetSettings.QueryOptions />
 		</>
@@ -149,7 +150,8 @@ export const funnelWidgetType: WidgetTypeDefinition = {
 				: undefined
 		const steps = stored?.steps ?? routeParams?.steps ?? []
 		const keyBy = stored?.keyBy ?? routeParams?.keyBy ?? DEFAULT_FUNNEL_KEY_BY
-		const windowSeconds = stored?.windowSeconds ?? routeParams?.windowSeconds ?? DEFAULT_FUNNEL_WINDOW_SECONDS
+		const windowSeconds =
+			stored?.windowSeconds ?? routeParams?.windowSeconds ?? DEFAULT_FUNNEL_WINDOW_SECONDS
 		const breakdownBy = stored?.breakdownBy ?? routeParams?.breakdownBy
 		const filterClause = formatProductEventsFilterClause(stored?.filters ?? routeParams)
 		const funnel: FunnelWidgetDraft = {
@@ -160,6 +162,7 @@ export const funnelWidgetType: WidgetTypeDefinition = {
 			...(breakdownBy !== undefined ? { breakdownBy } : undefined),
 			filterClause,
 			showStepPercent: stored?.showStepPercent,
+			variant: stored?.variant ?? "bars",
 			// An add-on is open when its value is not the default, so the bar shows
 			// what is set without hiding a stored choice.
 			addOns: {
@@ -188,9 +191,17 @@ export const funnelWidgetType: WidgetTypeDefinition = {
 						...funnelDefinition(state.funnel),
 						steps: [...funnelDefinition(state.funnel).steps],
 					}
-				: // A query-set funnel keeps only the rendering flag.
-					state.funnel.showStepPercent !== undefined
-					? { showStepPercent: state.funnel.showStepPercent }
+				: // A query-set funnel keeps only the rendering flags. The drop-off
+					// view draws its bars without timing or leavers there.
+					state.funnel.showStepPercent !== undefined || state.funnel.variant !== "bars"
+					? {
+							...(state.funnel.showStepPercent !== undefined
+								? { showStepPercent: state.funnel.showStepPercent }
+								: undefined),
+							...(state.funnel.variant !== "bars"
+								? { variant: state.funnel.variant }
+								: undefined),
+						}
 					: undefined,
 		}),
 
@@ -207,7 +218,8 @@ export const funnelWidgetType: WidgetTypeDefinition = {
 		if (!compiled.ok) return compiled.error
 		const filters = parseProductEventsFilterClause(filterClause)
 		if (!filters.ok) return `Filters: ${filters.error}`
-		if (!Number.isFinite(windowSeconds) || windowSeconds <= 0) return "The conversion window must be positive"
+		if (!Number.isFinite(windowSeconds) || windowSeconds <= 0)
+			return "The conversion window must be positive"
 		return null
 	},
 }
@@ -226,13 +238,16 @@ function funnelDefinition(funnel: FunnelWidgetDraft): ProductEventsFunnelDefinit
 		return step
 	})
 	const parsedFilters = parseProductEventsFilterClause(funnel.filterClause)
-	const filters = parsedFilters.ok && hasProductEventsFilters(parsedFilters.value) ? parsedFilters.value : undefined
+	const filters =
+		parsedFilters.ok && hasProductEventsFilters(parsedFilters.value) ? parsedFilters.value : undefined
 	return {
 		steps,
 		keyBy: funnel.keyBy,
 		windowSeconds: funnel.windowSeconds,
 		...(funnel.breakdownBy !== undefined ? { breakdownBy: funnel.breakdownBy } : undefined),
 		...(filters !== undefined ? { filters } : undefined),
+		// "bars" is the absence of a choice, so it is not persisted.
+		...(funnel.variant !== "bars" ? { variant: funnel.variant } : undefined),
 	}
 }
 

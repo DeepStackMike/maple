@@ -1,5 +1,5 @@
-import { useCallback, useState } from "react"
-import { TraceViewTabs } from "@maple/ui/components/traces/trace-view-tabs"
+import { useCallback, useMemo } from "react"
+import { isTraceView, TraceViewTabs } from "@maple/ui/components/traces/trace-view-tabs"
 import { Button } from "@maple/ui/components/ui/button"
 import { Spinner } from "@maple/ui/components/ui/spinner"
 import { ArrowLeftIcon } from "@maple/ui/components/icons"
@@ -8,23 +8,38 @@ import { useLocalTraceDetail } from "../hooks/use-local-trace-detail"
 import { useLocalTraceLogCounts } from "../hooks/use-local-span-logs"
 import { SpanDetailPanel, type SpanPanelTab } from "../components/span-detail-panel"
 import { RefreshButton } from "../components/toolbar"
+import { EmptyState, ErrorState } from "../components/view-states"
+import { useQueryParams } from "../lib/router"
 
 interface TraceDetailViewProps {
 	traceId: string
+	backLabel: string
 	onBack: () => void
-	/**
-	 * What `onBack` actually returns to. "Traces" for the ordinary path; a trace
-	 * opened from a session replay goes back to that session, and a button
-	 * labelled "Traces" that lands somewhere else is a lie the reader only
-	 * discovers by pressing it.
-	 */
-	backLabel?: string
 }
 
-export function TraceDetailView({ traceId, onBack, backLabel = "Traces" }: TraceDetailViewProps) {
-	const { data, isPending, isError, error } = useLocalTraceDetail(traceId)
-	const [selectedSpan, setSelectedSpan] = useState<SpanNode | undefined>(undefined)
-	const [panelTab, setPanelTab] = useState<SpanPanelTab>("details")
+/** Depth-first lookup of a span in the rendered tree (the panel needs the node, children included). */
+function findSpanNode(nodes: ReadonlyArray<SpanNode>, spanId: string): SpanNode | undefined {
+	for (const node of nodes) {
+		if (node.spanId === spanId) return node
+		const found = findSpanNode(node.children, spanId)
+		if (found) return found
+	}
+	return undefined
+}
+
+export function TraceDetailView({ traceId, backLabel, onBack }: TraceDetailViewProps) {
+	const trace = useLocalTraceDetail(traceId)
+	const [query, setParams] = useQueryParams()
+	// The selected span and tab live in the URL, so a reload or a shared link reopens them.
+	const selectedSpanId = query.get("spanId") || undefined
+	const rawView = query.get("view")
+	const view = isTraceView(rawView) ? rawView : undefined
+	const selectedSpan = useMemo(
+		() => (selectedSpanId && trace.data ? findSpanNode(trace.data.rootSpans, selectedSpanId) : undefined),
+		[selectedSpanId, trace.data],
+	)
+	// The panel's tab rides along in the URL too; absent means the details tab.
+	const panelTab: SpanPanelTab = query.get("spanTab") === "logs" ? "logs" : "details"
 
 	// One query for the trace, not one per span: which rows have logs is a
 	// property of the whole waterfall, wanted before anything is clicked.
@@ -33,10 +48,10 @@ export function TraceDetailView({ traceId, onBack, backLabel = "Traces" }: Trace
 	// A marker click says both things at once — this span, and its logs. Picking
 	// a row the ordinary way leaves the tab alone, so a reader working through a
 	// trace log-first keeps the logs tab across selections.
-	const openSpanLogs = useCallback((span: SpanNode) => {
-		setSelectedSpan(span)
-		setPanelTab("logs")
-	}, [])
+	const openSpanLogs = useCallback(
+		(span: SpanNode) => setParams({ spanId: span.spanId, spanTab: "logs" }),
+		[setParams],
+	)
 
 	return (
 		<div className="flex h-full flex-col">
@@ -48,43 +63,48 @@ export function TraceDetailView({ traceId, onBack, backLabel = "Traces" }: Trace
 				<span className="truncate font-mono text-xs text-muted-foreground" title={traceId}>
 					{traceId}
 				</span>
-				<RefreshButton className="ml-auto" />
+				<RefreshButton className="ml-auto" since={trace.dataUpdatedAt} />
 			</div>
 
 			<div className="min-h-0 flex-1">
-				{isPending ? (
+				{trace.isPending ? (
 					<div className="flex h-full items-center justify-center">
 						<Spinner />
 					</div>
-				) : isError ? (
-					<div className="p-6 text-sm text-destructive">
-						Failed to load trace: {error instanceof Error ? error.message : String(error)}
-					</div>
-				) : !data || data.spans.length === 0 ? (
-					<div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-						No spans found for this trace.
-					</div>
+				) : trace.isError ? (
+					<ErrorState label="trace" error={trace.error} onRetry={() => trace.refetch()} />
+				) : trace.data.spans.length === 0 ? (
+					<EmptyState
+						title="No spans found for this trace"
+						hint="It may be outside the store's retention, or its spans have not arrived yet."
+					/>
 				) : (
 					<div className="flex h-full min-h-0">
 						<div className="min-w-0 flex-1">
 							<TraceViewTabs
-								rootSpans={data.rootSpans}
-								spans={data.spans}
-								totalDurationMs={data.totalDurationMs}
-								traceStartTime={data.traceStartTime}
-								services={data.services}
+								rootSpans={trace.data.rootSpans}
+								spans={trace.data.spans}
+								totalDurationMs={trace.data.totalDurationMs}
+								traceStartTime={trace.data.traceStartTime}
+								services={trace.data.services}
 								selectedSpanId={selectedSpan?.spanId}
-								onSelectSpan={setSelectedSpan}
+								onSelectSpan={(span) => setParams({ spanId: span.spanId })}
 								spanLogMarkers={logCounts.data}
 								onOpenSpanLogs={openSpanLogs}
+								view={view ?? "timeline"}
+								onViewChange={(next) =>
+									setParams({ view: next === "timeline" ? null : next })
+								}
 							/>
 						</div>
 						{selectedSpan ? (
 							<SpanDetailPanel
 								span={selectedSpan}
 								tab={panelTab}
-								onTabChange={setPanelTab}
-								onClose={() => setSelectedSpan(undefined)}
+								onTabChange={(next) =>
+									setParams({ spanTab: next === "details" ? null : next })
+								}
+								onClose={() => setParams({ spanId: null, spanTab: null })}
 							/>
 						) : null}
 					</div>

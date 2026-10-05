@@ -105,21 +105,69 @@ describe("parseWhereClause", () => {
 		])
 	})
 
-	it("caps attr.* filters at 5", () => {
+	it("treats an unrecognised key as a span attribute", () => {
+		const { filters, warnings } = parseWhereClause('request.id = "req_01M2G2ZJ"')
+		expect(filters.attributeFilters).toEqual([
+			{ key: "request.id", value: "req_01M2G2ZJ", matchMode: undefined },
+		])
+		expect(warnings).toEqual([])
+	})
+
+	it("keeps attribute key case as typed", () => {
+		const { filters } = parseWhereClause('attr.userId = "u1" AND tenantId != "t1"')
+		expect(filters.attributeFilters.map((f) => f.key)).toEqual(["userId", "tenantId"])
+	})
+
+	it("lowers range operators on a bare attribute key to comparison filters", () => {
+		const { filters, warnings } = parseWhereClause("retry.count > 3 AND attr.size <= 10")
+		expect(filters.attributeFilters).toEqual([
+			{ key: "retry.count", value: "3", matchMode: "gt" },
+			{ key: "size", value: "10", matchMode: "lte" },
+		])
+		expect(warnings).toEqual([])
+	})
+
+	it("lowers exists / !exists to a presence filter, never an empty-value match", () => {
+		const { filters, warnings } = parseWhereClause(
+			"attr.user.id exists AND resource.k8s.pod.name !exists",
+		)
+		expect(filters.attributeFilters).toEqual([{ key: "user.id", value: "", matchMode: "exists" }])
+		expect(filters.resourceAttributeFilters).toEqual([
+			{ key: "k8s.pod.name", value: "", matchMode: "exists", negated: true },
+		])
+		expect(warnings).toEqual([])
+	})
+
+	it.each([
+		["service.name > 3", "service.name supports only =, != and contains; ignoring >"],
+		['service.name !contains "x"', "service.name supports only =, != and contains; ignoring !contains"],
+		["span.name exists", "span.name supports only =, != and contains; ignoring exists"],
+		['http.method contains "PO"', "http.method supports only = and !=; ignoring contains"],
+		['http.status_code > "400"', "http.status_code supports only = and !=; ignoring >"],
+		["has_error != true", "has_error supports only =; ignoring !="],
+		["min_duration_ms > 5", "min_duration_ms supports only =; ignoring >"],
+	])("warns instead of degrading %s into an exact match", (clause, warning) => {
+		const { filters, warnings } = parseWhereClause(clause)
+		expect(warnings).toEqual([warning])
+		expect(filters).toEqual({ attributeFilters: [], resourceAttributeFilters: [] })
+	})
+
+	it("caps attr.* filters at 5 and warns about the rest", () => {
 		const clause = Array.from({ length: 7 }, (_, i) => `attr.key${i} = "val${i}"`).join(" AND ")
-		const { filters } = parseWhereClause(clause)
+		const { filters, warnings } = parseWhereClause(clause)
 		expect(filters.attributeFilters).toHaveLength(5)
 		expect(filters.attributeFilters[4].key).toBe("key4")
+		expect(warnings).toHaveLength(2)
 	})
 
-	it("marks incomplete clauses for unclosed quotes", () => {
+	it("warns for unclosed quotes", () => {
 		const result = parseWhereClause('service.name = "check')
-		expect(result.hasIncompleteClauses).toBe(true)
+		expect(result.warnings).toHaveLength(1)
 	})
 
-	it("marks invalid number as incomplete", () => {
+	it("warns for an invalid number", () => {
 		const result = parseWhereClause("min_duration_ms = nope")
-		expect(result.hasIncompleteClauses).toBe(true)
+		expect(result.warnings).toEqual(["Invalid min_duration_ms value ignored: nope"])
 		expect(result.filters.minDurationMs).toBeUndefined()
 	})
 
@@ -127,7 +175,7 @@ describe("parseWhereClause", () => {
 		const result = parseWhereClause("")
 		expect(result.filters.attributeFilters).toEqual([])
 		expect(result.filters.resourceAttributeFilters).toEqual([])
-		expect(result.hasIncompleteClauses).toBe(false)
+		expect(result.warnings).toEqual([])
 	})
 
 	it("parses a full combined clause", () => {
@@ -347,6 +395,38 @@ describe("toWhereClause", () => {
 			excludedSpanNames: ["GET /health"],
 		})
 		expect(clause).toBe('service.name != "checkout" AND span.name != "GET /health"')
+	})
+
+	it("emits exists and comparison operators for attribute filters", () => {
+		const clause = toWhereClause({
+			attributeFilters: [
+				{ key: "user.id", value: "", matchMode: "exists" },
+				{ key: "retry.count", value: "3", matchMode: "gte" },
+			],
+			resourceAttributeFilters: [
+				{ key: "k8s.pod.name", value: "", matchMode: "exists", negated: true },
+			],
+		})
+		expect(clause).toBe(
+			'attr.user.id exists AND attr.retry.count >= "3" AND resource.k8s.pod.name !exists',
+		)
+		expect(parseWhereClause(clause ?? "").filters.attributeFilters).toEqual([
+			{ key: "user.id", value: "", matchMode: "exists" },
+			{ key: "retry.count", value: "3", matchMode: "gte" },
+		])
+	})
+
+	it("quotes values with the grammar's quotes, not backslash escapes", () => {
+		const withDouble = toWhereClause({
+			attributeFilters: [{ key: "msg", value: 'say "hi"' }],
+			resourceAttributeFilters: [],
+			service: "C:\\app",
+		})
+		expect(withDouble).toBe(`service.name = "C:\\app" AND attr.msg = 'say "hi"'`)
+		const { filters, warnings } = parseWhereClause(withDouble ?? "")
+		expect(warnings).toEqual([])
+		expect(filters.service).toBe("C:\\app")
+		expect(filters.attributeFilters[0].value).toBe('say "hi"')
 	})
 
 	it("round-trips negated clauses (canonical emit order: attr.* before excluded named fields)", () => {
@@ -600,5 +680,42 @@ describe("applyWhereClause removals", () => {
 		expect(result.spanNames).toEqual(["POST /pay"])
 		expect(result.services).toEqual(["billing"])
 		expect(result.hasError).toBe(true)
+	})
+})
+
+describe("OR groups", () => {
+	it("parses an attribute group onto one entry with or alternatives", () => {
+		const { filters, warnings } = parseWhereClause(
+			'root_only = false AND (messaging.destination.name = "kafka" OR messaging.destination.name !exists)',
+		)
+		expect(warnings).toEqual([])
+		expect(filters.rootOnly).toBe(false)
+		expect(filters.attributeFilters).toEqual([
+			{
+				key: "messaging.destination.name",
+				value: "kafka",
+				or: [{ key: "messaging.destination.name", value: "", matchMode: "exists", negated: true }],
+			},
+		])
+	})
+
+	it("rejects a group that ORs a named field or mixes maps", () => {
+		for (const whereClause of [
+			'(service.name = "api" OR attr.x = "1")',
+			'(attr.x = "1" OR resource.y = "2")',
+		]) {
+			const { filters, warnings } = parseWhereClause(whereClause)
+			expect(filters.attributeFilters).toEqual([])
+			expect(filters.resourceAttributeFilters).toEqual([])
+			expect(filters.service).toBeUndefined()
+			expect(warnings).toHaveLength(1)
+			expect(warnings[0]).toContain("OR group ignored")
+		}
+	})
+
+	it("round-trips a group through toWhereClause", () => {
+		const whereClause = '(attr.a = "1" OR attr.b !exists)'
+		const { filters } = parseWhereClause(whereClause)
+		expect(toWhereClause(filters)).toBe(whereClause)
 	})
 })

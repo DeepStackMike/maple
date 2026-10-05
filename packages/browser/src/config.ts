@@ -1,17 +1,40 @@
 import {
 	type IdentifyInput,
 	type MapleIdentity,
+	type MapleRegion,
 	normalizeIdentity,
 	type ResolvedIdentity,
+	resolveIngestEndpoint,
+	warnIfKeylessMapleIngest,
 } from "@maple/browser-session"
+import {
+	type ReplayOptions,
+	type ResolvedSignalOptions,
+	resolveReplayOptions,
+	resolveSignalOptions,
+	type SignalOptions,
+	type TracingSignalOptions,
+} from "@maple/sdk-core"
 
-/** Public configuration for `MapleBrowser.init`. */
-export interface MapleBrowserConfig {
-	/** Public ingest key (`maple_pk_...`). */
-	readonly ingestKey: string
+export type { ConsoleLevel } from "@maple/sdk-core"
+
+/** Public configuration for `MapleBrowser.init`. The signal groups are shared with the Effect SDK. */
+export interface MapleBrowserConfig extends SignalOptions {
+	/**
+	 * Public ingest key (`maple_pk_...`), sent as `Authorization: Bearer …` and
+	 * nothing else. Leave it unset when a proxy at `endpoint` adds auth: tracing
+	 * and replay still run, sending without the header.
+	 */
+	readonly ingestKey?: string
 	/** Service name reported on traces and stored on replay sessions. */
 	readonly serviceName: string
-	/** Maple ingest base URL. Defaults to `https://ingest.maple.dev`. */
+	/**
+	 * Region your Maple organization lives in: `"us"` (default,
+	 * `https://ingest.maple.dev`) or `"eu"` (`https://ingest.eu.maple.dev`).
+	 * Ingest keys belong to one region. Ignored when `endpoint` is set.
+	 */
+	readonly region?: MapleRegion
+	/** Maple ingest base URL. Overrides `region`; use it for a proxy or self-hosted ingest. */
 	readonly endpoint?: string
 	/**
 	 * Logical group this service belongs to, emitted as the OTel
@@ -31,7 +54,7 @@ export interface MapleBrowserConfig {
 	readonly userId?: string | null | undefined
 	/** End-user identity attached to sessions and browser spans. */
 	readonly user?: MapleIdentity | undefined
-	readonly tracing?: {
+	readonly tracing?: TracingSignalOptions & {
 		/** Default true. */
 		readonly enabled?: boolean
 		/**
@@ -42,18 +65,25 @@ export interface MapleBrowserConfig {
 		 */
 		readonly instrumentFetch?: boolean
 		/**
+		 * Auto-instrument `XMLHttpRequest` (axios and older clients) the same way.
+		 * Default true. Turn it off for the same reason as `instrumentFetch`.
+		 */
+		readonly instrumentXhr?: boolean
+		/**
 		 * Capture uncaught errors and unhandled promise rejections as error
 		 * spans. Default true. Turn off only when another tracker already owns
 		 * the page's global error handlers, or the same crash lands twice.
 		 */
 		readonly captureErrors?: boolean
+		/**
+		 * Cross-origin URLs whose `fetch()` requests carry the W3C `traceparent`
+		 * header, so the browser span and your backend's span join one trace.
+		 * Same-origin requests always carry it. Your API must allow the
+		 * `traceparent` header in CORS. Example: `[/^https:\/\/api\.example\.com\//]`.
+		 */
+		readonly propagateTraceHeaderCorsUrls?: ReadonlyArray<string | RegExp>
 	}
-	readonly replay?: {
-		/** Default true. */
-		readonly enabled?: boolean
-		/** Fraction of sessions to record, 0–1. Default 1. */
-		readonly sampleRate?: number
-	}
+	readonly replay?: ReplayOptions
 	readonly privacy?: {
 		/** Mask all `<input>` values. Default true. */
 		readonly maskAllInputs?: boolean
@@ -87,11 +117,19 @@ export interface MapleBrowserConfig {
 		readonly captureUserEmail?: boolean
 		/** Treat `navigator.doNotTrack` like Global Privacy Control. Default false. */
 		readonly respectDoNotTrack?: boolean
+		/**
+		 * Rewrite every URL before it leaves the page: session entry and exit
+		 * URLs, event rows, network events, replay meta events, and span
+		 * attributes. Runs after the built-in redaction, which already replaces
+		 * the values of credential-shaped query and fragment parameters
+		 * (`token`, `code`, `access_token`, `password`, …).
+		 */
+		readonly sanitizeUrl?: (url: string) => string
 	}
 }
 
-export interface ResolvedConfig {
-	readonly ingestKey: string
+export interface ResolvedConfig extends ResolvedSignalOptions {
+	readonly ingestKey: string | undefined
 	readonly serviceName: string
 	readonly endpoint: string
 	readonly serviceNamespace: string | undefined
@@ -101,9 +139,16 @@ export interface ResolvedConfig {
 	identity: ResolvedIdentity | undefined
 	readonly tracingEnabled: boolean
 	readonly tracingInstrumentFetch: boolean
+	readonly tracingInstrumentXhr: boolean
 	readonly tracingCaptureErrors: boolean
+	readonly propagateTraceHeaderCorsUrls: ReadonlyArray<string | RegExp>
 	readonly replayEnabled: boolean
 	readonly replaySampleRate: number
+	readonly replayOnErrorSampleRate: number
+	readonly canvasFps: number | undefined
+	readonly networkBodies:
+		| { readonly urls: ReadonlyArray<string | RegExp>; readonly maxLength: number }
+		| undefined
 	readonly maskAllInputs: boolean
 	readonly maskAllText: boolean
 	readonly persistVisitorId: boolean
@@ -112,9 +157,8 @@ export interface ResolvedConfig {
 	readonly requireConsent: boolean
 	readonly captureUserEmail: boolean
 	readonly respectDoNotTrack: boolean
+	readonly sanitizeUrl: ((url: string) => string) | undefined
 }
-
-const DEFAULT_ENDPOINT = "https://ingest.maple.dev"
 
 /**
  * Resolve the identity from either the new `user` object or the legacy
@@ -128,19 +172,33 @@ export function resolveIdentity(config: {
 }
 
 export function resolveConfig(config: MapleBrowserConfig): ResolvedConfig {
+	const endpoint = resolveIngestEndpoint({ endpoints: [config.endpoint], regions: [config.region] })
+	warnIfKeylessMapleIngest({
+		logPrefix: "[maple]",
+		endpoint,
+		hasIngestKey: Boolean(config.ingestKey),
+		hint: "Pass `ingestKey`, or point `endpoint` at a proxy that adds it.",
+	})
+	const replay = resolveReplayOptions(config.replay)
 	return {
+		...resolveSignalOptions(config),
 		ingestKey: config.ingestKey,
 		serviceName: config.serviceName,
-		endpoint: (config.endpoint ?? DEFAULT_ENDPOINT).replace(/\/$/, ""),
+		endpoint,
 		serviceNamespace: config.serviceNamespace,
 		serviceVersion: config.serviceVersion,
 		environment: config.environment,
 		identity: resolveIdentity(config),
 		tracingEnabled: config.tracing?.enabled ?? true,
 		tracingInstrumentFetch: config.tracing?.instrumentFetch ?? true,
+		tracingInstrumentXhr: config.tracing?.instrumentXhr ?? true,
 		tracingCaptureErrors: config.tracing?.captureErrors ?? true,
-		replayEnabled: config.replay?.enabled ?? true,
-		replaySampleRate: config.replay?.sampleRate ?? 1,
+		propagateTraceHeaderCorsUrls: config.tracing?.propagateTraceHeaderCorsUrls ?? [],
+		replayEnabled: replay.enabled,
+		replaySampleRate: replay.sampleRate,
+		replayOnErrorSampleRate: replay.onErrorSampleRate,
+		canvasFps: replay.canvasFps,
+		networkBodies: replay.networkBodies,
 		maskAllInputs: config.privacy?.maskAllInputs ?? true,
 		maskAllText: config.privacy?.maskAllText ?? false,
 		persistVisitorId: config.privacy?.persistVisitorId ?? true,
@@ -149,5 +207,6 @@ export function resolveConfig(config: MapleBrowserConfig): ResolvedConfig {
 		requireConsent: config.privacy?.requireConsent ?? false,
 		captureUserEmail: config.privacy?.captureUserEmail ?? true,
 		respectDoNotTrack: config.privacy?.respectDoNotTrack ?? false,
+		sanitizeUrl: config.privacy?.sanitizeUrl,
 	}
 }

@@ -3,6 +3,7 @@ import {
 	QueryEngineExecuteRequest,
 	TracesFacetDimension,
 	type AttributeFilter,
+	type AttributeFilterLeaf,
 	formatWarehouseDateTime,
 } from "@maple/query-engine"
 import { TraceId, SpanId } from "@maple/domain"
@@ -40,11 +41,18 @@ const toTraceId = Schema.decodeSync(TraceId)
 
 const ContainsMatchMode = Schema.optional(Schema.Literals(["contains"]))
 
-const AttributeFilterInput = Schema.Struct({
+const attributeFilterInputFields = {
 	key: Schema.String,
 	value: Schema.String,
-	matchMode: Schema.optional(Schema.String),
+	matchMode: Schema.optional(Schema.Literals(["contains", "exists", "gt", "gte", "lt", "lte"])),
 	negated: Schema.optional(Schema.Boolean),
+}
+const AttributeFilterLeafInput = Schema.Struct(attributeFilterInputFields)
+
+const AttributeFilterInput = Schema.Struct({
+	...attributeFilterInputFields,
+	/** The other members of an `(a OR b)` where-clause group. */
+	or: Schema.optional(Schema.Array(AttributeFilterLeafInput)),
 })
 
 const ListTracesInputSchema = Schema.Struct({
@@ -188,6 +196,25 @@ function httpAttributeFilter(key: string, values: readonly string[] | undefined)
 	return { key, values: [...values], mode: "in" }
 }
 
+/** An absent match mode is equality; `exists` is a presence check and carries no value. */
+function toAttributeFilterLeaf(entry: typeof AttributeFilterLeafInput.Type): AttributeFilterLeaf {
+	const mode = entry.matchMode ?? "equals"
+	return {
+		key: entry.key,
+		...(mode === "exists" ? undefined : { value: entry.value }),
+		mode,
+		negated: entry.negated || undefined,
+	}
+}
+
+function toAttributeFilter(entry: typeof AttributeFilterInput.Type): AttributeFilter {
+	const { or, ...first } = entry
+	return {
+		...toAttributeFilterLeaf(first),
+		...(or?.length ? { or: or.map(toAttributeFilterLeaf) } : undefined),
+	}
+}
+
 function buildAttributeFilters(input: ListTracesDecoded): AttributeFilter[] {
 	const filters: AttributeFilter[] = []
 
@@ -198,16 +225,7 @@ function buildAttributeFilters(input: ListTracesDecoded): AttributeFilter[] {
 		oneOrMany(input.httpStatusCodes, input.httpStatusCode),
 	)
 	if (status) filters.push(status)
-	if (input.attributeFilters) {
-		for (const af of input.attributeFilters) {
-			filters.push({
-				key: af.key,
-				value: af.value,
-				mode: af.matchMode === "contains" ? "contains" : "equals",
-				negated: af.negated || undefined,
-			})
-		}
-	}
+	for (const af of input.attributeFilters ?? []) filters.push(toAttributeFilter(af))
 	for (const m of input.excludedHttpMethods ?? []) {
 		filters.push({ key: "http.method", value: m, mode: "equals", negated: true })
 	}
@@ -221,16 +239,7 @@ function buildAttributeFilters(input: ListTracesDecoded): AttributeFilter[] {
 function buildResourceAttributeFilters(input: ListTracesDecoded): AttributeFilter[] {
 	const filters: AttributeFilter[] = []
 
-	if (input.resourceAttributeFilters) {
-		for (const rf of input.resourceAttributeFilters) {
-			filters.push({
-				key: rf.key,
-				value: rf.value,
-				mode: rf.matchMode === "contains" ? "contains" : "equals",
-				negated: rf.negated || undefined,
-			})
-		}
-	}
+	for (const rf of input.resourceAttributeFilters ?? []) filters.push(toAttributeFilter(rf))
 
 	return filters
 }

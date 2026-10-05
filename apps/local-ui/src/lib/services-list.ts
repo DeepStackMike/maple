@@ -17,7 +17,7 @@
 // (`deriveServiceHealth`), and that is what is mirrored here — the same error
 // ladder, the same baseline-relative latency ladder, the same floors.
 
-import { rangeWindowSeconds, resolveRange } from "./time"
+import { rangeWindowSeconds, resolveRangeWindow } from "./time"
 
 export type SeverityLevel = "ok" | "warn" | "crit"
 
@@ -259,7 +259,7 @@ export function rangeDurationSeconds(key: string | undefined): number {
  * against the window before it, and two timestamps here would name the wrong one.
  */
 export function rangeWindowLabel(key: string | undefined): string {
-	return resolveRange(key).shortLabel.toLowerCase()
+	return resolveRangeWindow(key).shortLabel.toLowerCase()
 }
 
 // Version ("Last deploy")

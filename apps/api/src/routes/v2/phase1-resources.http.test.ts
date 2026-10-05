@@ -25,7 +25,6 @@ import {
 	ErrorIssuesListResponse,
 	ErrorIssueTimeseriesPoint,
 	InvestigationDocument,
-	InvestigationFanout,
 	InvestigationIncidentSubject,
 	InvestigationNotFoundError,
 	InvestigationSnapshotFact,
@@ -44,20 +43,22 @@ import {
 } from "@maple/domain/http"
 import { MapleApiV2, encodePublicId } from "@maple/domain/http/v2"
 import { WarehouseResponseLimitError } from "@maple/query-engine/execution"
-import { cleanupTestDbs, createTestDb, type TestDb } from "@/platform/test-pglite"
-import type { WarehouseQueryServiceApi } from "@/services/warehouse/WarehouseQueryService"
-import { WarehouseQueryService } from "@/services/warehouse/WarehouseQueryService"
-import { Env } from "@/platform/Env"
-import { AnomalyDetectionService } from "@/services/alerts/AnomalyDetectionService"
-import { ApiAuthorizationV2Layer } from "@/services/auth/ApiAuthorizationV2Layer"
-import { ApiKeysService } from "@/services/org/ApiKeysService"
-import { AuthService } from "@/services/auth/AuthService"
-import { DashboardPersistenceService } from "@/services/dashboards/DashboardPersistenceService"
-import { SharedDashboardService } from "@/services/dashboards/SharedDashboardService"
-import { ErrorsService } from "@/services/errors/ErrorsService"
-import { ErrorIssueReadModelsService } from "@/services/errors/ErrorIssueReadModelsService"
-import { InvestigationService } from "@/services/errors/InvestigationService"
-import { OrganizationService } from "@/services/org/OrganizationService"
+import { cleanupTestDbs, createTestDb, type TestDb } from "@maple/backend/platform/test-pglite"
+import type { WarehouseQueryServiceApi } from "@maple/backend/services/warehouse/WarehouseQueryService"
+import { WarehouseQueryService } from "@maple/backend/services/warehouse/WarehouseQueryService"
+import { Env } from "@maple/backend/platform/Env"
+import { AnomalyDetectionService } from "@maple/backend/services/alerts/AnomalyDetectionService"
+import { ApiAuthorizationV2Layer } from "@maple/backend/services/auth/ApiAuthorizationV2Layer"
+import { AuditLogService } from "@maple/backend/services/audit/AuditLogService"
+import { ApiKeysService } from "@maple/backend/services/org/ApiKeysService"
+import { AuthService } from "@maple/backend/services/auth/AuthService"
+import { DashboardPersistenceService } from "@maple/backend/services/dashboards/DashboardPersistenceService"
+import { SharedDashboardService } from "@maple/backend/services/dashboards/SharedDashboardService"
+import { ErrorsService } from "@maple/backend/services/errors/ErrorsService"
+import { ErrorActorsService } from "@maple/backend/services/errors/ErrorActorsService"
+import { ErrorIssueReadModelsService } from "@maple/backend/services/errors/ErrorIssueReadModelsService"
+import { InvestigationService } from "@maple/backend/services/errors/InvestigationService"
+import { OrganizationService } from "@maple/backend/services/org/OrganizationService"
 import { V2TransportErrorBoundaryLive } from "./error-envelope"
 import {
 	AlertsServiceStubLayer,
@@ -66,7 +67,6 @@ import {
 	ConfigResourceServiceStubsLayer,
 	makeWarehouseServiceStub,
 	PlanetScaleServiceStubsLayer,
-	SlackIntegrationServiceStubLayer,
 	TelemetryServiceStubsLayer,
 } from "./v2-test-support"
 import { compiledQueryOf } from "@maple/query-engine/execution"
@@ -135,6 +135,7 @@ const investigationFixture = new InvestigationDocument({
 		incidentEndedAt: null,
 	}),
 	report: new AiTriageResult({
+		headline: "A database connection pool regression",
 		summary: "Checkout failures increased after a deploy.",
 		suspectedCause: "A database connection pool regression.",
 		severityAssessment: "high",
@@ -150,6 +151,7 @@ const investigationFixture = new InvestigationDocument({
 		suggestedActions: ["Roll back the pool change."],
 		confidence: "high",
 	}),
+	progress: null,
 	model: "claude-opus-4-8",
 	severity: "high",
 	confidence: "high",
@@ -162,10 +164,6 @@ const investigationFixture = new InvestigationDocument({
 	startedAt: decodeIso("2026-07-15T09:12:05.000Z"),
 	diagnosedAt: decodeIso("2026-07-15T09:12:42.000Z"),
 	updatedAt: decodeIso("2026-07-15T09:12:42.000Z"),
-	// Single-pass fixture: no lenses were dispatched, so nothing ranked them.
-	lensRuns: [],
-	validator: null,
-	fanout: new InvestigationFanout({ state: "none", size: 1 }),
 })
 
 const corruptInvestigationFixture = new InvestigationDocument({
@@ -514,33 +512,22 @@ const makeHarness = (
 		}),
 		// The anomalies group still exercises the issue-link audit mutation.
 		Layer.succeed(ErrorsService, {
-			listIssues: die,
-			countOpenIssuesByService: die,
-			getIssue: die,
 			transitionIssue: die,
 			claimIssue: die,
-			heartbeatIssue: die,
-			releaseIssue: die,
-			assignIssue: die,
-			setSeverity: die,
-			commentOnIssue: die,
 			proposeFix: die,
-			listIssueEvents: die,
+			recordAnomalyLinkEvent: () => Effect.void,
+			runTick: die,
+		}),
+		Layer.succeed(ErrorActorsService, {
 			registerAgent: die,
 			listAgents: die,
 			lookupActor: die,
 			ensureUserActor: () => Effect.succeed(actorFixture),
-			recordAnomalyLinkEvent: () => Effect.void,
-			listIssueIncidents: die,
-			listOpenIncidents: die,
-			getNotificationPolicy: die,
-			upsertNotificationPolicy: die,
-			getEscalationPolicy: die,
-			upsertEscalationPolicy: die,
-			evaluateEscalationPolicy: die,
-			listIssueEscalations: die,
-			listRecentEscalations: die,
-			runTick: die,
+			actorExists: die,
+			ensureSystemActor: die,
+			ensureAgentActor: die,
+			touchActor: die,
+			collectActorDocs: die,
 		}),
 		Layer.succeed(OrganizationService, {
 			retrieve: (orgId) =>
@@ -566,12 +553,12 @@ const makeHarness = (
 		Layer.provide(AllV2GroupLayersLive),
 		Layer.provide(functionalStubs),
 		Layer.provide(V2TransportErrorBoundaryLive),
-		Layer.provide(SlackIntegrationServiceStubLayer),
 		Layer.provide(PlanetScaleServiceStubsLayer),
 		Layer.provide(AlertsServiceStubLayer),
 		Layer.provide(ConfigResourceServiceStubsLayer),
 		Layer.provide(TelemetryServiceStubsLayer),
 		Layer.provideMerge(ApiAuthorizationV2Layer),
+		Layer.provideMerge(AuditLogService.layerMemory),
 		Layer.provideMerge(ApiV2RateLimiterAllowAllLayer),
 		Layer.provideMerge(servicesLive),
 	)
@@ -799,6 +786,7 @@ describe("v2 investigations over HTTP", () => {
 			incident_ended_at: null,
 		})
 		expect(list.body.data[0].report).toEqual({
+			headline: "A database connection pool regression",
 			summary: "Checkout failures increased after a deploy.",
 			suspected_cause: "A database connection pool regression.",
 			severity_assessment: "high",

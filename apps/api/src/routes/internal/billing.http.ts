@@ -12,6 +12,7 @@ import {
 	CurrentTenant,
 	CustomerPortalResult,
 	MapleInternalApi,
+	mergeSpendLimits,
 	PreviewAttachResult,
 } from "@maple/domain/http"
 import {
@@ -22,21 +23,21 @@ import {
 	readCustomerCached,
 	resolveAttachConflict,
 	summariseSubscriptions,
-} from "@/services/billing/autumn-client"
-import { AutumnClient, type AutumnResult } from "@/services/billing/autumn-http"
-import { StripeClient } from "@/services/billing/stripe-http"
+} from "@maple/backend/services/billing/autumn-client"
+import { AutumnClient, type AutumnResult } from "@maple/backend/services/billing/autumn-http"
+import { StripeClient } from "@maple/backend/services/billing/stripe-http"
 import {
 	ensureStripeCustomerId,
 	isAlreadyRemoved,
 	readBillingProfile,
 	readStripeCustomerId,
 	unlinkedProfile,
-} from "@/services/billing/billing-profile"
-import { forkRequestScoped } from "@/platform/fork-request-scoped"
-import { emitPlanStartedFromAttach } from "@/services/billing/plan-events"
-import { ProductEventsService } from "@/services/product-events/ProductEventsService"
-import { requireAdmin } from "@/services/auth/auth"
-import { DailySpendService } from "@/services/billing/DailySpendService"
+} from "@maple/backend/services/billing/billing-profile"
+import { forkRequestScoped } from "@maple/backend/platform/fork-request-scoped"
+import { emitPlanStartedFromAttach } from "@maple/backend/services/billing/plan-events"
+import { ProductEventsService } from "@maple/backend/services/product-events/ProductEventsService"
+import { requireAdmin } from "@maple/backend/services/auth/auth"
+import { DailySpendService } from "@maple/backend/services/billing/DailySpendService"
 
 // Pull the `invoices` array off a raw expanded `getOrCreateCustomer` response.
 // Exported for tests. Autumn omits the key for a customer with no invoices, so
@@ -206,7 +207,21 @@ export const HttpBillingLive = HttpApiBuilder.group(MapleInternalApi, "billing",
 								}),
 						)
 						yield* Effect.annotateCurrentSpan({ orgId: tenant.orgId })
-						const result = yield* autumn.updateCustomerBillingControls(tenant.orgId, payload)
+						// Read uncached: the merge must start from the caps Autumn holds now,
+						// or a stale copy would resurrect a cap that was just removed.
+						const current = yield* autumn.getOrCreateCustomer(tenant.orgId, { expand: [] }).pipe(
+							Effect.flatMap(ensureOk),
+							Effect.flatMap((response) => decodeUpstream(BillingCustomer, response)),
+						)
+						const result = yield* autumn.updateCustomerBillingControls(tenant.orgId, {
+							spendLimits: mergeSpendLimits(
+								current.billingControls?.spendLimits ?? [],
+								payload.spendLimits,
+							),
+							...(payload.usageAlerts !== undefined
+								? { usageAlerts: payload.usageAlerts }
+								: undefined),
+						})
 						// Caller input: a rejected control is about what THEY asked for, so
 						// the classified 4xx survives to the client instead of a blanket 502.
 						yield* classifyAutumn(result)

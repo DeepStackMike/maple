@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { bucketLadderStep, denseCounts, groupSparkPoints, sparkWindow } from "./error-spark"
-import { customRangeKey } from "./time"
+import { customRangeKey, DEFAULT_RANGE } from "./time"
 
 // 2026-01-02 12:00:00 UTC
 const ANCHOR = Date.UTC(2026, 0, 2, 12, 0, 0)
@@ -44,8 +44,8 @@ describe("sparkWindow", () => {
 		}
 	})
 
-	it("falls back to the widest preset for an unknown range key", () => {
-		expect(sparkWindow("nonsense", ANCHOR)).toEqual(sparkWindow("30d", ANCHOR))
+	it("falls back to the default preset for an unknown range key", () => {
+		expect(sparkWindow("nonsense", ANCHOR)).toEqual(sparkWindow(DEFAULT_RANGE, ANCHOR))
 	})
 
 	it("ends at now, not at the query's skew-padded upper bound", () => {

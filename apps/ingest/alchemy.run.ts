@@ -1,13 +1,20 @@
+import { createHash } from "node:crypto"
 import { existsSync } from "node:fs"
 import { resolve } from "node:path"
 import * as AWS from "alchemy/AWS"
+import * as Cloudflare from "alchemy/Cloudflare"
 import * as Output from "alchemy/Output"
+import type * as Planetscale from "alchemy/Planetscale"
 import * as Effect from "effect/Effect"
 import * as Redacted from "effect/Redacted"
 import type { MapleRegion } from "@maple/infra/aws"
 import {
 	COLLECTOR_DNS_LABEL,
 	COLLECTOR_OTLP_HTTP_PORT,
+	INGEST_EC2_INSTANCE_TYPE,
+	INGEST_EC2_TASK_SIZE,
+	parseIngestFleets,
+	pgUrlRequireSsl,
 	resolveAwsRegion,
 	resolveAwsResourceName,
 	resolveCollectorEndpoint,
@@ -18,10 +25,16 @@ import {
 	resolveIngestScaling,
 	resolveIngestTaskSize,
 	stageDeploysCollector,
+	stageEnablesReplayBlobs,
 } from "@maple/infra/aws"
-import type { ReplayBlobCredentials } from "../api/alchemy.run.ts"
+import { ReplayBlobs } from "../api/src/resources/replay-blobs.ts"
+import { issueCertificateViaCloudflare } from "@maple/infra/acm"
 import type { MapleDomains, MapleStage } from "@maple/infra/cloudflare"
-import { resolveDeploymentEnvironment } from "@maple/infra/cloudflare"
+import {
+	resolveDeploymentEnvironment,
+	resolveStorageJurisdiction,
+	resolveWorkerName,
+} from "@maple/infra/cloudflare"
 // Only the primitives. The grouped helpers in that module return Worker-binding
 // shapes (Redacted secrets inline); these values feed ECS `env:` and Secrets
 // Manager ARNs instead, so the gateway composes them itself.
@@ -82,38 +95,118 @@ const EPHEMERAL_STORAGE_GIB = 60
 /**
  * Pinned rather than derived. The gateway defaults to `num_cpus * 2`, which
  * makes on-disk layout and fd count a function of task size — so a cpu bump, or
- * a move to another capacity provider, would silently reshape the WAL. Three
- * lanes per shard (Tinybird + ClickHouse + Tinybird mirror) means this is 12
- * open WAL files; the mirror lane is present but idle unless
- * `TINYBIRD_MIRROR_HOST`/`TINYBIRD_MIRROR_TOKEN` are set.
+ * a move to another capacity provider, would silently reshape the WAL. Two
+ * lanes per shard (Tinybird + ClickHouse) means this is 8 open WAL files.
  */
 const WAL_SHARDS = 4
+
+/** Where the gateway keeps its WAL inside the container (the binary's default `INGEST_QUEUE_DIR`). */
+const WAL_CONTAINER_DIR = "/var/lib/maple-ingest/wal"
+
+/** The EC2 fleet's instance-store NVMe, mounted by `ec2UserData`. */
+const WAL_HOST_DIR = "/mnt/wal"
+
+/**
+ * Boot script for an EC2 gateway host (ECS-optimized AL2023). It mounts the
+ * NVMe instance store at WAL_HOST_DIR and only THEN joins the cluster, so a
+ * host whose disk did not come up never gets a task — rather than silently
+ * writing the WAL onto its root EBS volume through the bind mount.
+ *
+ * The instance store is wiped when the instance stops or is replaced (a
+ * reboot keeps it, hence the fstab entry). The S3 tier is what survives that:
+ * sealed segments ship as they seal, and a successor claims a dead owner's.
+ */
+const ec2UserData = (clusterName: string) => `#!/bin/bash
+set -euxo pipefail
+
+disk=$(ls /dev/disk/by-id/nvme-Amazon_EC2_NVMe_Instance_Storage_* | grep -v -- -part | head -n1)
+mkfs.xfs -f "$disk"
+mkdir -p ${WAL_HOST_DIR}
+echo "UUID=$(blkid -s UUID -o value "$disk") ${WAL_HOST_DIR} xfs noatime,nofail 0 2" >> /etc/fstab
+mount ${WAL_HOST_DIR}
+
+cat >> /etc/ecs/ecs.config <<'CONFIG'
+ECS_CLUSTER=${clusterName}
+ECS_ENABLE_TASK_IAM_ROLE_NETWORK_HOST=true
+ECS_CONTAINER_STOP_TIMEOUT=120s
+CONFIG
+`
 
 export interface CreateMapleIngestOptions {
 	stage: MapleStage
 	domains: MapleDomains
 	/** Geographic instance. Every AWS resource here is scoped to it. */
 	region: MapleRegion
-	/**
-	 * Stack-minted R2 credentials for the replay payload store, or `undefined`
-	 * on a stage that keeps payloads inline. See `createReplayBlobStore` in
-	 * `apps/api/alchemy.run.ts` — the gate is `stageEnablesReplayBlobs`.
-	 */
-	replayBlobs: ReplayBlobCredentials | undefined
+	/** prd's gateway role; a stage without a database branch reads `MAPLE_INGEST_PG_URL` instead. */
+	dbRole?: Planetscale.PostgresRole
 }
 
+/** R2 renders an API token as S3 credentials: key id = token id, secret = SHA-256 of its value. */
+const deriveSecretAccessKey = (value: Output.Output<Redacted.Redacted<string>>) =>
+	Output.map(value, (token) =>
+		Redacted.make(createHash("sha256").update(Redacted.value(token)).digest("hex")),
+	)
+
 /**
- * The Rust OTLP gateway (`apps/ingest`) on ECS Fargate.
+ * The gateway's write credentials for the replay payload store
+ * (`apps/api/src/resources/replay-blobs.ts`, which the api Worker reads): a
+ * bucket-scoped token, or `undefined` on a stage that keeps payloads inline
+ * (`stageEnablesReplayBlobs`) — the bucket stays bound on the api side either
+ * way, so anything already written keeps playing back.
+ */
+const replayBlobWriterCredentials = (stage: MapleStage, region: MapleRegion) =>
+	Effect.gen(function* () {
+		if (!stageEnablesReplayBlobs(stage)) return undefined
+		// Yielded so the token is ordered behind the bucket.
+		yield* ReplayBlobs
+		const bucketName = resolveWorkerName("replay-blobs", stage, region)
+		// A jurisdictional bucket lives under its own S3 endpoint and its own
+		// token resource segment; `default` is the non-jurisdictional US bucket.
+		const jurisdiction = resolveStorageJurisdiction(region) ?? "default"
+
+		// Plan-time: it keys the policy map and the endpoint, neither of which
+		// can take a lazy value.
+		const { accountId } = yield* yield* Cloudflare.CloudflareEnvironment
+
+		// Bucket-scoped, not account-wide. Minting it needs the DEPLOY token to
+		// carry account-level `API Tokens > Write`, or the deploy fails outright.
+		const token = yield* Cloudflare.ApiToken.AccountApiToken("replay-blobs-writer", {
+			name: `${bucketName}-writer`,
+			accountId,
+			policies: [
+				{
+					effect: "allow",
+					permissionGroups: ["Workers R2 Storage Bucket Item Write"],
+					// `<account>_<jurisdiction>_<bucket>`, `default` = non-jurisdictional.
+					resources: {
+						[`com.cloudflare.edge.r2.bucket.${accountId}_${jurisdiction}_${bucketName}`]: "*",
+					},
+				},
+			],
+		})
+
+		return {
+			/** Account-scoped S3 endpoint, jurisdiction-qualified for a pinned bucket. A plan-time string — the account id is env-supplied. */
+			endpoint:
+				jurisdiction === "default"
+					? `https://${accountId}.r2.cloudflarestorage.com`
+					: `https://${accountId}.${jurisdiction}.r2.cloudflarestorage.com`,
+			bucket: bucketName,
+			/** The API token's id. Only known after the token exists, hence an Output. */
+			accessKeyId: Output.asOutput(token.tokenId),
+			secretAccessKey: deriveSecretAccessKey(Output.asOutput(token.value)),
+		}
+	})
+
+/**
+ * The Rust OTLP gateway (`apps/ingest`) on ECS: a Fargate fleet, an EC2 fleet,
+ * or both during the cutover between them (`parseIngestFleets`).
  *
- * Migrated off Railway. Fargate rather than EC2 because below ~16 vCPU the
- * fractional-vCPU pricing beats EC2 on-demand and there is no ASG or AMI to
- * own; the two are capacity providers on the same cluster, so crossing that
- * threshold later is a config change, not a rearchitecture. (EC2 would also not
- * buy the per-task CPU/memory metrics it is sometimes reached for: the free
- * cluster-level ECS metrics are `CPUReservation`/`MemoryReservation`, which
- * describe how much of a fleet YOU own is claimed. Per-task usage needs
- * Container Insights on either launch type.) Tasks run on ARM64 — see
- * `runtimePlatform` below.
+ * The EC2 fleet is for what Fargate cannot give: the WAL on a local NVMe
+ * instance store (per-frame fsync in microseconds, not milliseconds), and hosts
+ * of our own to run a monitoring agent on for host- and container-level
+ * resource metrics. It costs an AMI to keep current and roughly twice the
+ * compute bill at today's size. Tasks run on ARM64 — see `runtimePlatform`.
  *
  * One fleet per `MapleRegion`. A second instance is this factory called again
  * with `region: "eu"` and that instance's own TINYBIRD_* / MAPLE_PG_URL — the
@@ -128,11 +221,13 @@ export interface CreateMapleIngestOptions {
  * has no load balancer: an internal ALB would bill the same bytes again for a
  * single private consumer, and Cloud Map costs a private hosted zone.
  */
-export const createMapleIngest = ({ stage, domains, region, replayBlobs }: CreateMapleIngestOptions) =>
+export const createMapleIngest = ({ stage, domains, region, dbRole }: CreateMapleIngestOptions) =>
 	Effect.gen(function* () {
+		const replayBlobs = yield* replayBlobWriterCredentials(stage, region)
 		const taskSize = resolveIngestTaskSize(stage)
 		const scaling = resolveIngestScaling(stage)
 		const name = (base: string) => resolveAwsResourceName(base, stage, region)
+		const fleets = parseIngestFleets((yield* optionalPlain("MAPLE_INGEST_FLEETS")).MAPLE_INGEST_FLEETS)
 
 		// Public subnets with public IPs on the tasks, and NO NAT gateway. NAT
 		// bills $0.045/GB PROCESSED on top of egress, and this service exists to
@@ -198,8 +293,129 @@ export const createMapleIngest = ({ stage, domains, region, replayBlobs }: Creat
 			],
 		})
 
+		// ── EC2 fleet capacity ──────────────────────────────────────────────
+		// Host networking, not awsvpc: an awsvpc task on EC2 cannot take a public
+		// IP, and without one it has no egress short of the NAT gateway this VPC
+		// deliberately does not have (see `network`). A host-mode task uses the
+		// instance's public IP instead, so the ALB targets instances rather than
+		// ENIs — which alchemy's Service only does with the `usesAwsvpc` patch in
+		// `patches/alchemy@*.patch`.
+		const ec2Capacity = fleets.ec2
+			? yield* Effect.gen(function* () {
+					const clusterName = name("ingest")
+
+					// The instance's only listener is the gateway's port, from the ALB.
+					// Unlike the Fargate task group this one guards a public IP, so the
+					// same rule is what keeps plaintext OTLP from reaching a host directly.
+					const instanceSecurityGroup = yield* AWS.EC2.SecurityGroup("ingest-ec2-sg", {
+						vpcId: network.vpcId,
+						groupName: name("ingest-ec2"),
+						description: "Maple OTLP ingest gateway hosts",
+						ingress: [
+							{
+								ipProtocol: "tcp",
+								fromPort: INGEST_PORT,
+								toPort: INGEST_PORT,
+								referencedGroupId: albSecurityGroup.groupId,
+								description: "ALB to gateway",
+							},
+						],
+					})
+
+					// What the ECS agent needs to register, pull from ECR and ship logs,
+					// plus Session Manager in place of SSH (no key pair, no port 22).
+					// The gateway itself gets the TASK role through the agent's
+					// credentials endpoint, not this one.
+					const instanceRole = yield* AWS.IAM.Role("ingest-ec2-instance-role", {
+						roleName: name("ingest-ec2-instance"),
+						assumeRolePolicyDocument: {
+							Version: "2012-10-17",
+							Statement: [
+								{
+									Effect: "Allow",
+									Principal: { Service: "ec2.amazonaws.com" },
+									Action: ["sts:AssumeRole"],
+								},
+							],
+						},
+						managedPolicyArns: [
+							"arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role",
+							"arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore",
+						],
+						tags: { Service: "maple-ingest", Region: region },
+					})
+					const instanceProfile = yield* AWS.IAM.InstanceProfile("ingest-ec2-instance-profile", {
+						instanceProfileName: name("ingest-ec2-instance"),
+						roleName: instanceRole.roleName,
+					})
+
+					// The newest ECS-optimized AL2023 arm64 image. A new AMI only reaches
+					// instances launched after it, and every deploy launches some: host
+					// networking puts a new task on a fresh instance (the old task holds
+					// the port), so patching rides the deploys.
+					const imageId = AWS.EC2.getAmi({
+						owners: ["amazon"],
+						name: ["al2023-ami-ecs-hvm-*-kernel-6.1-arm64"],
+						architecture: "arm64",
+					}).ImageId.as<string>()
+
+					const launchTemplate = yield* AWS.AutoScaling.LaunchTemplate(
+						"ingest-ec2-launch-template",
+						{
+							launchTemplateName: name("ingest-ec2"),
+							imageId,
+							instanceType: INGEST_EC2_INSTANCE_TYPE,
+							securityGroupIds: [instanceSecurityGroup.groupId],
+							instanceProfileName: instanceProfile.instanceProfileName,
+							associatePublicIpAddress: true,
+							userData: ec2UserData(clusterName),
+							tags: { Service: "maple-ingest", Region: region },
+						},
+					)
+
+					// ECS managed scaling owns the instance count (the patch keeps a
+					// redeploy from resetting it to `minSize`); the bounds leave room for
+					// a rolling deploy to double the fleet while old and new tasks
+					// overlap on separate hosts.
+					const maxTasks = scaling?.max ?? resolveIngestDesiredCount(stage)
+					const autoScalingGroup = yield* AWS.AutoScaling.AutoScalingGroup("ingest-ec2-asg", {
+						autoScalingGroupName: name("ingest-ec2"),
+						launchTemplate,
+						subnetIds: network.publicSubnetIds,
+						minSize: 0,
+						maxSize: maxTasks * 2,
+						healthCheckType: "EC2",
+						healthCheckGracePeriod: "2 minutes",
+						// ECS stamps this tag when the capacity provider adopts the group,
+						// and alchemy converges tags to the declared set on every deploy.
+						tags: { Service: "maple-ingest", Region: region, AmazonECSManaged: "" },
+					})
+
+					// Managed draining rather than termination protection: a scale-in
+					// drains the host's task first, and the task's SIGTERM path is what
+					// empties the WAL (shutdown drain, then the S3 tier for what is left).
+					const capacityProvider = yield* AWS.ECS.CapacityProvider("ingest-ec2-capacity", {
+						name: name("ingest-ec2"),
+						autoScalingGroupArn: autoScalingGroup.autoScalingGroupArn,
+						managedScaling: {
+							status: "ENABLED",
+							targetCapacity: 100,
+							minimumScalingStepSize: 1,
+							maximumScalingStepSize: 2,
+							instanceWarmupPeriod: 120,
+						},
+						managedTerminationProtection: "DISABLED",
+						managedDraining: "ENABLED",
+						tags: { Service: "maple-ingest", Region: region },
+					})
+
+					return { clusterName, instanceSecurityGroup, capacityProvider }
+				})
+			: undefined
+
 		const cluster = yield* AWS.ECS.Cluster("ingest-cluster", {
 			clusterName: name("ingest"),
+			...(ec2Capacity ? { capacityProviders: [ec2Capacity.capacityProvider.name] } : undefined),
 			tags: { Service: "maple-ingest", Region: region },
 		})
 
@@ -230,7 +446,9 @@ export const createMapleIngest = ({ stage, domains, region, replayBlobs }: Creat
 		// deploy workflows use for DDL; the gateway must reach Postgres through
 		// PSBouncer (6432) as a role that only reads ingest keys. Sharing the name
 		// would silently hand every task the migration admin's credentials.
-		const pgUrl = yield* secret("maple-pg-url", yield* requiredPlain("MAPLE_INGEST_PG_URL"))
+		const pgUrl = dbRole
+			? yield* secretFrom("maple-pg-url", pgUrlRequireSsl(dbRole.connectionUrlPooled))
+			: yield* secret("maple-pg-url", yield* requiredPlain("MAPLE_INGEST_PG_URL"))
 		const keyEncryptionKey = yield* secret(
 			"ingest-key-encryption-key",
 			yield* requiredPlain("MAPLE_INGEST_KEY_ENCRYPTION_KEY"),
@@ -242,27 +460,12 @@ export const createMapleIngest = ({ stage, domains, region, replayBlobs }: Creat
 
 		// Optional credentials — absent in a stage that hasn't enabled the feature.
 		// Autumn absent means billing enforcement is dark.
-		const autumnKey = process.env.AUTUMN_SECRET_KEY?.trim()
+		const { AUTUMN_SECRET_KEY: autumnKey } = yield* optionalPlain("AUTUMN_SECRET_KEY")
 		const autumnSecret = autumnKey ? yield* secret("autumn-secret-key", autumnKey) : undefined
 
 		// Second Tinybird workspace to mirror writes into during a workspace
-		// migration. Both halves must be set together; the gateway rejects a
-		// half-configured mirror at startup rather than 401-ing its lane forever.
-		//
-		// Resolved through `optionalPlain`, not `process.env`: alchemy reads
-		// `--env-file`/`.env` through its own ConfigProvider and never copies
-		// those values into `process.env`, so a bare read would see the var in
-		// CI and miss it locally. The host is plain (not a secret); the token is
-		// resolved here only to mint the Secrets Manager entry below, exactly as
-		// TINYBIRD_TOKEN is, and never reaches `env`.
-		const tinybirdMirrorHostEntry = yield* optionalPlain("TINYBIRD_MIRROR_HOST")
-		const tinybirdMirrorTokenValue = (yield* optionalPlain("TINYBIRD_MIRROR_TOKEN")).TINYBIRD_MIRROR_TOKEN
-		const tinybirdMirrorToken = tinybirdMirrorTokenValue
-			? yield* secret("tinybird-mirror-token", tinybirdMirrorTokenValue)
-			: undefined
-
-		// Both halves are stack-minted (`createReplayBlobStore`), so there is no
-		// half-set config left to guard against. The access key id is not secret,
+		// Both halves are stack-minted (`replayBlobWriterCredentials`), so there is
+		// no half-set config left to guard against. The access key id is not secret,
 		// but it only exists once the token does and `env` takes plan-time strings
 		// only — ECS injects `secrets` as env vars, so the Rust side is unchanged.
 		const replayR2Secret = replayBlobs
@@ -278,7 +481,9 @@ export const createMapleIngest = ({ stage, domains, region, replayBlobs }: Creat
 		// one deploy, which is how a preview tests it. Without a collector the
 		// gateway keeps whatever forward endpoint the deploy env supplies — its
 		// self-telemetry goes nowhere reachable, exactly as before.
-		const deployCollector = stageDeploysCollector(stage) || process.env.MAPLE_DEPLOY_AWS_COLLECTOR === "1"
+		const deployCollector =
+			stageDeploysCollector(stage) ||
+			(yield* optionalPlain("MAPLE_DEPLOY_AWS_COLLECTOR")).MAPLE_DEPLOY_AWS_COLLECTOR === "1"
 		const collectorEndpoint = deployCollector ? resolveCollectorEndpoint(stage, region) : undefined
 		const collector = deployCollector
 			? yield* Effect.gen(function* () {
@@ -298,6 +503,18 @@ export const createMapleIngest = ({ stage, domains, region, replayBlobs }: Creat
 								referencedGroupId: taskSecurityGroup.groupId,
 								description: "Ingest gateway to collector",
 							},
+							// A host-mode gateway dials from its instance's group.
+							...(ec2Capacity
+								? [
+										{
+											ipProtocol: "tcp",
+											fromPort: COLLECTOR_OTLP_HTTP_PORT,
+											toPort: COLLECTOR_OTLP_HTTP_PORT,
+											referencedGroupId: ec2Capacity.instanceSecurityGroup.groupId,
+											description: "Ingest gateway hosts to collector",
+										},
+									]
+								: []),
 						],
 					})
 
@@ -376,10 +593,11 @@ export const createMapleIngest = ({ stage, domains, region, replayBlobs }: Creat
 		// ALB actually lands — CI must set AWS_REGION to the same value, since
 		// that is what `AWS.providers()` places every other resource with.
 		//
-		// Without `hostedZoneId` the provider does not block on issuance, so the
-		// first deploy of a new stage lands the certificate PENDING_VALIDATION;
-		// add the DNS validation record in Cloudflare, then re-run to attach the
-		// listener once ACM reports ISSUED.
+		// `hostedZoneId` is Route53-only and Maple's zone is on Cloudflare, so the
+		// provider does not block on issuance and the certificate lands
+		// PENDING_VALIDATION. `issueCertificateViaCloudflare` below closes that:
+		// it publishes the validation CNAME into the `maple.dev` zone and waits
+		// for ACM to mark the certificate ISSUED.
 		const certificate = domains.ingest
 			? yield* AWS.ACM.Certificate("ingest-cert", {
 					domainName: domains.ingest,
@@ -388,6 +606,20 @@ export const createMapleIngest = ({ stage, domains, region, replayBlobs }: Creat
 					tags: { Service: "maple-ingest", Region: region },
 				})
 			: undefined
+
+		// The ARN of the ISSUED certificate. Deliberately NOT
+		// `certificate.certificateArn`: consuming this one is what orders the
+		// listener after validation, so the first deploy of a new domain no
+		// longer fails on a certificate ACM has not issued yet.
+		const issuedCertificateArn =
+			certificate && domains.ingest
+				? yield* issueCertificateViaCloudflare({
+						id: "ingest-cert",
+						certificateArn: certificate.certificateArn,
+						hostname: domains.ingest,
+						region: resolveAwsRegion(region),
+					})
+				: undefined
 
 		// The gateway marks its own task scale-in-protected while the WAL holds
 		// backlog (`apps/ingest/src/task_protection.rs`). The ECS agent endpoint it
@@ -477,9 +709,10 @@ export const createMapleIngest = ({ stage, domains, region, replayBlobs }: Creat
 			},
 		})
 
-		const service = yield* AWS.ECS.Service("ingest", {
+		// Everything the two fleets share: image, secrets, env, load balancer and
+		// health checks. Each fleet below adds only how its tasks are placed.
+		const gateway = {
 			cluster,
-			serviceName: name("ingest"),
 			taskRoleManagedPolicyArns: [taskProtectionPolicy.policyArn, walSegmentsPolicy.policyArn],
 
 			// Alchemy creates a private ECR repository and pushes under a content-hash
@@ -511,14 +744,7 @@ export const createMapleIngest = ({ stage, domains, region, replayBlobs }: Creat
 			// repos); a local `alchemy deploy` from an Apple Silicon machine is also
 			// native. An x86 machine would emulate the source build — slow, but
 			// correct.
-			runtimePlatform: { cpuArchitecture: "ARM64", operatingSystemFamily: "LINUX" },
-			cpu: taskSize.cpu,
-			memory: taskSize.memory,
-			ephemeralStorage: { sizeInGiB: EPHEMERAL_STORAGE_GIB },
-			// SIGTERM → SIGKILL window (Fargate caps it at 120s). The binary's
-			// shutdown drain (`INGEST_SHUTDOWN_DRAIN_SECS`, default 90) must finish
-			// inside it, after axum has drained in-flight requests.
-			container: { stopTimeout: 120 },
+			runtimePlatform: { cpuArchitecture: "ARM64", operatingSystemFamily: "LINUX" } as const,
 
 			desiredCount: resolveIngestDesiredCount(stage),
 			// prd autoscales on CPU between this count and a burst ceiling; alchemy
@@ -527,8 +753,6 @@ export const createMapleIngest = ({ stage, domains, region, replayBlobs }: Creat
 			...(scaling ? { scaling } : undefined),
 			vpcId: network.vpcId,
 			subnets: network.publicSubnetIds,
-			securityGroups: [albSecurityGroup.groupId, taskSecurityGroup.groupId],
-			assignPublicIp: true,
 
 			public: true,
 			// `port` is the CONTAINER port (what the target group forwards to); the
@@ -541,15 +765,19 @@ export const createMapleIngest = ({ stage, domains, region, replayBlobs }: Creat
 			// `/health` and the service would never stabilize.
 			port: INGEST_PORT,
 			healthCheckPath: "/health",
-			...(certificate ? { certificateArn: certificate.certificateArn } : undefined),
+			...(issuedCertificateArn ? { certificateArn: issuedCertificateArn } : undefined),
 
 			// `/health` returns a bare 200 with no dependency checks, so it detects a
 			// dead task but not a wedged export lane or a dead Postgres pool. The
 			// grace period covers the startup Postgres probe, which exits the
 			// process on failure rather than serving degraded.
-			healthCheckGracePeriod: "60 seconds",
+			healthCheckGracePeriod: "60 seconds" as const,
+			// Old tasks stay scale-in protected while the WAL has backlog (up to 15
+			// minutes, `task_protection.rs`) and ECS will not stop them, so a healthy
+			// rollout can outlast alchemy's 10-minute default. It did on 2026-09-21.
+			deploymentStabilizationTimeout: "25 minutes" as const,
 
-			logging: { retention: "30 days" },
+			logging: { retention: "30 days" as const },
 
 			secrets: {
 				TINYBIRD_TOKEN: tinybirdToken.secretArn,
@@ -557,9 +785,6 @@ export const createMapleIngest = ({ stage, domains, region, replayBlobs }: Creat
 				MAPLE_INGEST_KEY_ENCRYPTION_KEY: keyEncryptionKey.secretArn,
 				MAPLE_INGEST_KEY_LOOKUP_HMAC_KEY: keyLookupHmacKey.secretArn,
 				...(autumnSecret ? { AUTUMN_SECRET_KEY: autumnSecret.secretArn } : undefined),
-				...(tinybirdMirrorToken
-					? { TINYBIRD_MIRROR_TOKEN: tinybirdMirrorToken.secretArn }
-					: undefined),
 				...(replayR2Secret && replayR2AccessKeyId
 					? {
 							INGEST_REPLAY_R2_SECRET_ACCESS_KEY: replayR2Secret.secretArn,
@@ -571,8 +796,14 @@ export const createMapleIngest = ({ stage, domains, region, replayBlobs }: Creat
 			env: {
 				INGEST_PORT: String(INGEST_PORT),
 				MAPLE_ENVIRONMENT: resolveDeploymentEnvironment(stage),
+				// Makes the unknown-key 401 name the other region's ingest URL, the usual
+				// cause for a valid key. prd only: a preview has no sibling instance.
+				...(stage.kind === "prd" && { MAPLE_REGION: region }),
 				TINYBIRD_HOST: yield* requiredPlain("TINYBIRD_HOST"),
 				INGEST_KEY_STORE_BACKEND: "postgres",
+				// A replaced role changes this, so the task definition changes and the
+				// fleet rolls onto the updated secret before alchemy deletes the old role.
+				...(dbRole && { MAPLE_PG_ROLE_ID: dbRole.id }),
 
 				// Trust `Cf-IPCountry` on inbound requests, which is what gates
 				// `derive_country` in `apps/ingest/src/main.rs` and therefore whether
@@ -629,17 +860,11 @@ export const createMapleIngest = ({ stage, domains, region, replayBlobs }: Creat
 				...(yield* optionalPlain("INGEST_BATCH_MAX_WAIT_MS")),
 				...(yield* optionalPlain("INGEST_ORG_QUEUE_MAX_BYTES")),
 				...(yield* optionalPlain("INGEST_ORG_MAX_IN_FLIGHT")),
+				...(yield* optionalPlain("INGEST_REQUEST_TIMEOUT_SECS")),
+				...(yield* optionalPlain("INGEST_QUEUE_MAX_AGE_SECS")),
 				...(yield* optionalPlain("INGEST_MAX_REQUEST_BODY_BYTES")),
 				...(yield* optionalPlain("INGEST_EXPORT_MAX_ATTEMPTS")),
 				...(yield* optionalPlain("INGEST_TINYBIRD_CONCURRENCY_PER_SHARD")),
-				// Tinybird mirror. The host is plain (it is not a secret); the token
-				// goes through Secrets Manager above. Ramp with SAMPLE_PERCENT: start
-				// at 1, confirm rows land and `ingest_tinybird_mirror_dropped_total`
-				// stays flat, then climb to 100.
-				...tinybirdMirrorHostEntry,
-				...(yield* optionalPlain("INGEST_TINYBIRD_MIRROR_SAMPLE_PERCENT")),
-				...(yield* optionalPlain("INGEST_TINYBIRD_MIRROR_MAX_ATTEMPTS")),
-				...(yield* optionalPlain("INGEST_TINYBIRD_MIRROR_TIMEOUT_MS")),
 				...(yield* optionalPlain("INGEST_REPLAY_MAX_SESSION_BYTES")),
 				// The org Maple's own telemetry is filed under. Required here and in
 				// the gateway (`AppConfig::from_env`), with no fallback on either
@@ -663,18 +888,67 @@ export const createMapleIngest = ({ stage, domains, region, replayBlobs }: Creat
 				// 30s cuts the ~2M balances.track calls/day by ~30x.
 				...(yield* optionalPlain("AUTUMN_FLUSH_INTERVAL_SECS", "30")),
 				...(yield* optionalPlain("INGEST_SHUTDOWN_DRAIN_SECS")),
-				...(yield* optionalPlain("COMMIT_SHA", process.env.GITHUB_SHA?.trim())),
+				...(yield* optionalPlain("COMMIT_SHA", (yield* optionalPlain("GITHUB_SHA")).GITHUB_SHA)),
 				// `satisfies` rather than a bare literal: alchemy types `env` as
 				// `Record<string, any>`, which is what let a spread `Config` object
-				// through unnoticed. Pinning the literal to string values makes that
-				// mistake a type error instead of a silently dropped variable.
-			} satisfies Record<string, string>,
+				// through unnoticed. Pinning the literal to string values (or an
+				// Output of one) makes that mistake a type error instead of a
+				// silently dropped variable.
+			} satisfies Record<string, string | Output.Output<string>>,
 
 			tags: { Service: "maple-ingest", Region: region },
-		})
+		}
+
+		// SIGTERM → SIGKILL window (Fargate caps it at 120s). The binary's shutdown
+		// drain (`INGEST_SHUTDOWN_DRAIN_SECS`, default 90) must finish inside it,
+		// after axum has drained in-flight requests.
+		const stopTimeout = 120
+
+		const fargateService = fleets.fargate
+			? yield* AWS.ECS.Service("ingest", {
+					...gateway,
+					serviceName: name("ingest"),
+					cpu: taskSize.cpu,
+					memory: taskSize.memory,
+					ephemeralStorage: { sizeInGiB: EPHEMERAL_STORAGE_GIB },
+					container: { stopTimeout },
+					securityGroups: [albSecurityGroup.groupId, taskSecurityGroup.groupId],
+					assignPublicIp: true,
+				})
+			: undefined
+
+		// One task per host, bound to the host's port and its NVMe. `securityGroups`
+		// reaches only the ALB here: a host-mode task has no ENI, so the instance's
+		// own group (`ingest-ec2-sg`) is what admits the ALB. A rolling deploy
+		// cannot start the new task beside the old one (the port is taken), so
+		// managed scaling brings up a fresh host for it and drains the old one.
+		const ec2Service = ec2Capacity
+			? yield* AWS.ECS.Service("ingest-ec2", {
+					...gateway,
+					serviceName: name("ingest-ec2"),
+					networkMode: "host",
+					requiresCompatibilities: ["EC2"],
+					capacityProviderStrategy: [
+						{ capacityProvider: ec2Capacity.capacityProvider.name, weight: 1 },
+					],
+					placementConstraints: [{ type: "distinctInstance" }],
+					cpu: INGEST_EC2_TASK_SIZE.cpu,
+					memory: INGEST_EC2_TASK_SIZE.memory,
+					volumes: [{ name: "wal", host: { sourcePath: WAL_HOST_DIR } }],
+					container: {
+						stopTimeout,
+						mountPoints: [{ sourceVolume: "wal", containerPath: WAL_CONTAINER_DIR }],
+					},
+					securityGroups: [albSecurityGroup.groupId],
+				})
+			: undefined
 
 		return {
-			serviceUrl: service.url,
+			// The fleet `domains.ingest` should point at: Fargate until it is
+			// removed, EC2 after. Both ALB hostnames are returned for the cutover.
+			serviceUrl: (fargateService ?? ec2Service)?.url,
+			fargateServiceUrl: fargateService?.url,
+			ec2ServiceUrl: ec2Service?.url,
 			// Shared with `apps/electric`, which runs in THIS VPC rather than one of
 			// its own. Two `AWS.EC2.Network`s in one stack fight over the internet
 			// gateway: under `--adopt` the second one's IGW resolves to this one's
@@ -687,13 +961,11 @@ export const createMapleIngest = ({ stage, domains, region, replayBlobs }: Creat
 			// VPC; surfaced so a preview's logs say where the gateway is pointing.
 			collectorEndpoint,
 			collectorServiceName: collector?.serviceName,
-			// One-time manual DNS, surfaced here so it is discoverable from the
-			// deploy output rather than the AWS console:
-			//   1. the ACM validation CNAME (below) — added once per domain, reused
-			//      for every renewal;
-			//   2. a CNAME for `domains.ingest` at `serviceUrl` (the ALB), proxied.
-			// Both live in the Cloudflare `maple.dev` zone, which this stack does
-			// not otherwise touch.
+			// The validation CNAME is published by the stack now
+			// (`issueCertificateViaCloudflare`); this stays as the record of what
+			// was published, and for diagnosing a certificate stuck short of
+			// ISSUED. The one record still added by hand is a proxied CNAME for
+			// `domains.ingest` at `serviceUrl` (the ALB).
 			certificateValidation: certificate?.domainValidationOptions,
 		}
 	})

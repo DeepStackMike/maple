@@ -5,7 +5,7 @@
 // is arithmetic with two traps in it — bucket sizing and the holes — so it
 // lives here where a test can hold it.
 
-import { resolveRange } from "./time"
+import { resolveRangeWindow } from "./time"
 
 /** One `(bucket, count)` group, as `CH.ErrorsSparkOutput` gives it. */
 export interface SparkPoint {
@@ -41,7 +41,7 @@ export interface SparkWindow {
  * query still runs over the padded bounds; only the drawing stops at now.
  */
 export function sparkWindow(range: string | undefined, anchorMs = Date.now()): SparkWindow {
-	const { startMs, endMs, seconds } = resolveRange(range, anchorMs)
+	const { startMs, endMs, seconds } = resolveRangeWindow(range, anchorMs)
 	return { startMs, endMs, bucketSeconds: bucketLadderStep(seconds) }
 }
 

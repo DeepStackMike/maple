@@ -12,7 +12,7 @@ import {
 	type QueryBuilderWidgetState,
 } from "@/lib/query-builder/widget-builder-utils"
 import type { DashboardWidget } from "@/components/dashboard-builder/types"
-import { defaultFunnelDraft } from "@/lib/query-builder/widget-builder-shared"
+import { defaultFunnelDraft, DEFAULT_PATHS_DRAFT } from "@/lib/query-builder/widget-builder-shared"
 
 /**
  * What a widget routed to, as one comparable value.
@@ -78,6 +78,7 @@ function makeState(): QueryBuilderWidgetState {
 		sparklineEnabled: false,
 		markdownContent: "",
 		funnel: defaultFunnelDraft(),
+		paths: DEFAULT_PATHS_DRAFT(),
 	}
 }
 
@@ -324,7 +325,11 @@ describe("product-event funnel widget", () => {
 				...funnelState().funnel,
 				steps: [
 					{ kind: "page", pagePath: "/pricing", host: "example.com" },
-					{ kind: "event", eventName: "signup_completed", filterClause: 'plan = "pro" AND source = cli' },
+					{
+						kind: "event",
+						eventName: "signup_completed",
+						filterClause: 'plan = "pro" AND source = cli',
+					},
 				],
 				filterClause: 'country = "DE" AND utm.source = "twitter"',
 				breakdownBy: "referrerHost",
@@ -335,7 +340,11 @@ describe("product-event funnel widget", () => {
 		expect(dataSource.params).toEqual({
 			steps: [
 				{ kind: "page", pagePath: "/pricing", host: "example.com" },
-				{ kind: "event", eventName: "signup_completed", attributeEquals: { plan: "pro", source: "cli" } },
+				{
+					kind: "event",
+					eventName: "signup_completed",
+					attributeEquals: { plan: "pro", source: "cli" },
+				},
 			],
 			keyBy: "visitor",
 			windowSeconds: 3600,
@@ -390,6 +399,9 @@ describe("product-event funnel widget", () => {
 			display,
 			dataSource: buildWidgetDataSource(widget, state, ["A"]),
 		})
+		// Query A mirrors the funnel's source: `reconcileFunnelSource` runs on every
+		// settings-rail edit and would otherwise flip the funnel back to the query set.
+		expect(reopened.queries[0]?.dataSource).toBe("product_events")
 		expect(reopened.funnel).toEqual({
 			source: "product_events",
 			steps: [
@@ -405,6 +417,7 @@ describe("product-event funnel widget", () => {
 			windowSeconds: 3600,
 			breakdownBy: "attribute:plan",
 			filterClause: 'country = "DE"',
+			variant: "bars",
 			showStepPercent: false,
 			addOns: { keyBy: true, window: true, breakdown: true },
 		})
@@ -474,7 +487,10 @@ describe("product-event funnel widget", () => {
 			},
 		}
 		expect(validateQueries(badStepFilter)).toMatch(/^Step 1: /)
-		const badFilter = { ...funnelState(), funnel: { ...funnelState().funnel, filterClause: 'plan = "pro"' } }
+		const badFilter = {
+			...funnelState(),
+			funnel: { ...funnelState().funnel, filterClause: 'plan = "pro"' },
+		}
 		expect(validateQueries(badFilter)).toMatch(/^Filters: /)
 		// On the query-set source the ordinary rule is back: a funnel needs a group-by.
 		const plain = { ...funnelState(), funnel: defaultFunnelDraft() }

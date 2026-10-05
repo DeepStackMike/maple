@@ -1,6 +1,7 @@
 import { useNavigate, createFileRoute } from "@tanstack/react-router"
 import { Schema } from "effect"
 import { useMemo } from "react"
+import { ToggleGroup, ToggleGroupItem } from "@maple/ui/components/ui/toggle-group"
 
 import { Result, useAtomRefresh } from "@/lib/effect-atom"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@maple/ui/components/ui/select"
@@ -8,9 +9,10 @@ import { useRefreshableAtomValue } from "@/hooks/use-refreshable-atom-value"
 import { getServicesFacetsResultAtom } from "@/lib/services/atoms/warehouse-query-atoms"
 import { DashboardLayout } from "@/components/layout/dashboard-layout"
 import { ServiceMapView } from "@/components/service-map/service-map-view"
-import type { DeclutterFocus } from "@/components/service-map/service-map-declutter"
+import type { DeclutterFocus } from "@maple/ui/components/service-map/service-map-declutter"
 import { useEffectiveTimeRange } from "@/hooks/use-effective-time-range"
 import { TimeRangeSearchFields, applyTimeRangeSearch } from "@/components/time-range-picker/search"
+import { sessionTimeRangeSearchMiddleware } from "@/components/time-range-picker/session-time-range"
 import { PageRefreshProvider } from "@/components/time-range-picker/page-refresh-context"
 import { TimeRangeHeaderControls } from "@/components/time-range-picker/time-range-header-controls"
 import { QueryErrorState } from "@/components/common/query-error-state"
@@ -24,6 +26,7 @@ const ALL_ENVIRONMENTS = "__all__"
 const ONE_YEAR_SECONDS = 365 * 24 * 60 * 60
 
 const serviceMapSearchSchema = Schema.Struct({
+	view: Schema.optional(Schema.Literals(["2d", "3d"])),
 	environment: Schema.optional(Schema.String),
 	// Focus mode: dim/hide everything outside a service's neighborhood. Kept in
 	// the URL so a focused view is shareable / survives reloads.
@@ -36,6 +39,7 @@ const serviceMapSearchSchema = Schema.Struct({
 export const Route = createFileRoute("/service-map")({
 	component: ServiceMapPage,
 	validateSearch: Schema.toStandardSchemaV1(serviceMapSearchSchema),
+	search: { middlewares: [sessionTimeRangeSearchMiddleware({ maxRangeSeconds: ONE_YEAR_SECONDS })] },
 })
 
 function ServiceMapPage() {
@@ -144,15 +148,30 @@ function ServiceMapContent() {
 			<DashboardLayout.Body>
 				<DashboardLayout.Content>
 					<DashboardLayout.Sticky>
-						<DashboardLayout.Header
-							title="Service Map"
-							description="Visualize service-to-service dependencies and data flow."
-						>
+						<DashboardLayout.Header title="Service Map">
 							{/* Wraps, and below the header's side-by-side breakpoint the
 							    environment select takes a row of its own: all three controls
 							    on one narrow row left it ~70px, and unwrapped they stacked
 							    into a ragged two-line block. */}
 							<div className="flex flex-wrap items-center gap-2">
+								<ToggleGroup
+									variant="outline"
+									size="sm"
+									aria-label="Service map view"
+									value={[search.view ?? "2d"]}
+									onValueChange={(values) => {
+										const view = values[0]
+										if (view === "2d" || view === "3d")
+											void navigate({ search: (prev) => ({ ...prev, view }) })
+									}}
+								>
+									<ToggleGroupItem value="2d" aria-label="2D map">
+										2D
+									</ToggleGroupItem>
+									<ToggleGroupItem value="3d" aria-label="3D map">
+										3D
+									</ToggleGroupItem>
+								</ToggleGroup>
 								<Select
 									items={environmentItems}
 									value={selectedEnvironment}
@@ -193,6 +212,7 @@ function ServiceMapContent() {
 						) : (
 							<div className="-mx-4 -mb-4 h-[calc(100vh-10rem)]">
 								<ServiceMapView
+									viewMode={search.view ?? "2d"}
 									startTime={effectiveStartTime}
 									endTime={effectiveEndTime}
 									deploymentEnv={deploymentEnv}

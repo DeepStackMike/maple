@@ -1,18 +1,25 @@
 {
 	"$schema": "https://unpkg.com/knip@6/schema.json",
-	"ignoreWorkspaces": ["apps/ingest", "apps/ios", "examples/*", "lib/thinking-orbs"],
-	"ignore": [".context/**", ".deepsec/**", "**/*.type-test.ts"],
+	"ignoreWorkspaces": ["apps/ingest", "apps/ios", "examples/*"],
+	"ignore": [".deepsec/**", "**/*.type-test.ts"],
 	"ignoreExportsUsedInFile": true,
 	"workspaces": {
 		".": {
 			"entry": ["alchemy.run.ts", "scripts/**/*.ts", "scripts/oxlint-plugins/*.mjs"],
-			"ignoreBinaries": ["tb", "pscale"]
+			"ignoreBinaries": ["tb", "pscale"],
+			// alchemy's optional peer, dynamic-imported when the deploy applies migrations.
+			"ignoreDependencies": ["pg"]
 		},
 		"apps/web": {
+			// `src/worker-entry.ts` is the deployed Worker entry, named by the vite
+			// source as the string `main: "src/worker-entry.ts"` in `src/worker.ts`'s
+			// props. knip cannot follow a path in a string, so without this it reports
+			// the entry and everything only it reaches (the handler, the OG renderers)
+			// as unused files.
 			"entry": [
 				"src/routes/**/*.tsx",
 				"src/worker.ts",
-				"alchemy.run.ts",
+				"src/worker-entry.ts",
 				"src/components/ai-elements/**",
 				"src/components/icons/**",
 				"src/lib/effect-atom.ts"
@@ -25,17 +32,34 @@
 		"apps/api": {
 			// src/worker.ts was auto-detected from wrangler.jsonc's `main` until the
 			// wrangler configs were deleted; the Worker entries are now named here.
-			"entry": ["src/worker.ts", "alchemy.run.ts", "autumn.config.ts", "scripts/cold-path/*.mjs"],
-			// Shelled out to by scripts/bench-startup-cpu.ts, never imported.
-			"ignoreDependencies": ["cloudflare", "wrangler"]
+			// bench-suites/*.ts are loaded by path from scripts/bench-queries.ts (a dynamic
+			// import off the CLI's --suite argument), so knip cannot see the edge.
+			"entry": [
+				"src/worker.ts",
+				"autumn.config.ts",
+				"scripts/cold-path/*.{ts,mjs}",
+				"scripts/bench-suites/*.ts"
+			]
 		},
 		// Single-module Workers: the root alchemy.run.ts imports src/worker.ts, and
 		// alchemy bundles it, so it is the app's one entry.
+		"apps/ai": {
+			"entry": ["src/worker.ts"]
+		},
 		"apps/alerting": {
+			"entry": ["src/worker.ts"]
+		},
+		"apps/chat-bot": {
 			"entry": ["src/worker.ts"]
 		},
 		"apps/electric-sync": {
 			"entry": ["src/worker.ts"]
+		},
+		// The sandbox Worker's entry is its own plain module (that is the point: a
+		// generated entry would drop the container-backed class export), and the
+		// alchemy declaration beside it is what the root stack yields.
+		"apps/sandbox": {
+			"entry": ["src/worker.ts", "alchemy.run.ts"]
 		},
 		"apps/local-ui": {
 			"entry": ["src/worker.ts"]
@@ -59,8 +83,17 @@
 			"ignore": ["src/generated/**"],
 			"ignoreDependencies": ["tailwindcss"]
 		},
-		"lib/effect-cloudflare": {
-			"ignoreDependencies": ["cloudflare"]
+		// fumapress reads press.config.tsx and src/app.css by convention, and Base UI
+		// arrives through fumadocs-ui's preset; knip sees no import edge to either.
+		"apps/clickhouse-builder-docs": {
+			"entry": ["press.config.tsx", "src/app.css"],
+			"ignoreDependencies": ["@base-ui/react"]
+		},
+		"lib/ai-model-catalog": {
+			"entry": ["scripts/**/*.ts"]
+		},
+		"lib/semconv": {
+			"entry": ["scripts/**/*.ts"]
 		},
 		"lib/alchemy-portless": {
 			// The dev-sidecar entry alchemy loads by URL, not by import.
@@ -70,7 +103,8 @@
 			"entry": ["src/drain/index.ts"]
 		},
 		"packages/browser": {
-			"ignoreDependencies": ["rrweb"]
+			// Imported by the private packages it bundles (browser-session, sdk-core); listed here so the build keeps them external.
+			"ignoreDependencies": ["rrweb", "web-vitals"]
 		}
 	},
 	"rules": {

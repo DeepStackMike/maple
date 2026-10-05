@@ -1,10 +1,10 @@
 import { keepPreviousData, useInfiniteQuery, useQuery } from "@tanstack/react-query"
 import { CH, computeBucketSecondsForRange } from "@maple/query-engine"
-import { executeLocalCompiledQuery } from "@/lib/query"
-import { LOCAL_ORG_ID } from "../lib/constants"
+import type { FilterOption } from "@maple/ui/components/filters/filter-section"
+import { boundsKey, executeLocalCompiledQuery, localParams, noCursor } from "@/lib/query"
+import { compareSeverity, normalizeLog, type LocalLog } from "../lib/log-shape"
 import { parseClickHouseDateTime, type TimeBounds } from "../lib/time"
 import { buildLogHistogram, EMPTY_LOG_HISTOGRAM, type LogHistogram } from "../lib/log-histogram"
-import type { FilterOption } from "@maple/ui/components/filters/filter-section"
 
 const PAGE_SIZE = 50
 
@@ -25,13 +25,17 @@ export interface LogFilters {
 	service?: string
 	/** Exact severity text match (e.g. `ERROR`). */
 	severity?: string
-	/** Exact deployment-environment match (e.g. `production`). */
+	/**
+	 * Exact deployment-environment match (e.g. `production`). `unknown` matches
+	 * rows with no environment attribute — the query engine reads the column
+	 * through `envLabel` on both the facet and the predicate side.
+	 */
 	environment?: string
 	/** Substring match on the log body. */
 	search?: string
 }
 
-/** The filter set as the query builders spell it — one place, four callers. */
+/** The filter set as the query builders spell it — one place, every caller. */
 function logsQueryOptions(filters: LogFilters) {
 	return {
 		serviceName: filters.service,
@@ -41,27 +45,42 @@ function logsQueryOptions(filters: LogFilters) {
 	}
 }
 
+type LogCursor = NonNullable<CH.LogsListOpts["cursorIdentity"]>
+
 /**
- * Infinite log stream, newest first. Keyset pagination on `Timestamp` — the
- * cursor is the last row's `timestamp`.
+ * Infinite log stream, newest first. Keyset pagination on the full row
+ * identity: a bare timestamp cursor drops every row that shares the boundary
+ * timestamp, which batched exporters produce all the time.
  */
 export function useLocalLogs(filters: LogFilters, bounds: TimeBounds) {
 	return useInfiniteQuery({
-		queryKey: ["local", "logs", filters, bounds.startTime, bounds.endTime],
-		initialPageParam: undefined as string | undefined,
-		queryFn: async ({ pageParam }) => {
+		queryKey: ["local", "logs", filters, boundsKey(bounds)],
+		initialPageParam: noCursor<LogCursor>(),
+		placeholderData: keepPreviousData,
+		queryFn: async ({ pageParam, signal }): Promise<ReadonlyArray<LocalLog>> => {
 			const compiled = CH.compile(
 				CH.logsListQuery({
 					limit: PAGE_SIZE,
-					cursor: pageParam,
+					cursorIdentity: pageParam,
 					...logsQueryOptions(filters),
 				}),
-				{ orgId: LOCAL_ORG_ID, ...bounds },
+				localParams(bounds),
 			)
-			return executeLocalCompiledQuery(compiled)
+			const rows = await executeLocalCompiledQuery(compiled, signal)
+			return rows.map(normalizeLog)
 		},
-		getNextPageParam: (lastPage) =>
-			lastPage.length === PAGE_SIZE ? lastPage[lastPage.length - 1]?.timestamp : undefined,
+		getNextPageParam: (lastPage): LogCursor | undefined => {
+			const last = lastPage.length === PAGE_SIZE ? lastPage[lastPage.length - 1] : undefined
+			return last
+				? {
+						timestamp: last.timestamp,
+						serviceName: last.serviceName,
+						traceId: last.traceId,
+						spanId: last.spanId,
+						recordIdentity: last.recordIdentity,
+					}
+				: undefined
+		},
 	})
 }
 
@@ -94,9 +113,9 @@ export function logHistogramBucketSeconds(bounds: TimeBounds): number {
 export function useLocalLogHistogram(filters: LogFilters, bounds: TimeBounds) {
 	const bucketSeconds = logHistogramBucketSeconds(bounds)
 	return useQuery<LogHistogram>({
-		queryKey: ["local", "logs", "histogram", filters, bounds.startTime, bounds.endTime],
+		queryKey: ["local", "logs", "histogram", filters, boundsKey(bounds)],
 		placeholderData: keepPreviousData,
-		queryFn: async () => {
+		queryFn: async ({ signal }) => {
 			const startMs = parseClickHouseDateTime(bounds.startTime)
 			const endMs = parseClickHouseDateTime(bounds.endTime)
 			if (startMs === null || endMs === null) return EMPTY_LOG_HISTOGRAM
@@ -107,35 +126,51 @@ export function useLocalLogHistogram(filters: LogFilters, bounds: TimeBounds) {
 					bucketSeconds,
 					...logsQueryOptions(filters),
 				}),
-				{ orgId: LOCAL_ORG_ID, ...bounds, bucketSeconds },
+				{ ...localParams(bounds), bucketSeconds },
 			)
-			const rows = await executeLocalCompiledQuery(compiled)
+			const rows = await executeLocalCompiledQuery(compiled, signal)
 			return buildLogHistogram(rows, { startMs, endMs, bucketSeconds })
 		},
 	})
 }
 
 /**
- * Distinct severity values in the window (with counts), for the severity facet.
- * Derived from the data so the option casing always matches what's stored.
+ * Severity facet: counts under every filter except severity itself, so picking
+ * one level never collapses the list of levels. Ordered by level, not count.
  */
-export function useLocalLogSeverities(bounds: TimeBounds) {
+export function useLocalLogSeverities(filters: LogFilters, bounds: TimeBounds) {
 	return useQuery<ReadonlyArray<FilterOption>>({
-		queryKey: ["local", "log-severities", bounds.startTime, bounds.endTime],
+		queryKey: [
+			"local",
+			"log-severities",
+			filters.service ?? null,
+			filters.environment ?? null,
+			filters.search ?? null,
+			boundsKey(bounds),
+		],
 		staleTime: 60_000,
-		queryFn: async () => {
-			const compiled = CH.compile(CH.logsBreakdownQuery({ groupBy: "severity", limit: 20 }), {
-				orgId: LOCAL_ORG_ID,
-				...bounds,
-			})
-			const rows = await executeLocalCompiledQuery(compiled)
-			return rows.filter((row) => row.name).map((row) => ({ name: row.name, count: row.count }))
+		placeholderData: keepPreviousData,
+		queryFn: async ({ signal }) => {
+			const compiled = CH.compile(
+				CH.logsBreakdownQuery({
+					groupBy: "severity",
+					limit: 20,
+					...logsQueryOptions({ ...filters, severity: undefined }),
+				}),
+				localParams(bounds),
+			)
+			const rows = await executeLocalCompiledQuery(compiled, signal)
+			return rows
+				.filter((row) => row.name)
+				.map((row) => ({ name: row.name, count: Number(row.count) }))
+				.sort((a, b) => compareSeverity(a.name, b.name))
 		},
 	})
 }
 
 /**
- * Deployment environments that logged in the window.
+ * Deployment environments that logged in the window, under every filter except
+ * the environment itself.
  *
  * `source: "raw"` for the same reason the service facet takes it: the hourly
  * aggregate's `Hour` bound is hour-granular, so a facet read from it can offer
@@ -146,20 +181,34 @@ export function useLocalLogSeverities(bounds: TimeBounds) {
  *
  * `limit: null` for the same reason again: a facet is membership, and a top-N
  * over a dimension this small would only ever be a silent truncation.
+ *
+ * Untagged logs come back as `unknown` (the query engine's `envLabel`), which is
+ * a selectable option that matches exactly those rows.
  */
-export function useLocalLogEnvironments(bounds: TimeBounds) {
+export function useLocalLogEnvironments(filters: LogFilters, bounds: TimeBounds) {
 	return useQuery<ReadonlyArray<FilterOption>>({
-		queryKey: ["local", "logs", "environments", bounds.startTime, bounds.endTime],
+		queryKey: [
+			"local",
+			"logs",
+			"environments",
+			filters.service ?? null,
+			filters.severity ?? null,
+			filters.search ?? null,
+			boundsKey(bounds),
+		],
 		staleTime: 60_000,
-		queryFn: async () => {
+		placeholderData: keepPreviousData,
+		queryFn: async ({ signal }) => {
 			const compiled = CH.compile(
-				CH.logsBreakdownQuery({ groupBy: "environment", limit: null, source: "raw" }),
-				{ orgId: LOCAL_ORG_ID, ...bounds },
+				CH.logsBreakdownQuery({
+					groupBy: "environment",
+					limit: null,
+					source: "raw",
+					...logsQueryOptions({ ...filters, environment: undefined }),
+				}),
+				localParams(bounds),
 			)
-			const rows = await executeLocalCompiledQuery(compiled)
-			// An empty name is every log whose resource carries no
-			// `deployment.environment` at all, which is most of them locally. It is
-			// not an environment, and a row labelled "" filters on nothing.
+			const rows = await executeLocalCompiledQuery(compiled, signal)
 			return rows.filter((row) => row.name).map((row) => ({ name: row.name, count: Number(row.count) }))
 		},
 	})

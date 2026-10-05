@@ -51,7 +51,7 @@ const asDeploymentEnv = Schema.decodeUnknownSync(DeploymentEnvironment)
  * Without this, scoping a detail page to an `"unknown"` row would emit
  * `DeploymentEnv IN ('unknown')` and match nothing.
  */
-const toEnvFilter = (
+export const toEnvFilter = (
 	environments: ReadonlyArray<DeploymentEnvironment> | undefined,
 ): ReadonlyArray<DeploymentEnvironment> | undefined =>
 	environments?.map((e) => (e === "unknown" ? asDeploymentEnv("") : e))
@@ -313,6 +313,10 @@ const metricsMetrics = new Set<MetricsMetric>(["avg", "sum", "min", "max", "coun
 const metricsBreakdownMetrics = new Set<"avg" | "sum" | "count">(["avg", "sum", "count"])
 
 function buildTimeseriesQuerySpec(data: CustomChartTimeSeriesDecoded): QuerySpec | string {
+	// The legacy chart route predates the query set; product events only lower through it.
+	if (data.source === "product_events") {
+		return "product_events is only available through the query builder"
+	}
 	if (data.source === "traces") {
 		if (!tracesMetrics.has(data.metric as TracesMetric)) {
 			return `Unknown trace metric: ${data.metric}`
@@ -607,7 +611,7 @@ export function getCustomChartServiceDetail({ data }: { data: GetCustomChartServ
 	return getCustomChartServiceDetailEffect({ data })
 }
 
-function makeAllMetricsTimeseriesRequest(opts: {
+export function makeAllMetricsTimeseriesRequest(opts: {
 	startTime?: string
 	endTime?: string
 	bucketSeconds: number
@@ -765,7 +769,7 @@ function extractGroupedAllMetricsSeries(
 // timeseries response into filled `ServiceDetailTimeSeriesPoint`s. Used by both
 // the standalone chart fetch and the `serviceDetailOverview` bundle so the two
 // paths can't drift.
-function buildServiceDetailPoints(
+export function buildServiceDetailPoints(
 	allMetricsRes: QueryEngineExecuteResponse,
 	startTime: string | undefined,
 	endTime: string | undefined,

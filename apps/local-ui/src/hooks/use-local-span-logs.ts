@@ -1,43 +1,60 @@
-import { useQuery } from "@tanstack/react-query"
+import { skipToken, useQuery } from "@tanstack/react-query"
 import { CH } from "@maple/query-engine"
 import type { SpanLogMarker } from "@maple/ui/components/traces/trace-view-context"
-import { executeLocalCompiledQuery } from "@/lib/query"
-import { LOCAL_ORG_ID } from "../lib/constants"
-import { toClickHouseDateTime } from "../lib/time"
+import { executeLocalCompiledQuery, localParams } from "@/lib/query"
 import { normalizeLog, type LocalLog } from "../lib/log-shape"
 import { toSpanLogMarkers } from "../lib/log-markers"
+import { boundsForRange, parseClickHouseDateTime, toClickHouseDateTime, WIDEST_RANGE } from "../lib/time"
+
+const HOUR_MS = 60 * 60 * 1000
 
 /**
  * The whole of local mode's history, as ClickHouse bounds.
  *
- * Both queries here are pinned to a trace (and one of them to a span as well),
- * so the window is not what makes them cheap — the `(TraceId)` index is. A
- * narrower window would only be able to miss: a trace opened from a link can be
- * older than whatever range the list was showing when it was copied.
+ * The trace-wide log counts are pinned to a trace, so the window is not what
+ * makes them cheap — the `(TraceId)` index is. A narrower window would only be
+ * able to miss: a trace opened from a link can be older than whatever range the
+ * list was showing when it was copied.
  */
 const allTimeBounds = () => ({
 	startTime: toClickHouseDateTime(0),
-	endTime: toClickHouseDateTime(Date.now() + 60 * 60 * 1000),
+	endTime: toClickHouseDateTime(Date.now() + HOUR_MS),
 })
 
 /**
- * Logs emitted within a single span, newest first. Powers the "Logs" tab of the
- * span detail panel. The list query needs time bounds, so we span the full
- * history (epoch → now+1h) — the `(TraceId, SpanId)` filter keeps the scan tiny
- * on local data regardless of window width.
+ * Logs emitted within one span, newest first (the span detail's Logs tab).
+ * Bounded to the span's own window ±1h: its logs cannot drift further, and an
+ * unbounded scan reads every partition on each span click.
  */
-export function useLocalSpanLogs(traceId: string | undefined, spanId: string | undefined) {
+export function useLocalSpanLogs(
+	traceId: string | undefined,
+	spanId: string | undefined,
+	spanStartTime: string,
+	spanDurationMs: number,
+) {
 	return useQuery<ReadonlyArray<LocalLog>>({
-		queryKey: ["local", "span-logs", traceId, spanId],
-		enabled: !!traceId && !!spanId,
-		queryFn: async () => {
-			const compiled = CH.compile(
-				CH.logsListQuery({ traceId: traceId!, spanId: spanId!, limit: 100 }),
-				{ orgId: LOCAL_ORG_ID, ...allTimeBounds() },
-			)
-			const rows = await executeLocalCompiledQuery(compiled)
-			return rows.map(normalizeLog)
-		},
+		queryKey: ["local", "span-logs", traceId, spanId, spanStartTime, spanDurationMs],
+		queryFn:
+			traceId && spanId
+				? async ({ signal }) => {
+						const startMs = parseClickHouseDateTime(spanStartTime)
+						const bounds =
+							startMs === null
+								? boundsForRange(WIDEST_RANGE)
+								: {
+										startTime: toClickHouseDateTime(startMs - HOUR_MS),
+										endTime: toClickHouseDateTime(
+											startMs + Math.max(0, spanDurationMs) + HOUR_MS,
+										),
+									}
+						const compiled = CH.compile(
+							CH.logsListQuery({ traceId, spanId, limit: 100 }),
+							localParams(bounds),
+						)
+						const rows = await executeLocalCompiledQuery(compiled, signal)
+						return rows.map(normalizeLog)
+					}
+				: skipToken,
 	})
 }
 
@@ -57,13 +74,14 @@ export function useLocalSpanLogs(traceId: string | undefined, spanId: string | u
 export function useLocalTraceLogCounts(traceId: string | undefined) {
 	return useQuery<ReadonlyMap<string, SpanLogMarker>>({
 		queryKey: ["local", "trace-log-counts", traceId],
-		enabled: !!traceId,
-		queryFn: async () => {
-			const compiled = CH.compile(CH.traceSpanLogCountsQuery({ traceId: traceId! }), {
-				orgId: LOCAL_ORG_ID,
-				...allTimeBounds(),
-			})
-			return toSpanLogMarkers(await executeLocalCompiledQuery(compiled))
-		},
+		queryFn: traceId
+			? async ({ signal }) => {
+					const compiled = CH.compile(
+						CH.traceSpanLogCountsQuery({ traceId }),
+						localParams(allTimeBounds()),
+					)
+					return toSpanLogMarkers(await executeLocalCompiledQuery(compiled, signal))
+				}
+			: skipToken,
 	})
 }

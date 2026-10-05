@@ -73,6 +73,8 @@ export interface SpanNode {
 	 * service-entry spans when bounding a large trace to an overview. */
 	readonly spanKind: string
 	readonly durationMs: number
+	/** When the span started, as the warehouse or API reported it (UTC). */
+	readonly startTime: string
 	readonly statusCode: string
 	readonly statusMessage: string
 	readonly attributes: Record<string, string>
@@ -100,6 +102,8 @@ export interface ErrorSummary {
 	readonly fingerprintHash: string
 	/** Human-readable display label derived at ingest. */
 	readonly label: string
+	/** One occurrence's status message — what tells two fingerprints with the same label apart. */
+	readonly sampleMessage: string
 	readonly count: number
 	readonly affectedServicesCount: number
 	readonly lastSeen: string
@@ -109,6 +113,9 @@ export interface FindErrorsInput {
 	readonly timeRange: TimeRange
 	readonly service?: string
 	readonly environment?: string
+	/** "unexpected": only identities outside `namespacePrefix` plus the 5xx/unexpected-envelope markers. */
+	readonly identity?: "unexpected"
+	readonly namespacePrefix?: string
 	readonly limit?: number
 }
 
@@ -232,6 +239,8 @@ export interface ExploreAttributesInput {
 export interface AttributeKeyResult {
 	readonly key: string
 	readonly count: number
+	/** `source: "services"` only: environment, namespace, commit_sha or service. */
+	readonly facetType?: string
 }
 
 export interface AttributeValueResult {

@@ -1,9 +1,11 @@
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
 import { Schema } from "effect"
 import { SessionId, TraceId } from "../../primitives"
+import { SessionTag } from "../../session-tags"
+import { AuditedRead } from "../audit-log"
 import { AuthorizationV2 } from "./auth"
 import { wireExample, ListOf, ListQuery, Timestamp } from "./envelopes"
-import { defineV2Error, V2ParameterInvalid } from "./errors"
+import { defineV2Error, V2CursorInvalid, V2ParameterInvalid } from "./errors"
 import { PublicId, PublicIdPrefixes } from "./public-id"
 import { V2WarehouseReadErrors } from "./query-errors"
 
@@ -29,6 +31,10 @@ const sessionReplayBaseFields = {
 		description: "Session wall-clock duration in ms, or `null`.",
 	}),
 	status: Schema.String.annotate({ description: "Session status (e.g. `active`, `ended`)." }),
+	last_activity_at: Schema.NullOr(Timestamp).annotate({
+		description:
+			"Last activity seen in the session, refreshed by the SDK's heartbeat, or `null` when only the session-start row has landed. Read it alongside `status` to tell a session that is happening now from one whose tab went away without sending an end row — that leaves `status` at `active` for the rest of the session's retention.",
+	}),
 	user_id: Schema.NullOr(Schema.String).annotate({
 		description: "The identified user, or `null` if anonymous.",
 	}),
@@ -47,6 +53,9 @@ const sessionReplayBaseFields = {
 	group_name: Schema.String.annotate({
 		description: 'The identified group\'s display name, or `""` if unknown.',
 	}),
+	visitor_id: Schema.String.annotate({ description: 'Persistent browser visitor ID, or "" when unknown.' }),
+	utm_source: Schema.String.annotate({ description: 'Acquisition source, or "" when absent.' }),
+	entry_path: Schema.String.annotate({ description: "Session entry pathname without query or hash." }),
 	url_initial: Schema.String.annotate({ description: "The first URL of the session." }),
 	browser_name: Schema.String.annotate({ description: "Browser name." }),
 	os_name: Schema.String.annotate({ description: "Operating system name." }),
@@ -59,7 +68,16 @@ const sessionReplayBaseFields = {
 	trace_count: Schema.Number.annotate({ description: "Number of correlated traces." }),
 } as const
 
-export const V2SessionReplayListItem = Schema.Struct(sessionReplayBaseFields).annotate({
+export const V2SessionReplayListItem = Schema.Struct({
+	...sessionReplayBaseFields,
+	recorded: Schema.NullOr(Schema.Boolean).annotate({
+		description: "Whether recording was enabled; null for sessions without a recording marker.",
+	}),
+	tags: Schema.Array(SessionTag).annotate({
+		description:
+			"Rule-based tags: exactly one quality tier (`bot`, `bounce`, `idle`, `glance` or `engaged`), plus `signed_in` and `new_visitor` when they apply.",
+	}),
+}).annotate({
 	identifier: "SessionReplayListItem",
 	title: "Session replay",
 	description: "A recorded browser session — summary form returned by search.",
@@ -71,11 +89,15 @@ export const V2SessionReplayListItem = Schema.Struct(sessionReplayBaseFields).an
 			end_time: "2026-07-15T09:18:30.000Z",
 			duration_ms: 390000,
 			status: "ended",
+			last_activity_at: "2026-07-15T09:18:30.000Z",
 			user_id: "user_2abc",
 			user_name: "Ada Lovelace",
 			user_email: "ada@acme.com",
 			group_id: "acme",
 			group_name: "Acme Inc",
+			visitor_id: "visitor_123",
+			utm_source: "newsletter",
+			entry_path: "/dashboard",
 			url_initial: "https://app.example.com/dashboard",
 			browser_name: "Chrome",
 			os_name: "macOS",
@@ -86,6 +108,8 @@ export const V2SessionReplayListItem = Schema.Struct(sessionReplayBaseFields).an
 			click_count: 24,
 			error_count: 1,
 			trace_count: 12,
+			recorded: true,
+			tags: ["engaged", "signed_in"],
 		}),
 	],
 })
@@ -93,6 +117,17 @@ export type V2SessionReplayListItem = Schema.Schema.Type<typeof V2SessionReplayL
 
 export const V2SessionReplay = Schema.Struct({
 	...sessionReplayBaseFields,
+	visitor_is_new: Schema.Boolean,
+	user_traits: Schema.String.annotate({ description: "Identify traits as a JSON-encoded string map." }),
+	referrer: Schema.String,
+	referrer_host: Schema.String,
+	utm_medium: Schema.String,
+	utm_campaign: Schema.String,
+	utm_term: Schema.String,
+	utm_content: Schema.String,
+	host: Schema.String,
+	exit_path: Schema.String,
+	language: Schema.String,
 	user_agent: Schema.String.annotate({ description: "The full user-agent string." }),
 	trace_ids: Schema.Array(TraceId).annotate({ description: "All trace IDs correlated to the session." }),
 	resource_attributes: Schema.String.annotate({
@@ -119,6 +154,9 @@ export const V2SessionReplay = Schema.Struct({
 			user_email: "ada@acme.com",
 			group_id: "acme",
 			group_name: "Acme Inc",
+			visitor_id: "visitor_123",
+			utm_source: "newsletter",
+			entry_path: "/dashboard",
 			url_initial: "https://app.example.com/dashboard",
 			browser_name: "Chrome",
 			os_name: "macOS",
@@ -129,6 +167,18 @@ export const V2SessionReplay = Schema.Struct({
 			click_count: 24,
 			error_count: 1,
 			trace_count: 12,
+			visitor_is_new: false,
+			user_traits: "{}",
+			referrer: "",
+			referrer_host: "",
+			utm_medium: "email",
+			utm_campaign: "launch",
+			utm_term: "",
+			utm_content: "",
+			host: "app.example.com",
+			exit_path: "/dashboard",
+			language: "en",
+			last_activity_at: "2026-07-15T09:18:30.000Z",
 			user_agent: "Mozilla/5.0 …",
 			trace_ids: [],
 			resource_attributes: "{}",
@@ -248,6 +298,9 @@ export const V2SessionTranscriptEvent = Schema.Struct({
 	net_duration_ms: Schema.NullOr(Schema.Number).annotate({
 		description: "Request duration in ms for network events, otherwise `null`.",
 	}),
+	attributes: Schema.String.annotate({
+		description: "Custom-event properties as a JSON-encoded string map.",
+	}),
 	error_stack: Schema.NullOr(Schema.String).annotate({
 		description: "Stack trace for error events, otherwise `null`.",
 	}),
@@ -300,6 +353,18 @@ export const V2SessionReplaySearchParams = Schema.Struct({
 		Schema.Boolean.annotate({ description: "Only sessions with (or without) errors." }),
 	),
 	search: Schema.optionalKey(Schema.String.annotate({ description: "Free-text search over URL/user." })),
+	page_path: Schema.optionalKey(
+		Schema.String.annotate({
+			description:
+				"Only sessions that navigated to this exact page path (pathname only, no query string or fragment) at any point, not just on entry.",
+		}),
+	),
+	tags: Schema.optionalKey(
+		Schema.Array(SessionTag).annotate({
+			description:
+				"Only sessions carrying every one of these tags. `engaged` alone hides bots, bounces, idle tabs and glances.",
+		}),
+	),
 	duration_min_ms: Schema.optionalKey(
 		Schema.Number.annotate({ description: "Minimum session duration in ms." }),
 	),
@@ -492,7 +557,7 @@ export class V2SessionReplaysApiGroup extends HttpApiGroup.make("sessionReplays"
 		HttpApiEndpoint.post("search", "/search", {
 			payload: V2SessionReplaySearchParams,
 			success: SessionReplayList,
-			error: [...commonErrors],
+			error: [...commonErrors, V2CursorInvalid.schema],
 		}).annotateMerge(
 			OpenApi.annotations({
 				identifier: "searchSessionReplays",
@@ -578,6 +643,7 @@ export class V2SessionReplaysApiGroup extends HttpApiGroup.make("sessionReplays"
 	)
 	.prefix("/v2/session_replays")
 	.middleware(AuthorizationV2)
+	.annotate(AuditedRead, "session_replay.read")
 	.annotateMerge(
 		OpenApi.annotations({
 			title: "Session Replays",

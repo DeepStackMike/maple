@@ -6,6 +6,7 @@
 // asserted — see `serviceMapEdgeJoinQuery` for why that distinction earned its
 // own paragraph.
 
+import { finiteOrZero } from "./format"
 import {
 	DB_QUERY_KEY_SQL,
 	DB_QUERY_LABEL_SQL,
@@ -16,15 +17,15 @@ import {
 } from "@maple/domain/tinybird/db-query-shape-sql"
 import { messagingDestinationExpr } from "@maple/domain/tinybird/semconv-renames"
 import { Schema, Effect } from "effect"
-import { compile, type CompiledQuery, type CompiledQueryRowSchema } from "@maple-dev/clickhouse-builder"
-import { defineCondFn, defineFn } from "@maple-dev/clickhouse-builder"
-import * as CH from "@maple-dev/clickhouse-builder/expr"
+import { compile, type CompiledQuery, type CompiledQueryRowSchema } from "@maple-dev/effect-clickhouse"
+import { defineCondFn, defineFn } from "@maple-dev/effect-clickhouse"
+import * as CH from "@maple-dev/effect-clickhouse/expr"
 import { envLabel, resourceEnvLabel } from "./environment"
 // From the root, not `/expr`: this overload takes a `CHQuery`, so the subquery
 // keeps its params, table names and column types checked.
-import { inSubquery } from "@maple-dev/clickhouse-builder"
-import { param } from "@maple-dev/clickhouse-builder"
-import { from, fromQuery, fromUnion } from "@maple-dev/clickhouse-builder"
+import { inSubquery } from "@maple-dev/effect-clickhouse"
+import { param } from "@maple-dev/effect-clickhouse"
+import { from, fromQuery, fromUnion } from "@maple-dev/effect-clickhouse"
 import {
 	ServiceAddressResolutionsHourly,
 	ServiceExternalEdgesHourly,
@@ -37,11 +38,11 @@ import {
 	type StringMap,
 	Traces,
 } from "../tables"
-import { unionAll } from "@maple-dev/clickhouse-builder"
+import { unionAll } from "@maple-dev/effect-clickhouse"
 import { edgeCondition, interiorConditions } from "./rollup-splice"
 import { CHNumber, CHNumberOrZero } from "../schema"
-import * as T from "@maple-dev/clickhouse-builder/types"
-import type { QueryBuilderError } from "@maple-dev/clickhouse-builder"
+import * as T from "@maple-dev/effect-clickhouse/types"
+import type { QueryBuilderError } from "@maple-dev/effect-clickhouse"
 
 // Local CH function declarations used by the live topology-join branch's
 // sample-weighting math. Kept here (not promoted to ch/functions/) because
@@ -380,7 +381,9 @@ export function serviceDependenciesQueryBase(opts: { serviceName?: string; deplo
 			targetService: $.targetService,
 			callCount: CH.sum($.bucketCallCount),
 			errorCount: CH.sum($.bucketErrorCount),
-			avgDurationMs: CH.sum($.bucketDurationSumMs).div(CH.nullIf(CH.sum($.bucketCallCount), CH.lit(0))),
+			avgDurationMs: finiteOrZero(
+				CH.sum($.bucketDurationSumMs).div(CH.nullIf(CH.sum($.bucketCallCount), CH.lit(0))),
+			),
 			maxDurationMs: CH.max_($.bucketMaxDurationMs),
 			estimatedSpanCount: CH.sum($.bucketEstimatedSpanCount),
 		}))
@@ -396,118 +399,6 @@ export function serviceDependenciesQueryBase(opts: { serviceName?: string; deplo
  */
 export function serviceDependenciesForServiceQuery(opts: ServiceDependenciesForServiceOpts) {
 	return serviceDependenciesQueryBase(opts)
-}
-
-// Service ↔ service edges from raw spans, in ONE tier
-//
-// `serviceDependenciesQueryBase` above is the cloud read path: every WHOLE hour
-// of the window comes from `service_map_edges_hourly`, and only the two partial
-// hours at the ends come from the live parent⋈child join. That split is correct
-// wherever the sealed hours actually exist — and the only thing that writes
-// them is `ServiceMapRollupService`, an `apps/api` cron. Local mode has no
-// scheduler and no Events API: `service_map_edges_hourly`'s sole writer is
-// `service_map_edges_hourly_ingest_mv`, which forwards rows POSTed into a
-// `Null` table that nothing local ever posts to. So locally the sealed branch
-// returns nothing, and asking for a day of edges renders whichever spans fall
-// in the two partial hours the live branch still covers — an hour of a day,
-// silently.
-//
-// Same projection, rollup tier removed: one pass of the join over the whole
-// range. There is no splice here and so nothing to tile — `rollup-splice`'s
-// invariants are about two tiers agreeing on a boundary, and this has one tier.
-//
-// Not a replacement for the spliced read. It rescans raw spans over the full
-// window instead of reading sealed aggregates, and `service_map_spans` is TTL'd
-// at 30 days where the hourly rollup keeps 365. It is the right shape for a
-// store that holds a developer's afternoon.
-
-export interface ServiceMapEdgesOpts {
-	deploymentEnv?: string
-	/** Edge cap, highest call count first. */
-	limit?: number
-}
-
-export interface ServiceMapEdgesOutput {
-	readonly callerService: string
-	readonly calleeService: string
-	readonly callCount: number
-	readonly errorCount: number
-	readonly avgDurationMs: number
-	/**
-	 * A real p95 over the window's child spans, not a merged digest and not a
-	 * max: this reads the raw durations, so `quantile` is available here in a
-	 * way it is not to `ServiceDependenciesOutput` (see `maxDurationMs` there).
-	 */
-	readonly p95DurationMs: number
-}
-
-/**
- * Every caller→callee edge in `[startTime, endTime)`, for a service map drawn
- * from raw spans.
- *
- * Latency and status are the CHILD span's — the callee's own view of the call —
- * matching how the rollup defines an edge.
- */
-export function serviceMapEdgesQuery(opts: ServiceMapEdgesOpts = {}) {
-	return serviceMapEdgeJoinSource({
-		rangeStart: CH.toDateTime(param.dateTimeString("startTime")),
-		rangeEnd: CH.toDateTime(param.dateTimeString("endTime")),
-		deploymentEnv: opts.deploymentEnv,
-	})
-		.select(($) => ({
-			callerService: $.ServiceName,
-			calleeService: $.c.ServiceName,
-			callCount: CH.count(),
-			errorCount: CH.countIf($.c.StatusCode.eq("Error")),
-			avgDurationMs: CH.avg($.c.Duration).div(1000000),
-			p95DurationMs: CH.quantile(0.95)($.c.Duration).div(1000000),
-		}))
-		.where(($) => [$.ServiceName.neq($.c.ServiceName)])
-		.groupBy("callerService", "calleeService")
-		.orderBy(["callCount", "desc"])
-		.limit(opts.limit ?? 200)
-		.format("JSON")
-}
-
-export interface ServiceMapNodeStatsOpts {
-	deploymentEnv?: string
-	limit?: number
-}
-
-export interface ServiceMapNodeStatsOutput {
-	readonly serviceName: string
-	readonly spanCount: number
-	readonly errorCount: number
-	readonly p95DurationMs: number
-}
-
-/**
- * Per-service totals over the same rows the edges are joined from, so a node's
- * tooltip and the edges around it cannot disagree about the window.
- *
- * Counts `service_map_spans`, which is the four RPC span kinds only — a
- * service's internal spans are not in it. That makes this a count of calls the
- * service made or served, not of everything it recorded; the Services tab's
- * `serviceCatalogQuery` is the entry-point-span answer to a different question.
- */
-export function serviceMapNodeStatsQuery(opts: ServiceMapNodeStatsOpts = {}) {
-	return from(ServiceMapSpans)
-		.select(($) => ({
-			serviceName: $.ServiceName,
-			spanCount: CH.count(),
-			errorCount: CH.countIf($.StatusCode.eq("Error")),
-			p95DurationMs: CH.quantile(0.95)($.Duration).div(1000000),
-		}))
-		.where(($) => [
-			$.OrgId.eq(param.string("orgId")),
-			$.Timestamp.gte(CH.toDateTime(param.dateTimeString("startTime"))),
-			$.Timestamp.lt(CH.toDateTime(param.dateTimeString("endTime"))),
-			opts.deploymentEnv ? envLabel($.DeploymentEnv).eq(opts.deploymentEnv) : undefined,
-		])
-		.groupBy("serviceName")
-		.orderBy(["spanCount", "desc"])
-		.limit(opts.limit ?? 200)
-		.format("JSON")
 }
 
 // Service ↔ database edges
@@ -662,7 +553,7 @@ function serviceDbEdgesQueryBase(opts: { serviceName?: string; deploymentEnv?: s
 			opts.serviceName ? $.ServiceName.eq(opts.serviceName) : undefined,
 			...interiorConditions($.Hour),
 			$.DbSystem.neq(""),
-			opts.deploymentEnv ? envLabel($.DeploymentEnv).eq(opts.deploymentEnv) : undefined,
+			opts.deploymentEnv ? $.DeploymentEnv.eq(opts.deploymentEnv) : undefined,
 		])
 		.groupBy("sourceService", "dbSystem", "dbNamespace")
 
@@ -712,7 +603,9 @@ function serviceDbEdgesQueryBase(opts: { serviceName?: string; deploymentEnv?: s
 			dbNamespace: $.dbNamespace,
 			callCount: CH.sum($.bucketCallCount),
 			errorCount: CH.sum($.bucketErrorCount),
-			avgDurationMs: CH.sum($.bucketDurationSumMs).div(CH.nullIf(CH.sum($.bucketCallCount), CH.lit(0))),
+			avgDurationMs: finiteOrZero(
+				CH.sum($.bucketDurationSumMs).div(CH.nullIf(CH.sum($.bucketCallCount), CH.lit(0))),
+			),
 			maxDurationMs: CH.max_($.bucketMaxDurationMs),
 			p95DurationMs: edgeP95Expr,
 			estimatedSpanCount: CH.sum($.bucketEstimatedSpanCount),
@@ -894,7 +787,7 @@ const signaturesHourlyFilters = (
 	// matches pre-migration rows that still carry the raw Hyperdrive config ID.
 	params.dbNamespace !== undefined ? collapseHyperdriveNs($.DbNamespace).eq(params.dbNamespace) : undefined,
 	params.sourceService ? $.ServiceName.eq(params.sourceService) : undefined,
-	params.deploymentEnv ? envLabel($.DeploymentEnv).eq(params.deploymentEnv) : undefined,
+	params.deploymentEnv ? $.DeploymentEnv.eq(params.deploymentEnv) : undefined,
 ]
 
 // Filters for the raw `traces` branch. `scope` selects the time window:
@@ -1255,7 +1148,7 @@ export function serviceExternalEdgesSQL(
 			$.ServiceName.eq(opts.serviceName),
 			...interiorConditions($.Hour),
 			$.TargetName.neq(""),
-			opts.deploymentEnv ? envLabel($.DeploymentEnv).eq(opts.deploymentEnv) : undefined,
+			opts.deploymentEnv ? $.DeploymentEnv.eq(opts.deploymentEnv) : undefined,
 		])
 		.groupBy("sourceService", "targetType", "targetSystem", "targetName")
 
@@ -1343,7 +1236,7 @@ export function serviceExternalEdgesSQL(
 			$.Hour.gte(startHour),
 			$.Hour.lt(endHour),
 			$.ParentServerAddress.neq(""),
-			opts.deploymentEnv ? envLabel($.DeploymentEnv).eq(opts.deploymentEnv) : undefined,
+			opts.deploymentEnv ? $.DeploymentEnv.eq(opts.deploymentEnv) : undefined,
 		])
 		.groupBy("ParentServerAddress")
 
@@ -1364,7 +1257,9 @@ export function serviceExternalEdgesSQL(
 			targetName: $.targetName,
 			callCount: CH.sum($.bucketCallCount),
 			errorCount: CH.sum($.bucketErrorCount),
-			avgDurationMs: CH.sum($.bucketDurationSumMs).div(CH.nullIf(CH.sum($.bucketCallCount), CH.lit(0))),
+			avgDurationMs: finiteOrZero(
+				CH.sum($.bucketDurationSumMs).div(CH.nullIf(CH.sum($.bucketCallCount), CH.lit(0))),
+			),
 			maxDurationMs: CH.max_($.bucketMaxDurationMs),
 			p95DurationMs: edgeP95Expr,
 			estimatedSpanCount: CH.sum($.bucketEstimatedSpanCount),
@@ -1433,7 +1328,7 @@ export function servicePlatformsSQL(
 			$.Hour.gte(CH.toStartOfHour(CH.toDateTime(param.dateTimeString("startTime")))),
 			$.Hour.lte(param.dateTimeSeconds("endTime")),
 			$.ServiceName.neq(""),
-			opts.deploymentEnv ? envLabel($.DeploymentEnv).eq(opts.deploymentEnv) : undefined,
+			opts.deploymentEnv ? $.DeploymentEnv.eq(opts.deploymentEnv) : undefined,
 		])
 		.groupBy("serviceName")
 		.limit(500)

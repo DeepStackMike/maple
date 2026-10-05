@@ -16,6 +16,7 @@
  *   dropping data from users who never intended to opt out. Apps can turn it on.
  */
 
+import { addUrlSanitizer, resetUrlSanitizersForTests } from "../platform/url-privacy"
 import { configureVisitorCookie } from "./visitor"
 
 export interface PrivacyOptions {
@@ -39,6 +40,13 @@ export interface PrivacyOptions {
 	readonly captureUserEmail?: boolean
 	/** Treat `navigator.doNotTrack` like GPC. Default false. */
 	readonly respectDoNotTrack?: boolean
+	/**
+	 * Rewrite every URL before it leaves the page (session entry/exit URLs,
+	 * event rows, network events, replay meta events, span attributes). Runs
+	 * after the built-in redaction of credential-shaped query and fragment
+	 * parameters (`token`, `code`, `access_token`, …).
+	 */
+	readonly sanitizeUrl?: (url: string) => string
 }
 
 type ConsentListener = (allowed: boolean) => void
@@ -76,6 +84,24 @@ function consentState(): ConsentState {
 	return fresh
 }
 
+/** When consent was last withdrawn, on any page of this origin. Persisted: the grant time resets every load. */
+const REVOKED_AT_KEY = "maple-consent-revoked-at"
+
+function writeRevokedAt(at: number): void {
+	try {
+		localStorage.setItem(REVOKED_AT_KEY, String(at))
+	} catch {}
+}
+
+/** Epoch ms of the last consent withdrawal on this origin, 0 if never. Data kept from before it must not be sent. */
+export function consentRevokedAt(): number {
+	try {
+		return Number(localStorage.getItem(REVOKED_AT_KEY)) || 0
+	} catch {
+		return 0
+	}
+}
+
 function updateEffectiveConsent(previous: boolean): void {
 	const state = consentState()
 	const allowed = hasConsent()
@@ -110,13 +136,17 @@ export function configurePrivacy(options: PrivacyOptions | undefined): void {
 		crossSubdomainCookie: options?.crossSubdomainCookie,
 		cookieDomain: options?.cookieDomain,
 	})
+	if (options?.sanitizeUrl) addUrlSanitizer(options.sanitizeUrl)
 	updateEffectiveConsent(previous)
 }
 
 /** Record the user's consent decision. No-op unless `requireConsent` is set. */
 export function setConsent(nextGranted: boolean): void {
 	const previous = hasConsent()
-	consentState().granted = nextGranted
+	const state = consentState()
+	// Only the user taking consent back is a revoke; a page starting without it is not.
+	if (state.granted && !nextGranted) writeRevokedAt(Date.now())
+	state.granted = nextGranted
 	updateEffectiveConsent(previous)
 }
 
@@ -167,4 +197,5 @@ export function resetConsentForTests(): void {
 	state.respectDoNotTrack = false
 	state.allowedSince = 0
 	state.listeners.clear()
+	resetUrlSanitizersForTests()
 }

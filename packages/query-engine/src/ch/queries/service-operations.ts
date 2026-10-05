@@ -14,16 +14,16 @@
 // unweighted, matching every other raw-Traces query.
 
 import { Schema } from "effect"
-import * as CH from "@maple-dev/clickhouse-builder/expr"
+import * as CH from "@maple-dev/effect-clickhouse/expr"
 import { envLabel } from "./environment"
-import { param } from "@maple-dev/clickhouse-builder"
-import { defineCondFn, from, fromUnion, unionAll, type ColumnAccessor } from "@maple-dev/clickhouse-builder"
+import { param } from "@maple-dev/effect-clickhouse"
+import { defineCondFn, from, fromUnion, unionAll, type ColumnAccessor } from "@maple-dev/effect-clickhouse"
 import { httpDisplaySpanName } from "../../traces-shared"
 import { CHNumber } from "../schema"
 import { ServiceOperationsHourly, ServiceOperationsMinutely, Traces } from "../tables"
 import { nameExclusionCondition, tracesBaseWhereConditions } from "./query-helpers"
 import { edgeCondition, hourGrain, interiorConditions, minuteGrain } from "./rollup-splice"
-import * as T from "@maple-dev/clickhouse-builder/types"
+import * as T from "@maple-dev/effect-clickhouse/types"
 
 export interface ServiceOperationsSummaryOpts {
 	serviceName: string

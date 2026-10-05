@@ -14,8 +14,8 @@
 // `CHNumber` in the caller's `rowSchema` — ClickHouse serializes 64-bit integers as JSON strings, so
 // a BYO-ClickHouse org otherwise fails to decode.
 
-import * as CH from "@maple-dev/clickhouse-builder"
-import { compile, from, fromQuery, param, type CompiledQuery } from "@maple-dev/clickhouse-builder"
+import * as CH from "@maple-dev/effect-clickhouse"
+import { compile, from, fromQuery, param, type CompiledQuery } from "@maple-dev/effect-clickhouse"
 import { Schema, Effect } from "effect"
 import {
 	AttributeKeysHourly,
@@ -31,8 +31,8 @@ import {
 } from "@maple/query-engine/ch/tables"
 import { CHNumber } from "@maple/query-engine/ch/schema"
 import { hourFloor } from "@maple/query-engine/ch/query-helpers"
-import * as T from "@maple-dev/clickhouse-builder/types"
-import type { QueryBuilderError } from "@maple-dev/clickhouse-builder"
+import * as T from "@maple-dev/effect-clickhouse/types"
+import type { QueryBuilderError } from "@maple-dev/effect-clickhouse"
 
 /** Snaps a window bound to its hour floor so any overlapping hour of an hourly MV contributes. */
 
@@ -277,10 +277,12 @@ export function auditMetricLabelCardinalityQuery(opts: { limit?: number } = {}) 
 
 /** Keys whose *values* name a dependency, where inconsistent spelling fragments a service-map node. */
 export const AUDIT_PEER_KEYS = [
+	"service.peer.name",
 	"peer.service",
 	"db.system",
 	"db.system.name",
 	"messaging.system",
+	"rpc.system.name",
 	"rpc.system",
 ] as const
 
@@ -298,7 +300,7 @@ export const auditPeerValueRowSchema = Schema.Struct({
 
 /**
  * The distinct values behind each dependency-naming key. Case-collision detection (`tinybird` vs
- * `Tinybird`) happens app-side; the query just enumerates. Restricted to five keys, so this is a
+ * `Tinybird`) happens app-side; the query just enumerates. Restricted to seven keys, so this is a
  * bounded read of `attribute_values_hourly` rather than an attribute-value scan.
  */
 export function auditPeerValueInventoryQuery(opts: { limit?: number } = {}) {

@@ -3,14 +3,28 @@ import {
 	parseBoolean,
 	parseNumber,
 	parseWhereClause as parseWhereClauses,
+	quoteWhereValue,
+	type Operator,
+	type ParsedClause,
 } from "@maple/domain/where-clause"
 import { Match } from "effect"
 
-interface AttributeFilterEntry {
+/**
+ * How an attribute filter compares. Absent means equality; `exists` carries an
+ * empty value. `!=`, `!contains` and `!exists` are the same modes with `negated`.
+ */
+export type AttributeMatchMode = "contains" | "exists" | "gt" | "gte" | "lt" | "lte"
+
+interface AttributeFilterEntryLeaf {
 	key: string
 	value: string
-	matchMode?: FilterMatchMode
+	matchMode?: AttributeMatchMode
 	negated?: boolean
+}
+
+interface AttributeFilterEntry extends AttributeFilterEntryLeaf {
+	/** The other members of an `(a OR b)` group; the entry matches when any member does. */
+	or?: readonly AttributeFilterEntryLeaf[]
 }
 
 export interface TracesSearchLike {
@@ -65,32 +79,90 @@ export interface ParsedWhereClauseFilters {
 	excludedHttpStatusCodes?: string[]
 }
 
-function quoteValue(value: string): string {
-	return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\\"')}"`
+interface AttributeOperator {
+	readonly matchMode?: AttributeMatchMode
+	readonly negated?: true
+}
+
+const ATTRIBUTE_OPERATORS = {
+	"=": {},
+	"!=": { negated: true },
+	contains: { matchMode: "contains" },
+	"!contains": { matchMode: "contains", negated: true },
+	exists: { matchMode: "exists" },
+	"!exists": { matchMode: "exists", negated: true },
+	">": { matchMode: "gt" },
+	">=": { matchMode: "gte" },
+	"<": { matchMode: "lt" },
+	"<=": { matchMode: "lte" },
+} satisfies Record<Operator, AttributeOperator>
+
+const MATCH_MODE_OPERATORS = {
+	contains: ["contains", "!contains"],
+	exists: ["exists", "!exists"],
+	gt: [">", ">"],
+	gte: [">=", ">="],
+	lt: ["<", "<"],
+	lte: ["<=", "<="],
+} as const satisfies Record<AttributeMatchMode, readonly [string, string]>
+
+// Named fields whose search param has a substring match mode.
+const CONTAINS_FIELD_KEYS = new Set([
+	"service.name",
+	"span.name",
+	"deployment.environment",
+	"service.namespace",
+])
+// HTTP method and status compile to an exact attribute match, so they take = and != only.
+const EQUALITY_FIELD_KEYS = new Set(["http.method", "http.status_code"])
+const SCALAR_KEYS = new Set(["has_error", "root_only", "min_duration_ms", "max_duration_ms"])
+
+/** The where-clause operator an attribute filter entry reads back as. */
+export function attributeFilterOperator(entry: Pick<AttributeFilterEntry, "matchMode" | "negated">): string {
+	if (!entry.matchMode) return entry.negated ? "!=" : "="
+	const [positive, negative] = MATCH_MODE_OPERATORS[entry.matchMode]
+	return entry.negated ? negative : positive
+}
+
+/** An attribute filter entry as where-clause text; a group reads back as `(a OR b)`. */
+export function formatAttributeClause(prefix: string, entry: AttributeFilterEntry): string {
+	if (entry.or?.length) {
+		const { or, ...first } = entry
+		return `(${[first, ...or].map((member) => formatAttributeClause(prefix, member)).join(" OR ")})`
+	}
+	const operator = attributeFilterOperator(entry)
+	if (entry.matchMode === "exists") return `${prefix}${entry.key} ${operator}`
+	return `${prefix}${entry.key} ${operator} ${quoteWhereValue(entry.value)}`
 }
 
 export function parseWhereClause(whereClause: string | undefined): {
 	filters: ParsedWhereClauseFilters
-	hasIncompleteClauses: boolean
+	/** One message per clause that was not applied, for the editor to show. */
+	warnings: string[]
 } {
 	if (!whereClause || !whereClause.trim()) {
 		return {
 			filters: { attributeFilters: [], resourceAttributeFilters: [] },
-			hasIncompleteClauses: false,
+			warnings: [],
 		}
 	}
 
-	const { clauses, warnings } = parseWhereClauses(whereClause.trim())
+	const parsedClauses = parseWhereClauses(whereClause.trim(), { orGroups: true })
+	const clauses = parsedClauses.clauses
+	const warnings = parsedClauses.warnings.map((warning) => warning.message)
 
 	let parsed: ParsedWhereClauseFilters = { attributeFilters: [], resourceAttributeFilters: [] }
-	let hasIncompleteClauses = warnings.length > 0
 
-	for (const clause of clauses) {
+	// Takes `parsed` and `warnings` as parameters (shadowing the outer ones) so an
+	// OR group member can be applied alone, with its warnings kept apart.
+	const applyClause = (
+		parsed: ParsedWhereClauseFilters,
+		clause: ParsedClause,
+		warnings: string[],
+	): ParsedWhereClauseFilters => {
 		const key = normalizeKey(clause.key)
-		const isContains = clause.operator === "contains" || clause.operator === "!contains"
-		const isExists = clause.operator === "exists" || clause.operator === "!exists"
-		const isNegated =
-			clause.operator === "!=" || clause.operator === "!contains" || clause.operator === "!exists"
+		const isContains = clause.operator === "contains"
+		const isNegated = clause.operator === "!="
 
 		function setMatchMode(modeKey: string) {
 			if (isContains) {
@@ -99,37 +171,57 @@ export function parseWhereClause(whereClause: string | undefined): {
 			}
 		}
 
-		// Handle attr.* and resource.* prefixes before Match
-		if (key.startsWith("attr.")) {
-			const attributeKey = key.slice(5).trim()
-			if (!attributeKey || parsed.attributeFilters.length >= 5) continue
-			parsed.attributeFilters.push({
+		// Attribute keys are case-sensitive, so they come from the key as typed.
+		const typedKey = (clause.rawKey ?? clause.key).trim()
+		function pushAttribute(target: AttributeFilterEntry[], attributeKey: string, label: string) {
+			if (!attributeKey) {
+				warnings.push(`Missing attribute key ignored: ${label}`)
+				return
+			}
+			if (target.length >= 5) {
+				warnings.push(`Maximum of 5 filters per attribute map; ignoring ${label}`)
+				return
+			}
+			const { matchMode, negated }: AttributeOperator = ATTRIBUTE_OPERATORS[clause.operator]
+			const valueless = matchMode === "exists"
+			target.push({
 				key: attributeKey,
-				value: clause.value,
-				matchMode: isContains ? "contains" : undefined,
-				negated: isNegated || undefined,
+				value: valueless ? "" : clause.value,
+				...(matchMode ? { matchMode } : undefined),
+				...(negated ? { negated } : undefined),
 			})
-			continue
+		}
+
+		if (key.startsWith("attr.")) {
+			pushAttribute(parsed.attributeFilters, typedKey.slice(5).trim(), typedKey)
+			return parsed
 		}
 
 		if (key.startsWith("resource.")) {
-			const resourceKey = key.slice(9).trim()
-			if (!resourceKey || parsed.resourceAttributeFilters.length >= 5) continue
-			parsed.resourceAttributeFilters.push({
-				key: resourceKey,
-				value: clause.value,
-				matchMode: isContains ? "contains" : undefined,
-				negated: isNegated || undefined,
-			})
-			continue
+			pushAttribute(parsed.resourceAttributeFilters, typedKey.slice(9).trim(), typedKey)
+			return parsed
 		}
 
-		// `exists` / `!exists` are only meaningful on attr.* / resource.* keys.
-		// On named fields they're not currently supported — skip to avoid silently
-		// dropping the value into a positive match.
-		if (isExists) {
-			hasIncompleteClauses = true
-			continue
+		const unsupported = (supported: string) => {
+			warnings.push(`${clause.key} supports only ${supported}; ignoring ${clause.operator}`)
+			return parsed
+		}
+
+		// Named fields have an include list and an exclude list, and some a substring
+		// mode. Any other operator would silently turn into an exact match on the
+		// value, so it is reported instead.
+		const isEqualityOperator = clause.operator === "=" || isNegated
+		if (CONTAINS_FIELD_KEYS.has(key) && !isEqualityOperator && !isContains) {
+			unsupported("=, != and contains")
+			return parsed
+		}
+		if (EQUALITY_FIELD_KEYS.has(key) && !isEqualityOperator) {
+			unsupported("= and !=")
+			return parsed
+		}
+		if (SCALAR_KEYS.has(key) && clause.operator !== "=") {
+			unsupported("=")
+			return parsed
 		}
 
 		parsed = Match.value(key).pipe(
@@ -170,7 +262,6 @@ export function parseWhereClause(whereClause: string | undefined): {
 					const current = parsed.excludedHttpMethods ?? []
 					return { ...parsed, excludedHttpMethods: [...current, clause.value] }
 				}
-				setMatchMode("httpMethod")
 				return { ...parsed, httpMethod: clause.value }
 			}),
 			Match.when("http.status_code", () => {
@@ -178,13 +269,12 @@ export function parseWhereClause(whereClause: string | undefined): {
 					const current = parsed.excludedHttpStatusCodes ?? []
 					return { ...parsed, excludedHttpStatusCodes: [...current, clause.value] }
 				}
-				setMatchMode("httpStatusCode")
 				return { ...parsed, httpStatusCode: clause.value }
 			}),
 			Match.when("has_error", () => {
 				const boolValue = parseBoolean(clause.value)
 				if (boolValue === null) {
-					hasIncompleteClauses = true
+					warnings.push(`Invalid ${key} value ignored: ${clause.value}`)
 					return parsed
 				}
 				return { ...parsed, hasError: boolValue === true ? (true as const) : undefined }
@@ -192,7 +282,7 @@ export function parseWhereClause(whereClause: string | undefined): {
 			Match.when("root_only", () => {
 				const boolValue = parseBoolean(clause.value)
 				if (boolValue === null) {
-					hasIncompleteClauses = true
+					warnings.push(`Invalid ${key} value ignored: ${clause.value}`)
 					return parsed
 				}
 				return { ...parsed, rootOnly: boolValue === false ? (false as const) : undefined }
@@ -200,7 +290,7 @@ export function parseWhereClause(whereClause: string | undefined): {
 			Match.when("min_duration_ms", () => {
 				const numeric = parseNumber(clause.value)
 				if (numeric === null) {
-					hasIncompleteClauses = true
+					warnings.push(`Invalid ${key} value ignored: ${clause.value}`)
 					return parsed
 				}
 				return { ...parsed, minDurationMs: numeric }
@@ -208,18 +298,78 @@ export function parseWhereClause(whereClause: string | undefined): {
 			Match.when("max_duration_ms", () => {
 				const numeric = parseNumber(clause.value)
 				if (numeric === null) {
-					hasIncompleteClauses = true
+					warnings.push(`Invalid ${key} value ignored: ${clause.value}`)
 					return parsed
 				}
 				return { ...parsed, maxDurationMs: numeric }
 			}),
-			Match.orElse(() => parsed),
+			// Any other key is a span attribute (`request.id = "x"` means `attr.request.id`).
+			Match.orElse(() => {
+				pushAttribute(parsed.attributeFilters, typedKey, typedKey)
+				return parsed
+			}),
 		)
+		return parsed
+	}
+
+	for (const clause of clauses) parsed = applyClause(parsed, clause, warnings)
+
+	// An `(a OR b)` group: each member goes through `applyClause` on its own, and
+	// must land as exactly one attribute entry on the same map. Named fields
+	// (service, span name, http method, ...) are single-valued params and cannot
+	// be OR-ed.
+	for (const group of parsedClauses.groups) {
+		const label = `(${group.map((c) => c.rawKey ?? c.key).join(" OR ")})`
+		const members: Array<{
+			map: "attributeFilters" | "resourceAttributeFilters"
+			entry: AttributeFilterEntry
+		}> = []
+		for (const clause of group) {
+			const memberWarnings: string[] = []
+			const alone = applyClause(
+				{ attributeFilters: [], resourceAttributeFilters: [] },
+				clause,
+				memberWarnings,
+			)
+			const setsOtherField = Object.entries(alone).some(
+				([field, value]) =>
+					field !== "attributeFilters" &&
+					field !== "resourceAttributeFilters" &&
+					value !== undefined,
+			)
+			const map =
+				alone.attributeFilters.length === 1 && alone.resourceAttributeFilters.length === 0
+					? "attributeFilters"
+					: alone.resourceAttributeFilters.length === 1 && alone.attributeFilters.length === 0
+						? "resourceAttributeFilters"
+						: undefined
+			const entry = map === undefined ? undefined : alone[map][0]
+			if (memberWarnings.length > 0 || setsOtherField || map === undefined || entry === undefined) {
+				members.length = 0
+				warnings.push(`OR group ignored: only attribute filters can be OR-ed: ${label}`)
+				break
+			}
+			members.push({ map, entry })
+		}
+		const [first, ...rest] = members
+		if (first === undefined) continue
+		if (rest.some((m) => m.map !== first.map)) {
+			warnings.push(`OR group ignored: its members mix span and resource attributes: ${label}`)
+			continue
+		}
+		if (parsed[first.map].length >= 5) {
+			warnings.push(`Maximum of 5 filters per attribute map; ignoring ${label}`)
+			continue
+		}
+		parsed = {
+			...parsed,
+			[first.map]: [...parsed[first.map], { ...first.entry, or: rest.map((m) => m.entry) }],
+		}
 	}
 
 	return {
 		filters: parsed,
-		hasIncompleteClauses,
+		warnings,
 	}
 }
 
@@ -232,27 +382,29 @@ export function toWhereClause(filters: ParsedWhereClauseFilters): string | undef
 	}
 
 	if (filters.service) {
-		clauses.push(`service.name ${op("service")} ${quoteValue(filters.service)}`)
+		clauses.push(`service.name ${op("service")} ${quoteWhereValue(filters.service)}`)
 	}
 
 	if (filters.spanName) {
-		clauses.push(`span.name ${op("spanName")} ${quoteValue(filters.spanName)}`)
+		clauses.push(`span.name ${op("spanName")} ${quoteWhereValue(filters.spanName)}`)
 	}
 
 	if (filters.deploymentEnv) {
-		clauses.push(`deployment.environment ${op("deploymentEnv")} ${quoteValue(filters.deploymentEnv)}`)
+		clauses.push(
+			`deployment.environment ${op("deploymentEnv")} ${quoteWhereValue(filters.deploymentEnv)}`,
+		)
 	}
 
 	if (filters.namespace) {
-		clauses.push(`service.namespace ${op("namespace")} ${quoteValue(filters.namespace)}`)
+		clauses.push(`service.namespace ${op("namespace")} ${quoteWhereValue(filters.namespace)}`)
 	}
 
 	if (filters.httpMethod) {
-		clauses.push(`http.method ${op("httpMethod")} ${quoteValue(filters.httpMethod)}`)
+		clauses.push(`http.method = ${quoteWhereValue(filters.httpMethod)}`)
 	}
 
 	if (filters.httpStatusCode) {
-		clauses.push(`http.status_code ${op("httpStatusCode")} ${quoteValue(filters.httpStatusCode)}`)
+		clauses.push(`http.status_code = ${quoteWhereValue(filters.httpStatusCode)}`)
 	}
 
 	if (filters.hasError === true) {
@@ -272,34 +424,30 @@ export function toWhereClause(filters: ParsedWhereClauseFilters): string | undef
 	}
 
 	for (const af of filters.attributeFilters) {
-		const afOp =
-			af.matchMode === "contains" ? (af.negated ? "!contains" : "contains") : af.negated ? "!=" : "="
-		clauses.push(`attr.${af.key} ${afOp} ${quoteValue(af.value)}`)
+		clauses.push(formatAttributeClause("attr.", af))
 	}
 
 	for (const rf of filters.resourceAttributeFilters) {
-		const rfOp =
-			rf.matchMode === "contains" ? (rf.negated ? "!contains" : "contains") : rf.negated ? "!=" : "="
-		clauses.push(`resource.${rf.key} ${rfOp} ${quoteValue(rf.value)}`)
+		clauses.push(formatAttributeClause("resource.", rf))
 	}
 
 	for (const v of filters.excludedServices ?? []) {
-		clauses.push(`service.name != ${quoteValue(v)}`)
+		clauses.push(`service.name != ${quoteWhereValue(v)}`)
 	}
 	for (const v of filters.excludedSpanNames ?? []) {
-		clauses.push(`span.name != ${quoteValue(v)}`)
+		clauses.push(`span.name != ${quoteWhereValue(v)}`)
 	}
 	for (const v of filters.excludedDeploymentEnvs ?? []) {
-		clauses.push(`deployment.environment != ${quoteValue(v)}`)
+		clauses.push(`deployment.environment != ${quoteWhereValue(v)}`)
 	}
 	for (const v of filters.excludedNamespaces ?? []) {
-		clauses.push(`service.namespace != ${quoteValue(v)}`)
+		clauses.push(`service.namespace != ${quoteWhereValue(v)}`)
 	}
 	for (const v of filters.excludedHttpMethods ?? []) {
-		clauses.push(`http.method != ${quoteValue(v)}`)
+		clauses.push(`http.method != ${quoteWhereValue(v)}`)
 	}
 	for (const v of filters.excludedHttpStatusCodes ?? []) {
-		clauses.push(`http.status_code != ${quoteValue(v)}`)
+		clauses.push(`http.status_code != ${quoteWhereValue(v)}`)
 	}
 
 	if (clauses.length === 0) {

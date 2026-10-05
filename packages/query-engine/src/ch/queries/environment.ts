@@ -25,7 +25,7 @@
 // the raw-table fallback. A service that really should be tagged is still
 // untagged; `unknown` makes that visible and filterable instead of invisible.
 
-import * as CH from "@maple-dev/clickhouse-builder/expr"
+import * as CH from "@maple-dev/effect-clickhouse/expr"
 import { deploymentEnvExpr } from "@maple/domain/tinybird/semconv-renames"
 
 /**

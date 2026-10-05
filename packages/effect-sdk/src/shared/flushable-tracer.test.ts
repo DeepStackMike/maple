@@ -205,6 +205,92 @@ describe("makeSpanBuffer anticipated-error classification", () => {
 	)
 })
 
+describe("makeSpanBuffer rendered 5xx responses", () => {
+	// A server span whose handler answered with a plain response — no failure in
+	// the Effect, only the status code the HTTP tracer stamps on the span.
+	const respond = (
+		buffer: ReturnType<typeof makeSpanBuffer>,
+		status: number,
+		kind: "server" | "internal",
+	) =>
+		Effect.annotateCurrentSpan({
+			"http.request.method": "GET",
+			"url.path": "/api/sync/shape",
+			"http.response.status_code": status,
+		}).pipe(Effect.withSpan("http.server GET", { kind }), Effect.provide(buffer.tracerLayer))
+
+	it.effect("records a 5xx on a server span as Error with an exception event", () =>
+		Effect.gen(function* () {
+			const buffer = makeSpanBuffer()
+			yield* respond(buffer, 500, "server")
+			const [span] = buffer.drain()
+			assert.isDefined(span)
+			assert.strictEqual(span!.status.code, 2 /* Error */)
+			assert.strictEqual(span!.status.message, "HTTP 500 (GET /api/sync/shape)")
+			const exception = span!.events.find((event) => event.name === "exception")
+			assert.isDefined(exception)
+			assert.deepStrictEqual(
+				exception!.attributes.find((attribute) => attribute.key === "exception.type")?.value,
+				{ stringValue: "HttpServerErrorResponse" },
+			)
+		}),
+	)
+
+	it.effect("keeps an exception the handler recorded itself instead of relabelling it", () =>
+		Effect.gen(function* () {
+			const buffer = makeSpanBuffer()
+			// A service that names the failure where it renders the response: the
+			// generic type would collapse every such 5xx into one bucket.
+			yield* Effect.currentSpan.pipe(
+				Effect.flatMap((span) =>
+					Effect.sync(() =>
+						span.event("exception", 1n, {
+							"exception.type": "WarehouseQueryError",
+							"exception.message": "Memory limit exceeded",
+						}),
+					),
+				),
+				Effect.andThen(
+					Effect.annotateCurrentSpan({
+						"http.request.method": "GET",
+						"url.path": "/api/sync/shape",
+						"http.response.status_code": 500,
+					}),
+				),
+				Effect.withSpan("http.server GET", { kind: "server" }),
+				Effect.provide(buffer.tracerLayer),
+			)
+			const [span] = buffer.drain()
+			assert.strictEqual(span!.status.code, 2 /* Error */)
+			const exceptions = span!.events.filter((event) => event.name === "exception")
+			assert.strictEqual(exceptions.length, 1)
+			assert.deepStrictEqual(
+				exceptions[0]!.attributes.find((attribute) => attribute.key === "exception.type")?.value,
+				{ stringValue: "WarehouseQueryError" },
+			)
+		}),
+	)
+
+	it.effect("leaves a 4xx server span Ok", () =>
+		Effect.gen(function* () {
+			const buffer = makeSpanBuffer()
+			yield* respond(buffer, 404, "server")
+			const [span] = buffer.drain()
+			assert.strictEqual(span?.status.code, 1 /* Ok */)
+			assert.strictEqual(span?.events.length, 0)
+		}),
+	)
+
+	it.effect("ignores the status code on non-server spans", () =>
+		Effect.gen(function* () {
+			const buffer = makeSpanBuffer()
+			yield* respond(buffer, 503, "internal")
+			const [span] = buffer.drain()
+			assert.strictEqual(span?.status.code, 1 /* Ok */)
+		}),
+	)
+})
+
 describe("makeSpanBuffer restore", () => {
 	it.effect("keeps older failed telemetry and discards newest overflow", () =>
 		Effect.gen(function* () {

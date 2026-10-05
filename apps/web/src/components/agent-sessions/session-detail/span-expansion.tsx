@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState, type ReactNode } from "react"
+import { useCallback, useMemo, useState, type ReactNode } from "react"
 import { Link } from "@tanstack/react-router"
 import { Schema } from "effect"
 
@@ -11,14 +11,7 @@ import { Skeleton } from "@maple/ui/components/ui/skeleton"
 import { formatDuration, formatNumber } from "@maple/ui/lib/format"
 import { cn } from "@maple/ui/lib/utils"
 
-import {
-	CheckIcon,
-	ChevronDownIcon,
-	ChevronRightIcon,
-	CircleWarningIcon,
-	CopyIcon,
-	ExternalLinkIcon,
-} from "@/components/icons"
+import { ChevronDownIcon, ChevronRightIcon, CircleWarningIcon, ExternalLinkIcon } from "@/components/icons"
 import {
 	AttributesSection,
 	CopyableValue,
@@ -33,16 +26,20 @@ import { disabledResultAtom } from "@/lib/services/atoms/disabled-result-atom"
 import { getSpanDetailResultAtom } from "@/lib/services/atoms/warehouse-query-atoms"
 import { formatTimestampInTimezone } from "@/lib/timezone-format"
 import {
+	callMetaLine,
+	classifyAiSpan,
+	formatCost,
+	payload,
+	spanCost,
+	spanFailed,
 	spanMessages,
 	spanToolCalls,
+	spanTtftMs,
 	type SessionToolResults,
 	type SpanMessage,
 	type SpanMessagePart,
 	type SpanToolCall,
-} from "@/lib/agent-sessions/span-detail"
-import { classifyAiSpan, spanFailed, spanTtftMs } from "@/lib/agent-sessions/session-turns"
-import { callMetaLine, formatCost } from "@/lib/agent-sessions/session-summary"
-import { payload } from "@/lib/agent-sessions/session-transcript"
+} from "@maple/agent-sessions"
 import { ClampedText, type ClampLines, firstLine } from "./clamped-text"
 import { toggled, useJsonPayload, useMessageBody, ViewSwitch } from "./payload-view"
 import { Pill } from "./pill"
@@ -178,24 +175,17 @@ function TabButton({
 }
 
 function CopySpanJsonButton({ span }: { span: AiSessionSpan }) {
-	const [copied, setCopied] = useState(false)
-	const timeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined)
-
 	return (
-		<Button
+		<CopyButton
+			value={() => JSON.stringify(span, null, 2)}
+			label="Span JSON"
+			idleLabel="Copy JSON"
+			iconSize={12}
+			timeout={1500}
 			variant="outline"
 			size="sm"
 			className="h-6.5 gap-1.5 text-xs"
-			onClick={() => {
-				void navigator.clipboard?.writeText(JSON.stringify(span, null, 2))
-				setCopied(true)
-				clearTimeout(timeoutRef.current)
-				timeoutRef.current = setTimeout(() => setCopied(false), 1500)
-			}}
-		>
-			{copied ? <CheckIcon size={12} /> : <CopyIcon size={12} />}
-			Copy JSON
-		</Button>
+		/>
 	)
 }
 
@@ -228,6 +218,7 @@ function OpenInTracesLink({ span }: { span: AiSessionSpan }) {
 function MetaStrip({ span }: { span: AiSessionSpan }) {
 	const { effectiveTimezone } = useTimezonePreference()
 	const ttftMs = spanTtftMs(span)
+	const cost = spanCost(span)
 
 	const pairs: readonly (readonly [string, ReactNode])[] = [
 		["provider", span.genAi.providerName],
@@ -244,12 +235,7 @@ function MetaStrip({ span }: { span: AiSessionSpan }) {
 			span.genAi.requestMaxTokens === undefined ? undefined : formatNumber(span.genAi.requestMaxTokens),
 		],
 		["temperature", span.genAi.requestTemperature],
-		[
-			"cost",
-			span.genAi.usageCost === undefined ? undefined : (
-				<span className="text-primary">{formatCost(span.genAi.usageCost)}</span>
-			),
-		],
+		["cost", cost === undefined ? undefined : <span className="text-primary">{formatCost(cost)}</span>],
 	]
 
 	return (
@@ -607,9 +593,7 @@ function PayloadBody({ text, copyLabel }: { text: string; copyLabel: string }) {
 					mono
 				/>
 			</div>
-			{isJson && (
-				<ViewSwitch rendered="json" raw={raw} onRawChange={setRaw} className="self-start" />
-			)}
+			{isJson && <ViewSwitch rendered="json" raw={raw} onRawChange={setRaw} className="self-start" />}
 			<CopyButton value={raw ? text : formatted} label={copyLabel} className="-my-1 shrink-0" />
 		</div>
 	)

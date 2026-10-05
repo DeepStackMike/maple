@@ -1,6 +1,6 @@
-// Local bindings for the shared @maple/ui toolbar family: the refresh button
-// invalidates the `["local", …]` React Query prefix, and the time-range select
-// is bound to local mode's presets.
+// Local bindings for the shared @maple/ui toolbar family: refresh moves the
+// view's time window (or refetches when it is already current), and the range
+// select is bound to local mode's presets.
 
 import { useCallback, useId, useRef, useState } from "react"
 import { useQueryClient } from "@tanstack/react-query"
@@ -13,27 +13,49 @@ import {
 import { Popover, PopoverPopup } from "@maple/ui/components/ui/popover"
 import { CUSTOM_RANGE_OPTION, formatAbsoluteRange, parseCustomRange, TIME_RANGES } from "../lib/time"
 import { CustomRangePanel } from "./custom-range-popover"
+import { cn } from "@maple/ui/lib/utils"
+import { useNewDataSince } from "../hooks/use-local-server-status"
 
 export { Toolbar, ToolbarSearch, ToolbarStat, ToolbarStats } from "@maple/ui/components/toolbar"
 
 /**
- * Manual reload for the active view. Every local hook keys off `["local", …]`,
- * so invalidating that prefix refetches exactly the mounted view's queries
- * (list + facets) — React Query only refetches active observers.
+ * Manual reload for the active view. With a time window, refresh re-anchors it
+ * to now (new query keys, so each query runs once); when the anchor is already
+ * current it refetches the mounted `["local", ...]` queries instead. `since`
+ * (the main query's `dataUpdatedAt`) turns on a "new data" hint once the
+ * server has accepted telemetry after that.
  */
 export function RefreshButton({
 	className,
-	onBeforeRefresh,
+	advance,
+	since = 0,
 }: {
 	className?: string
-	onBeforeRefresh?: () => void
+	advance?: () => boolean
+	since?: number
 }) {
 	const queryClient = useQueryClient()
-	const onRefresh = useCallback(() => {
-		onBeforeRefresh?.()
-		return queryClient.invalidateQueries({ queryKey: ["local"] })
-	}, [onBeforeRefresh, queryClient])
-	return <SharedRefreshButton onRefresh={onRefresh} className={className} />
+	const hasNewData = useNewDataSince(since)
+	const onRefresh = useCallback((): Promise<void> => {
+		if (advance?.()) return Promise.resolve()
+		return queryClient.invalidateQueries({ queryKey: ["local"], refetchType: "active" })
+	}, [advance, queryClient])
+
+	return (
+		<span className={cn("flex items-center gap-1", className)}>
+			{hasNewData ? (
+				<button
+					type="button"
+					onClick={() => void onRefresh()}
+					className="inline-flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-xs font-medium whitespace-nowrap text-primary transition-colors hover:bg-primary/15"
+				>
+					<span className="size-1.5 rounded-full bg-primary" />
+					New data
+				</button>
+			) : null}
+			<SharedRefreshButton onRefresh={onRefresh} />
+		</span>
+	)
 }
 
 const RANGE_LABELS: Record<string, string> = {
@@ -45,7 +67,7 @@ const RANGE_LABELS: Record<string, string> = {
 } satisfies Record<string, string>
 
 /** What an unreadable range key resolves to — the same fallback `resolveRange` uses. */
-const FALLBACK_RANGE_KEY = TIME_RANGES[TIME_RANGES.length - 1].key
+const FALLBACK_RANGE_KEY = TIME_RANGES[0].key
 
 const RANGE_OPTIONS = TIME_RANGES.map((range) => ({
 	key: range.key,
@@ -69,9 +91,8 @@ export function TimeRangeSelect({ value, onChange }: { value: string; onChange: 
 	const anchorRef = useRef<HTMLDivElement>(null)
 	const custom = parseCustomRange(value)
 	// A hand-edited or stale URL can carry a key that is neither. `resolveRange`
-	// answers it with the widest preset, so the control has to show that same
-	// preset — a `<select>` whose value matches no option renders its *first*
-	// one, which had the label saying "1 hour" over a 30-day query.
+	// answers it with the default preset, so the control has to show that same
+	// preset rather than whichever option a `<select>` with no match renders.
 	const known = custom !== null || TIME_RANGES.some((r) => r.key === value)
 	const selected = known ? value : FALLBACK_RANGE_KEY
 

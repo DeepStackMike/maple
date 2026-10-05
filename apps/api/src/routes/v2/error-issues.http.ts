@@ -16,7 +16,7 @@ import type {
 } from "@maple/domain/http/v2"
 import { MapleApiV2, V2CursorInvalid, V2CursorSortMismatch } from "@maple/domain/http/v2"
 import { Effect, Schema } from "effect"
-import { ErrorIssueReadModelsService } from "@/services/errors/ErrorIssueReadModelsService"
+import { ErrorIssueReadModelsService } from "@maple/backend/services/errors/ErrorIssueReadModelsService"
 
 const toV2Actor = (actor: ActorDocument): V2ErrorIssueActor => ({
 	id: actor.id,
@@ -149,6 +149,7 @@ export const HttpV2ErrorIssuesLive = HttpApiBuilder.group(MapleApiV2, "errorIssu
 						deploymentEnv: query.deployment_environment,
 						startTime: query.start_time,
 						endTime: query.end_time,
+						introducedAfter: query.introduced_after,
 						actionable: query.actionable === "true",
 						sort,
 						limit: query.limit ?? 20,

@@ -14,11 +14,13 @@ import {
 	optionalSecret,
 	planetScaleOAuthEnv,
 	plainWithDefault,
+	PRD_LOCKSTEP_REVISION_SERVICES,
 	requiredPlain,
 	selfObservabilityEnv,
 	tinybirdEnv,
 	type WorkerEnv,
 } from "./env.ts"
+import { stageDeploysElectric, stageDeploysIngest } from "./aws/stage.ts"
 
 /**
  * These groups replaced per-worker copies of the same expressions. The parity
@@ -122,13 +124,45 @@ describe("primitives", () => {
 	})
 })
 
+describe("appUrlsEnv", () => {
+	it("defaults the public URLs to the deploy's own hostnames, so the EU instance links to itself", () => {
+		const eu = run(appUrlsEnv({ web: "app.eu.maple.dev", ingest: "ingest.eu.maple.dev" }), {})
+		expect(eu.MAPLE_APP_BASE_URL).toBe("https://app.eu.maple.dev")
+		expect(eu.MAPLE_INGEST_PUBLIC_URL).toBe("https://ingest.eu.maple.dev")
+		// A dev stage has no hostnames and falls back to production's.
+		expect(run(appUrlsEnv({}), {}).MAPLE_APP_BASE_URL).toBe("https://app.maple.dev")
+	})
+
+	it("still lets the environment override a default", () => {
+		const env = { MAPLE_APP_BASE_URL: "https://app.example.test" }
+		expect(run(appUrlsEnv({ web: "app.eu.maple.dev" }), env).MAPLE_APP_BASE_URL).toBe(
+			"https://app.example.test",
+		)
+	})
+})
+
 describe("selfObservabilityEnv", () => {
 	const base = { MAPLE_OTEL_INGEST_KEY: "maple_ak_test" }
+
+	it("derives MAPLE_REGION from the deploy and refuses a provider override", () => {
+		const env = { ...base, MAPLE_REGION: "eu" }
+		expect(run(selfObservabilityEnv({ kind: "prd" }), env).MAPLE_REGION).toBe("us")
+		expect(run(selfObservabilityEnv({ kind: "prd" }, "eu"), env).MAPLE_REGION).toBe("eu")
+	})
+
+	it("stamps the region on the Workers' telemetry resource, whatever the provider says", () => {
+		const env = { ...base, OTEL_RESOURCE_ATTRIBUTES: "maple.region=mars" }
+		expect(run(selfObservabilityEnv({ kind: "prd" }), env).OTEL_RESOURCE_ATTRIBUTES).toBe(
+			"maple.region=us",
+		)
+		expect(run(selfObservabilityEnv({ kind: "prd" }, "eu"), env).OTEL_RESOURCE_ATTRIBUTES).toBe(
+			"maple.region=eu",
+		)
+	})
 
 	it("derives MAPLE_ENVIRONMENT from the stage and refuses a provider override", () => {
 		const env = { ...base, MAPLE_ENVIRONMENT: "production" }
 		expect(run(selfObservabilityEnv({ kind: "pr", prNumber: 42 }), env).MAPLE_ENVIRONMENT).toBe("pr-42")
-		expect(run(selfObservabilityEnv({ kind: "stg" }), env).MAPLE_ENVIRONMENT).toBe("staging")
 		expect(run(selfObservabilityEnv({ kind: "prd" }), env).MAPLE_ENVIRONMENT).toBe("production")
 		expect(run(selfObservabilityEnv({ kind: "dev", name: "x" }), env).MAPLE_ENVIRONMENT).toBe(
 			"development",
@@ -158,7 +192,6 @@ describe("selfObservabilityEnv", () => {
 
 	it("fails when the ingest key is missing", () => {
 		expect(runExit(selfObservabilityEnv({ kind: "prd" }), {})._tag).toBe("Failure")
-		expect(runExit(selfObservabilityEnv({ kind: "stg" }), {})._tag).toBe("Failure")
 		expect(runExit(selfObservabilityEnv({ kind: "pr", prNumber: 7 }), {})._tag).toBe("Failure")
 	})
 
@@ -282,7 +315,7 @@ describe("parity with the pre-refactor per-worker expressions", () => {
 					MAPLE_APP_BASE_URL: env.MAPLE_APP_BASE_URL?.trim() || "https://app.maple.dev",
 					EMAIL_FROM: env.EMAIL_FROM?.trim() || "Maple <notifications@noreply.maple.dev>",
 				}
-				expect(unwrap(run(appUrlsEnv, env))).toEqual(unwrap(old))
+				expect(unwrap(run(appUrlsEnv(), env))).toEqual(unwrap(old))
 			})
 
 			it("selfObservabilityEnv", () => {
@@ -293,10 +326,12 @@ describe("parity with the pre-refactor per-worker expressions", () => {
 				const old = {
 					MAPLE_INGEST_KEY: Redacted.make(oldRequireEnv(env, "MAPLE_OTEL_INGEST_KEY")),
 					...oldOptionalPlain(env, "MAPLE_ENDPOINT"),
-					MAPLE_ENVIRONMENT: "staging",
+					MAPLE_ENVIRONMENT: "production",
+					MAPLE_REGION: "us",
+					OTEL_RESOURCE_ATTRIBUTES: "maple.region=us",
 					...oldOptionalPlain(env, "COMMIT_SHA", env.GITHUB_SHA?.trim()),
 				}
-				expect(unwrap(run(selfObservabilityEnv({ kind: "stg" }), env))).toEqual(unwrap(old))
+				expect(unwrap(run(selfObservabilityEnv({ kind: "prd" }), env))).toEqual(unwrap(old))
 			})
 
 			it("apnsEnv", () => {
@@ -349,5 +384,39 @@ describe("parity with the pre-refactor per-worker expressions", () => {
 		expect(run(planetScaleOAuthEnv, env).PLANETSCALE_OAUTH_TOKEN_INFO_URL).toBe(
 			"https://auth.planetscale.com/tokeninfo",
 		)
+	})
+})
+
+/**
+ * The alert rule this pins lives in the Maple database, not in this repo, so
+ * these assertions are the only thing standing between a stack change and a
+ * rule that silently stops matching production.
+ */
+describe("the prd revision lockstep the skew alert depends on", () => {
+	it("covers exactly the services that deploy together and stamp a revision", () => {
+		// If this fails you changed which services ship in one `alchemy deploy
+		// --stage prd`. Edit the SQL of the "Prod revision skew — a Worker missed
+		// the deploy" rule (2a6e9529-5f73-4478-9fa0-432904ff15c8) to match, THEN
+		// update this list. Out of sync, the rule either pages forever on a
+		// service that no longer ships with the rest, or stops covering one
+		// that does.
+		expect([...PRD_LOCKSTEP_REVISION_SERVICES]).toStrictEqual([
+			"alerting",
+			"maple-ai",
+			"electric-sync",
+			"ingest",
+			"maple-api",
+			"maple-web",
+		])
+	})
+
+	it("only claims lockstep for the stage-gated services prd actually deploys", () => {
+		// `ingest` and `electric-sync` are the two members behind a stage
+		// predicate. Flip either away from prd and it stops tracking the other
+		// three, so it has to leave the list — and the rule's SQL — in the same
+		// change.
+		const prd = { kind: "prd" } as const
+		expect(PRD_LOCKSTEP_REVISION_SERVICES.includes("ingest")).toBe(stageDeploysIngest(prd))
+		expect(PRD_LOCKSTEP_REVISION_SERVICES.includes("electric-sync")).toBe(stageDeploysElectric(prd))
 	})
 })

@@ -183,9 +183,10 @@ describe("range helpers", () => {
 		expect(rangeDurationSeconds("7d")).toBe(604_800)
 	})
 
-	it("falls back to the widest range for an unknown key", () => {
-		expect(rangeDurationSeconds("nonsense")).toBe(rangeDurationSeconds("30d"))
-		expect(rangeWindowLabel(undefined)).toBe("30d")
+	// Unknown keys resolve the way `resolveRange` does: to the default (1h) preset.
+	it("falls back to the default range for an unknown key", () => {
+		expect(rangeDurationSeconds("nonsense")).toBe(rangeDurationSeconds("1h"))
+		expect(rangeWindowLabel(undefined)).toBe("1h")
 	})
 })
 

@@ -26,12 +26,12 @@
 // NOTE ON ENGINE FIDELITY: Workers run on V8 (workerd); Bun runs on JSC. The
 // ABSOLUTE numbers here are JSC's; the RELATIVE marginal cost (extra error class
 // vs. baseline graph) is what settles the argument and is engine-agnostic. For
-// the authoritative V8 startup number, use `worker` mode (it shells out to
-// `wrangler check startup`, which profiles the real worker on workerd).
+// a local workerd startup profile, use `worker` mode. It builds the installed
+// Alchemy-generated entry with Rolldown, then asks Wrangler to profile it.
+// Local profiles are not Cloudflare production CPU measurements.
 
 import { spawnSync } from "node:child_process"
-import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { Predicate, Schema } from "effect"
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi"
@@ -275,7 +275,7 @@ const parseProfile = (path: string, json: boolean) => {
 
 	const ranked = [...byFrame.entries()].sort((a, b) => b[1].self - a[1].self)
 	const idleMs = idleUs / 1000
-	const activeCpuMs = wallMs - idleMs // CPU actually spent executing JS at startup
+	const activeCpuMs = (profile.timeDeltas.reduce((sum, delta) => sum + delta, 0) - idleUs) / 1000 // Sampled active time; exclude unsampled time.
 	const schemaMs = ranked.filter(([, v]) => v.schema).reduce((s, [, v]) => s + v.self, 0) / 1000
 
 	if (json) {
@@ -300,11 +300,12 @@ const parseProfile = (path: string, json: boolean) => {
 	console.log(`\nstartup CPU profile: ${path}\n`)
 	console.log(`  startup phase (wall):     ${wallMs.toFixed(1)} ms  (incl. ${idleMs.toFixed(1)} ms idle)`)
 	console.log(
-		`  active startup CPU:        ${activeCpuMs.toFixed(1)} ms` + `   ← the number 10021 measures`,
+		`  active startup CPU:        ${activeCpuMs.toFixed(1)} ms` +
+			`   (local sampled time, not production CPU)`,
 	)
 	console.log(
 		`  Cloudflare budget:        ${CF_STARTUP_BUDGET_MS} ms` +
-			`  (${((activeCpuMs / CF_STARTUP_BUDGET_MS) * 100).toFixed(1)}% used)`,
+			`  (production upload validation; local timing is not budget utilization)`,
 	)
 	console.log(
 		`  schema/httpapi/domain:    ${schemaMs.toFixed(1)} ms` +
@@ -354,28 +355,40 @@ const runWorker = (explicitProfile: string | undefined, json: boolean) => {
 		return
 	}
 	const since = Date.now() - 1000
-	const outfile = join(process.cwd(), "worker-startup.cpuprofile")
-	// The repo has no wrangler config; startup validation only evaluates module
-	// scope, so a throwaway one naming the entry is enough.
-	const configPath = join(mkdtempSync(join(tmpdir(), "maple-startup-check-")), "wrangler.json")
+	const checkDir = join(process.cwd(), "node_modules", ".cache", "maple-startup-check")
+	const outfile = join(checkDir, "worker-startup.cpuprofile")
+	const root = resolve(process.cwd(), "../..")
+	const build = spawnSync("bun", [resolve(root, "apps/api/scripts/cold-path/build-bundle2.mjs")], {
+		cwd: root,
+		stdio: "inherit",
+		env: { ...process.env, STARTUP: "1", SEO: "0", OUT: checkDir },
+	})
+	if (build.status !== 0) {
+		process.exitCode = 1
+		return
+	}
+	const configPath = join(checkDir, "wrangler.json")
 	writeFileSync(
 		configPath,
 		JSON.stringify({
 			name: "maple-api-startup-check",
-			main: join(process.cwd(), "src", "worker.ts"),
+			main: "./worker.js",
+			find_additional_modules: true,
+			rules: [{ type: "ESModule", globs: ["**/*.js"] }],
 			compatibility_date: "2026-04-08",
 			compatibility_flags: ["nodejs_compat"],
 		}),
 	)
-	console.error("→ running `wrangler check startup` (this builds the worker)…\n")
+	console.error("→ profiling the Alchemy/Rolldown bundle with `wrangler check startup --no-bundle`…\n")
 	// Repo-pinned wrangler (not @latest); deterministic --outfile so we parse the
 	// exact file rather than guessing.
 	const res = spawnSync(
 		"bunx",
-		["wrangler", "check", "startup", "--config", configPath, "--outfile", outfile],
-		{ stdio: "inherit", cwd: process.cwd() },
+		["wrangler", "check", "startup", "--args=--no-bundle", "--config", configPath, "--outfile", outfile],
+		{ stdio: "inherit", cwd: checkDir },
 	)
 	if (res.status !== 0) {
+		process.exitCode = 1
 		console.error(
 			`\nwrangler exited ${res.status ?? "?"}. If it produced a .cpuprofile anyway, parse it with:` +
 				`\n  bun run scripts/bench-startup-cpu.ts parse <file.cpuprofile>`,
@@ -389,6 +402,7 @@ const runWorker = (explicitProfile: string | undefined, json: boolean) => {
 		}
 	})()
 	if (!profile) {
+		process.exitCode = 1
 		console.error(
 			"\nNo fresh .cpuprofile found. wrangler may print a path — parse it directly with `parse <file>`.",
 		)

@@ -1,4 +1,3 @@
-import { DatabaseIcon } from "@maple/ui/components/icons"
 import { LatencyValue } from "@maple/ui/components/latency-value"
 import { ServiceDot } from "@maple/ui/components/service-dot"
 import { Badge } from "@maple/ui/components/ui/badge"
@@ -13,6 +12,8 @@ import {
 	FilterSidebarHeader,
 } from "@maple/ui/components/filters/filter-sidebar"
 import { useLocalServiceList, type ServiceSparkPoint } from "../hooks/use-local-service-catalog"
+import { useRange } from "../hooks/use-range"
+import { useTimeWindow } from "../hooks/use-time-window"
 import {
 	filterServiceRows,
 	formatThroughput,
@@ -24,9 +25,11 @@ import {
 	type ServiceHealth,
 	type ServiceListRow,
 } from "../lib/services-list"
-import { useQueryParams } from "../lib/router"
-import { DEFAULT_RANGE, formatRelativeTime } from "../lib/time"
+import { hrefFor, useQueryParams } from "../lib/router"
+import { formatRelativeTime, WIDEST_RANGE } from "../lib/time"
 import { PageShell } from "../components/page-shell"
+import { LinkRow, RowLink } from "../components/row-link"
+import { SignalEmptyState } from "../components/signal-empty-state"
 import {
 	RefreshButton,
 	TimeRangeSelect,
@@ -35,15 +38,12 @@ import {
 	ToolbarStat,
 	ToolbarStats,
 } from "../components/toolbar"
-import { EmptyState, ErrorState, ListSkeleton } from "../components/view-states"
+import { ErrorState, ListSkeleton } from "../components/view-states"
 
-interface ServicesListViewProps {
-	onSelectService: (serviceName: string) => void
-}
-
-export function ServicesListView({ onSelectService }: ServicesListViewProps) {
+export function ServicesListView() {
 	const [query, setParams] = useQueryParams()
-	const range = query.get("range") || DEFAULT_RANGE
+	const [range, setRange] = useRange()
+	const timeWindow = useTimeWindow(range)
 	const env = query.get("env") || undefined
 	const ns = query.get("ns") || undefined
 	const version = query.get("version") || undefined
@@ -52,13 +52,14 @@ export function ServicesListView({ onSelectService }: ServicesListViewProps) {
 		rawHealth !== undefined && isServiceHealth(rawHealth) ? rawHealth : undefined
 	const search = query.get("q") || undefined
 
-	const list = useLocalServiceList(range)
+	const list = useLocalServiceList(range, timeWindow)
 	const all = list.data?.rows ?? []
 	const filters = { env, ns, version, health, search }
 	const rows = filterServiceRows(all, filters)
 	const facets = serviceListFacets(all, filters)
 	const groups = groupByEnvironment(rows)
-	const hasActiveFilters = !!env || !!ns || !!version || !!health
+	const activeFilterCount = [env, ns, version, health].filter(Boolean).length
+	const hasActiveFilters = activeFilterCount > 0
 
 	const unhealthyCount = rows.filter((row) => row.health === "unhealthy").length
 	const degradedCount = rows.filter((row) => row.health === "degraded").length
@@ -115,34 +116,38 @@ export function ServicesListView({ onSelectService }: ServicesListViewProps) {
 				query={search ?? ""}
 				onSearch={(value) => setParams({ q: value ?? null })}
 				placeholder="Filter by service name…"
+				className="min-w-48 flex-1"
 			/>
-			<ToolbarStats>
+			<ToolbarStats className="shrink-0">
 				<ToolbarStat value={rows.length} label="services" />
 				<ToolbarStat value={unhealthyCount} label="unhealthy" danger />
-				<RefreshButton />
-				<TimeRangeSelect value={range} onChange={(next) => setParams({ range: next })} />
+				<RefreshButton advance={timeWindow.advance} since={list.dataUpdatedAt} />
+				<TimeRangeSelect value={range} onChange={setRange} />
 			</ToolbarStats>
 		</Toolbar>
 	)
 
 	return (
-		<PageShell sidebar={sidebar} toolbar={toolbar}>
+		<PageShell sidebar={sidebar} toolbar={toolbar} activeFilterCount={activeFilterCount}>
 			{list.isPending ? (
 				<ListSkeleton rows={8} />
 			) : list.isError ? (
 				<ErrorState label="services" error={list.error} onRetry={() => list.refetch()} />
 			) : rows.length === 0 ? (
-				<EmptyState
-					icon={<DatabaseIcon />}
-					title={hasActiveFilters || search ? "No matching services" : "No services seen yet"}
-					hint={
-						hasActiveFilters || search
-							? "Try widening the time range or clearing filters."
-							: "Services appear as soon as their traces arrive."
+				<SignalEmptyState
+					signal="traces"
+					noun="services"
+					filtered={hasActiveFilters || !!search}
+					onClearFilters={() =>
+						setParams({ env: null, ns: null, version: null, health: null, q: null })
 					}
+					range={range}
+					onWidenRange={() => setRange(WIDEST_RANGE)}
 				/>
 			) : (
-				<div className="space-y-2 p-4">
+				<div
+					className={cn("space-y-2 p-4", list.isPlaceholderData && "opacity-60 transition-opacity")}
+				>
 					<div className="rounded-md border">
 						{/* Fixed layout: the metric columns hold their widths and the
 						    Service column absorbs the rest, truncating long names, so the
@@ -166,7 +171,7 @@ export function ServicesListView({ onSelectService }: ServicesListViewProps) {
 										environment={environment}
 										rows={group}
 										series={list.data?.series}
-										onSelectService={onSelectService}
+										query={query}
 									/>
 								))}
 							</TableBody>
@@ -203,12 +208,12 @@ function EnvironmentGroup({
 	environment,
 	rows,
 	series,
-	onSelectService,
+	query,
 }: {
 	environment: string
 	rows: readonly ServiceListRow[]
 	series: ReadonlyMap<string, ServiceSparkPoint[]> | undefined
-	onSelectService: (serviceName: string) => void
+	query: URLSearchParams
 }) {
 	return (
 		<>
@@ -234,7 +239,7 @@ function EnvironmentGroup({
 					key={`${row.serviceName}::${row.environment}`}
 					row={row}
 					series={series?.get(row.serviceName)}
-					onSelect={() => onSelectService(row.serviceName)}
+					query={query}
 				/>
 			))}
 		</>
@@ -331,35 +336,30 @@ function DeployCell({ row }: { row: ServiceListRow }) {
 function ServiceRow({
 	row,
 	series,
-	onSelect,
+	query,
 }: {
 	row: ServiceListRow
 	series: readonly ServiceSparkPoint[] | undefined
-	onSelect: () => void
+	query: URLSearchParams
 }) {
 	return (
-		<TableRow
-			tabIndex={0}
-			onClick={onSelect}
-			onKeyDown={(event) => {
-				if (event.key === "Enter" || event.key === " ") {
-					event.preventDefault()
-					onSelect()
-				}
-			}}
+		<LinkRow
 			className={cn(
-				"cursor-pointer border-l-2 border-l-transparent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
+				"border-l-2 border-l-transparent",
 				row.health === "unhealthy" && "border-l-destructive",
 			)}
 		>
 			<TableCell>
-				<span className="flex max-w-full items-center gap-1.5">
+				<RowLink
+					href={hrefFor(`/services/${encodeURIComponent(row.serviceName)}`, query)}
+					className="flex max-w-full items-center gap-1.5"
+				>
 					<ServiceDot serviceName={row.serviceName} />
 					<span className="min-w-0 truncate font-medium" title={row.serviceName}>
 						{row.serviceName}
 					</span>
 					<HealthDot health={row.health} />
-				</span>
+				</RowLink>
 				{row.serviceNamespace !== "" && (
 					<div className="truncate text-xs text-muted-foreground">{row.serviceNamespace}</div>
 				)}
@@ -402,6 +402,6 @@ function ServiceRow({
 			<TableCell>
 				<DeployCell row={row} />
 			</TableCell>
-		</TableRow>
+		</LinkRow>
 	)
 }

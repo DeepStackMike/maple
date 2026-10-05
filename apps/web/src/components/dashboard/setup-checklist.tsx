@@ -1,3 +1,4 @@
+import { getOnboardingSetupHint } from "@/lib/onboarding-intent"
 import { useAuth } from "@clerk/clerk-react"
 import { useNavigate } from "@tanstack/react-router"
 import { toastManager } from "@maple/ui/components/ui/toast"
@@ -28,8 +29,7 @@ export function SetupChecklist() {
 
 function SetupChecklistCard() {
 	const { orgId } = useAuth()
-	const { dismissChecklist, checklistExpanded, setChecklistExpanded, demoDataRequested } =
-		useQuickStart(orgId)
+	const { dismissChecklist, checklistExpanded, setChecklistExpanded, qualifyAnswers } = useQuickStart(orgId)
 
 	const connection = useIngestConnection()
 
@@ -51,15 +51,9 @@ function SetupChecklistCard() {
 						<CodeIcon size={16} />
 					</div>
 					<div className="min-w-0">
-						<p className="text-sm font-medium">
-							{demoDataRequested
-								? "Demo data is in — now connect your real app"
-								: "Connect your app to see real data"}
-						</p>
+						<p className="text-sm font-medium">Connect your app to see real data</p>
 						<p className="text-xs text-muted-foreground">
-							{demoDataRequested
-								? "You're exploring sample services. Send your own telemetry to see your real stack."
-								: "Drop in the snippet and we'll auto-detect your first traces."}
+							{getOnboardingSetupHint(qualifyAnswers.intents)}
 						</p>
 					</div>
 				</button>
@@ -132,7 +126,11 @@ function FirstTraceCelebration({ serviceName, onDismiss }: { serviceName?: strin
 							: "We're seeing your telemetry. Jump in to explore."}
 					</p>
 				</div>
-				<Button size="sm" onClick={handleExplore} className="gap-2 shrink-0 max-sm:order-last max-sm:w-full">
+				<Button
+					size="sm"
+					onClick={handleExplore}
+					className="gap-2 shrink-0 max-sm:order-last max-sm:w-full"
+				>
 					Explore your traces
 					<RocketIcon size={14} />
 				</Button>

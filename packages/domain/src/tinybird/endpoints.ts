@@ -14,8 +14,10 @@ export interface ListTracesOutput {
 	readonly spanCount: number
 	readonly services: readonly string[]
 	readonly rootSpanName: string
+	readonly rootSpanId: string
 	readonly rootSpanKind: string
 	readonly rootSpanStatusCode: string
+	readonly rootSpanStatusMessage: string
 	readonly rootHttpMethod: string
 	readonly rootHttpRoute: string
 	readonly rootHttpStatusCode: string
@@ -418,6 +420,9 @@ export interface ErrorsByTypeParams {
 	limit?: number
 	exclude_spam_patterns?: string
 	root_only?: boolean
+	/** "unexpected" keeps only identities outside `namespace_prefix` plus the 5xx/unexpected-envelope markers. */
+	identity?: string
+	namespace_prefix?: string
 }
 
 // errors_timeseries
@@ -447,6 +452,18 @@ export interface ErrorDetailTracesOutput {
 	readonly services: readonly string[]
 	readonly rootSpanName: string
 	readonly errorMessage: string
+	readonly errorSpanId: string
+	readonly errorSpanName: string
+	readonly errorServiceName: string
+	readonly errorModel: string
+	readonly errorToolName: string
+	readonly errorHttpMethod: string
+	readonly errorHttpRoute: string
+	readonly errorQueryContext: string
+	readonly errorType: string
+	readonly errorLabel: string
+	readonly exceptionType: string
+	readonly exceptionMessage: string
 }
 
 export interface ErrorDetailTracesParams {

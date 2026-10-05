@@ -1,4 +1,5 @@
 import {
+	buildTimeseriesQuerySpec,
 	createQueryDraft,
 	formatFiltersAsWhereClause,
 	formulaLabel,
@@ -9,6 +10,7 @@ import {
 	type QueryBuilderQueryDraft,
 } from "@maple/query-engine/query-builder"
 import type { ListColumnDraft, ListDataSource } from "@/lib/query-builder/list-widget-config"
+import type { ListLogsInput } from "@/api/warehouse/logs"
 import type {
 	TimeRange,
 	ValueUnit,
@@ -17,11 +19,21 @@ import type {
 } from "@/components/dashboard-builder/types"
 import type { LegendPosition } from "@/components/dashboard-builder/config/settings-fields"
 import { STAT_AGGREGATES, type StatAggregate } from "@maple/domain/http"
-import type { FunnelBreakdownBy, FunnelKeyBy, QueryComparisonMode } from "@maple/query-model"
+import {
+	DEFAULT_PATHS_BRANCHES,
+	DEFAULT_PATHS_DEPTH,
+	type FunnelBreakdownBy,
+	type FunnelKeyBy,
+	type FunnelVariant,
+	type PathsDirection,
+	type PathsInclude,
+	toQueryBuilderDataSource,
+	type QueryComparisonMode,
+} from "@maple/query-model"
 import type { FunnelStepDraft } from "@/lib/query-builder/funnel-filters"
 import { DEFAULT_FUNNEL_KEY_BY, DEFAULT_FUNNEL_WINDOW_SECONDS } from "@/components/funnels/definition"
 import type { HeatmapColorScale, HeatmapScaleType } from "@maple/domain/http"
-import { normalizeKey, parseBoolean, parseWhereClause as parseWhereClauses } from "@maple/domain/where-clause"
+import { normalizeKey, parseWhereClause as parseWhereClauses } from "@maple/domain/where-clause"
 
 // Shared widget-builder vocabulary.
 //
@@ -98,6 +110,8 @@ export interface QueryBuilderWidgetState {
 	 * set draws a group-by breakdown as a funnel, exactly as before.
 	 */
 	funnel: FunnelWidgetDraft
+	/** Paths-specific: the anchor and the walk, edited as the widget's query panel. */
+	paths: PathsWidgetDraft
 }
 
 /** What a funnel widget's one query panel reads from. */
@@ -117,9 +131,43 @@ export interface FunnelWidgetDraft {
 	filterClause: string
 	/** `display.funnel.showStepPercent` — the chart's tri-state label mode. */
 	showStepPercent: boolean | undefined
+	/** `display.funnel.variant` — descending bars, or the drop-off view. */
+	variant: FunnelVariant
 	/** Which optional rows the panel shows, mirroring a query panel's add-on bar. */
 	addOns: Record<FunnelAddOnKey, boolean>
 }
+
+export type PathsAddOnKey = "keyBy" | "window" | "include" | "exclude"
+
+/** The paths widget's editor state for its `display.paths` definition block. */
+export interface PathsWidgetDraft {
+	/** The anchor as a step draft; never a session step. */
+	anchor: FunnelStepDraft
+	direction: PathsDirection
+	depth: number
+	branches: number
+	keyBy: FunnelKeyBy
+	windowSeconds: number
+	include: PathsInclude
+	/** Comma-separated names to drop before sequencing, as typed. */
+	excludeText: string
+	filterClause: string
+	addOns: Record<PathsAddOnKey, boolean>
+}
+
+/** A fresh paths draft: an empty event anchor, three steps forward, four branches. */
+export const DEFAULT_PATHS_DRAFT = (): PathsWidgetDraft => ({
+	anchor: { kind: "event", eventName: "" },
+	direction: "after",
+	depth: DEFAULT_PATHS_DEPTH,
+	branches: DEFAULT_PATHS_BRANCHES,
+	keyBy: DEFAULT_FUNNEL_KEY_BY,
+	windowSeconds: DEFAULT_FUNNEL_WINDOW_SECONDS,
+	include: "all",
+	excludeText: "",
+	filterClause: "",
+	addOns: { keyBy: false, window: false, include: false, exclude: false },
+})
 
 /** A fresh funnel draft: the query-set funnel, no steps, the /analytics defaults. */
 export const defaultFunnelDraft = (): FunnelWidgetDraft => ({
@@ -129,12 +177,14 @@ export const defaultFunnelDraft = (): FunnelWidgetDraft => ({
 	windowSeconds: DEFAULT_FUNNEL_WINDOW_SECONDS,
 	filterClause: "",
 	showStepPercent: undefined,
+	variant: "bars",
 	addOns: { keyBy: false, window: false, breakdown: false },
 })
 
 /** Whether the widget is a product-event funnel — fetched from its definition, not its query set. */
-export const isProductEventsFunnel = (state: Pick<QueryBuilderWidgetState, "visualization" | "funnel">): boolean =>
-	state.visualization === "funnel" && state.funnel.source === "product_events"
+export const isProductEventsFunnel = (
+	state: Pick<QueryBuilderWidgetState, "visualization" | "funnel">,
+): boolean => state.visualization === "funnel" && state.funnel.source === "product_events"
 
 /**
  * What a panel type's `buildDataSource` is handed. `base` is the timeseries
@@ -177,7 +227,7 @@ export function inferDisplayUnitForQuery(query: QueryBuilderQueryDraft): ValueUn
 		return undefined
 	}
 
-	if (query.dataSource === "logs") {
+	if (query.dataSource === "logs" || query.dataSource === "product_events") {
 		return "number"
 	}
 
@@ -245,10 +295,7 @@ export function toStatAggregate(value: unknown): StatAggregate {
 
 function normalizeLoadedQuery(raw: QueryBuilderQueryDraft, index: number): QueryBuilderQueryDraft {
 	const base = createQueryDraft(index)
-	const source: QueryBuilderDataSource =
-		raw.dataSource === "traces" || raw.dataSource === "logs" || raw.dataSource === "metrics"
-			? raw.dataSource
-			: base.dataSource
+	const source: QueryBuilderDataSource = toQueryBuilderDataSource(raw.dataSource) ?? base.dataSource
 
 	const shared = {
 		id: raw.id || base.id,
@@ -284,7 +331,9 @@ function normalizeLoadedQuery(raw: QueryBuilderQueryDraft, index: number): Query
 			isMonotonic: metrics?.isMonotonic ?? metrics?.metricType === "sum",
 		}
 	}
-	return source === "logs" ? { ...shared, dataSource: "logs" } : { ...shared, dataSource: "traces" }
+	if (source === "logs") return { ...shared, dataSource: "logs" }
+	if (source === "product_events") return { ...shared, dataSource: "product_events" }
+	return { ...shared, dataSource: "traces" }
 }
 
 export function toSeriesFieldOptions(state: QueryBuilderWidgetState): string[] {
@@ -343,6 +392,14 @@ const TRACES_AGGREGATION_TITLES: Record<string, string> = {
 	apdex: "Apdex",
 } satisfies Record<string, string>
 
+const PRODUCT_EVENTS_AGGREGATION_TITLES = new Map<string, string>([
+	["count", "Count of events"],
+	["sessions", "Sessions with events"],
+	["persons", "Persons with events"],
+	["users", "Users with events"],
+	["visitors", "Visitors with events"],
+])
+
 /**
  * Human-readable fallback title derived from the first visible query, e.g.
  * "Error rate by service.name" or "Count of logs by severity" — so widgets
@@ -367,6 +424,9 @@ export function deriveDefaultWidgetTitle(queries: readonly QueryBuilderQueryDraf
 	}
 	if (query.dataSource === "logs") {
 		return `Count of logs${bySuffix}`
+	}
+	if (query.dataSource === "product_events") {
+		return `${PRODUCT_EVENTS_AGGREGATION_TITLES.get(query.aggregation) ?? query.aggregation}${bySuffix}`
 	}
 	const base = TRACES_AGGREGATION_TITLES[query.aggregation] ?? `${query.aggregation} of traces`
 	return `${base}${bySuffix}`
@@ -467,56 +527,97 @@ export function legacyQueryDraft(params: Record<string, unknown>): QueryBuilderQ
 		: { ...fallbackBase, dataSource: "traces" }
 }
 
-export function buildListEndpointParams(
-	dataSource: ListDataSource,
+/** A `list_logs` column filter: a scalar for `=`, a list for `!=`, and an optional substring mode. */
+interface ListLogsField {
+	readonly include: "service" | "severity" | "deploymentEnv" | "namespace"
+	readonly exclude:
+		| "excludedServices"
+		| "excludedSeverities"
+		| "excludedDeploymentEnvs"
+		| "excludedNamespaces"
+	readonly matchMode?: "deploymentEnvMatchMode" | "namespaceMatchMode"
+}
+
+const LIST_LOGS_FIELDS = new Map<string, ListLogsField>([
+	["service.name", { include: "service", exclude: "excludedServices" }],
+	["severity", { include: "severity", exclude: "excludedSeverities" }],
+	[
+		"deployment.environment",
+		{ include: "deploymentEnv", exclude: "excludedDeploymentEnvs", matchMode: "deploymentEnvMatchMode" },
+	],
+	[
+		"service.namespace",
+		{ include: "namespace", exclude: "excludedNamespaces", matchMode: "namespaceMatchMode" },
+	],
+])
+
+/**
+ * `list_logs` params for a logs list widget's where clause. The endpoint has
+ * column filters only, so an operator or key it cannot express is reported in
+ * `warnings` and left out rather than widened into an equality match.
+ */
+export function buildListLogsParams(
 	whereClause: string,
 	limit: number,
-): Record<string, unknown> {
-	const { clauses } = parseWhereClauses(whereClause)
+): { params: ListLogsInput; warnings: string[] } {
+	const parsed = parseWhereClauses(whereClause)
+	const warnings = parsed.warnings.map((warning) => warning.message)
 	// NOTE: startTime/endTime are injected by useWidgetData from the dashboard
 	// time range — do NOT include them here or they'll clash with interpolation.
-	const params: Record<string, unknown> = { limit } satisfies Record<string, unknown>
+	const included: Partial<Record<ListLogsField["include"] | "search", string>> = {}
+	const excluded: Partial<Record<ListLogsField["exclude"], string[]>> = {}
+	const matchModes: Partial<Record<NonNullable<ListLogsField["matchMode"]>, "contains">> = {}
 
-	if (dataSource === "traces") {
-		const attributeFilters: Array<{ key: string; value: string; matchMode?: string }> = []
-		const resourceAttributeFilters: Array<{ key: string; value: string; matchMode?: string }> = []
+	for (const clause of parsed.clauses) {
+		const key = normalizeKey(clause.key)
+		const typedKey = clause.rawKey ?? clause.key
 
-		for (const clause of clauses) {
-			const key = normalizeKey(clause.key)
-			if (key === "service.name") params.service = clause.value
-			else if (key === "span.name") params.spanName = clause.value
-			else if (key === "has_error") {
-				const b = parseBoolean(clause.value)
-				if (b != null) params.hasError = b
-			} else if (key === "root_only") {
-				const b = parseBoolean(clause.value)
-				if (b != null) params.rootOnly = b
-			} else if (key === "deployment.environment") params.deploymentEnv = clause.value
-			else if (key.startsWith("attr.")) {
-				attributeFilters.push({
-					key: key.slice(5),
-					value: clause.operator !== "exists" ? clause.value : "",
-					matchMode: clause.operator === "contains" ? "contains" : undefined,
-				})
-			} else if (key.startsWith("resource.")) {
-				resourceAttributeFilters.push({
-					key: key.slice(9),
-					value: clause.operator !== "exists" ? clause.value : "",
-					matchMode: clause.operator === "contains" ? "contains" : undefined,
-				})
-			}
+		if (key === "search" || key === "body") {
+			// Body search is a substring match, which is what both spellings mean.
+			if (clause.operator === "=" || clause.operator === "contains") included.search = clause.value
+			else
+				warnings.push(
+					`Logs list filter ${typedKey} supports only = and contains; ignoring ${clause.operator}`,
+				)
+			continue
 		}
 
-		if (attributeFilters.length > 0) params.attributeFilters = attributeFilters
-		if (resourceAttributeFilters.length > 0) params.resourceAttributeFilters = resourceAttributeFilters
-	} else {
-		for (const clause of clauses) {
-			const key = normalizeKey(clause.key)
-			if (key === "service.name") params.service = clause.value
-			else if (key === "severity") params.severity = clause.value
-			else if (key === "search" || key === "body") params.search = clause.value
+		const field = LIST_LOGS_FIELDS.get(key)
+		if (!field) {
+			warnings.push(`Unsupported logs list filter ignored: ${typedKey}`)
+			continue
+		}
+
+		if (clause.operator === "=" || (clause.operator === "contains" && field.matchMode)) {
+			included[field.include] = clause.value
+			if (field.matchMode) {
+				if (clause.operator === "contains") matchModes[field.matchMode] = "contains"
+				else delete matchModes[field.matchMode]
+			}
+		} else if (clause.operator === "!=") {
+			excluded[field.exclude] = [...(excluded[field.exclude] ?? []), clause.value]
+		} else {
+			const supported = field.matchMode ? "=, != and contains" : "= and !="
+			warnings.push(
+				`Logs list filter ${typedKey} supports only ${supported}; ignoring ${clause.operator}`,
+			)
 		}
 	}
 
-	return params
+	return { params: { limit, ...included, ...excluded, ...matchModes }, warnings }
+}
+
+/**
+ * Clauses a list widget's filter cannot apply as written. Logs go through
+ * `list_logs`; the other sources through the query engine's list spec, which
+ * shares the chart builder's clause lowering.
+ */
+export function listWhereClauseWarnings(dataSource: ListDataSource, whereClause: string): string[] {
+	if (dataSource === "logs") return buildListLogsParams(whereClause, 1).warnings
+	return buildTimeseriesQuerySpec({
+		...createQueryDraft(0),
+		dataSource,
+		whereClause,
+		aggregation: "count",
+	}).warnings
 }

@@ -11,9 +11,11 @@ import {
 	isResolvableSha,
 } from "@/components/vcs/commit-sha-hover-card"
 import type { ReleasePoint } from "@/components/vcs/commit-markers/marker-layout"
+import { DocsLink } from "@/components/common/docs-link"
 import { Result, useAtomValue } from "@/lib/effect-atom"
 import { formatNumber } from "@maple/ui/lib/format"
 import { normalizeTimestampInput } from "@/lib/timezone-format"
+import { useTimezonePreference } from "@/hooks/use-timezone-preference"
 import { SectionCard } from "./section-card"
 import { formatRelativeTimeOrDate } from "@maple/ui/lib/time-format"
 
@@ -66,10 +68,10 @@ function deriveDeploys(releases: ReadonlyArray<ReleasePoint>): DeployEntry[] {
 	)
 }
 
-function formatFirstSeenExact(firstSeen: string): string {
+function formatFirstSeenExact(firstSeen: string, timeZone: string): string {
 	const d = new Date(normalizeTimestampInput(firstSeen))
 	if (Number.isNaN(d.getTime())) return firstSeen
-	return `First seen ${d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}`
+	return `First seen ${d.toLocaleString(undefined, { timeZone, dateStyle: "medium", timeStyle: "short" })}`
 }
 
 /**
@@ -129,15 +131,16 @@ function RowFrame({
 }
 
 function RowMeta({ deploy, prefix }: { deploy: DeployEntry; prefix?: React.ReactNode }) {
+	const { effectiveTimezone } = useTimezonePreference()
 	return (
 		<>
 			{prefix}
 			<span className="shrink-0 tabular-nums">{formatNumber(deploy.spanCount)} spans</span>
 			<span
-				title={formatFirstSeenExact(deploy.firstSeen)}
+				title={formatFirstSeenExact(deploy.firstSeen, effectiveTimezone)}
 				className="ml-auto shrink-0 cursor-default font-mono tabular-nums text-muted-foreground/70"
 			>
-				{formatRelativeTimeOrDate(deploy.firstSeen)}
+				{formatRelativeTimeOrDate(deploy.firstSeen, undefined, effectiveTimezone)}
 			</span>
 		</>
 	)
@@ -305,6 +308,9 @@ export function ServiceRecentDeploys({ releases, isLoading = false }: ServiceRec
 							vcs.ref.head.revision
 						</code>{" "}
 						resource attribute.
+					</span>
+					<span className="mt-1">
+						<DocsLink page="github" />
 					</span>
 				</div>
 			) : (

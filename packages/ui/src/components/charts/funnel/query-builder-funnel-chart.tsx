@@ -6,6 +6,7 @@ import { formatNumber, formatValueByUnit } from "../../../lib/format"
 import { asFiniteNumber, pickValueField, toBreakdownRows, type BreakdownRow } from "../_shared/breakdown-rows"
 import { resolveSeriesColors } from "../../../lib/semantic-series-colors"
 import { useContainerSize } from "../../../hooks/use-container-size"
+import { FunnelDropoffChart } from "./funnel-dropoff-chart"
 
 interface Stage extends BreakdownRow {
 	color: string
@@ -113,12 +114,14 @@ function toGroupedStages(
 	return { stages, groups }
 }
 
-export function QueryBuilderFunnelChart({
-	data,
-	className,
-	unit,
-	showStepPercent,
-}: QueryBuilderFunnelChartProps) {
+export function QueryBuilderFunnelChart(props: QueryBuilderFunnelChartProps) {
+	// One registry entry, two drawings: the variant is a display setting on the
+	// same widget, so a funnel switches views without changing its chartId.
+	if (props.variant === "dropoff") return <FunnelDropoffChart {...props} />
+	return <FunnelBarsChart {...props} />
+}
+
+function FunnelBarsChart({ data, className, unit, showStepPercent }: QueryBuilderFunnelChartProps) {
 	const source: ReadonlyArray<Record<string, unknown>> = Array.isArray(data) ? data : EMPTY_ROWS
 
 	const valueField = React.useMemo(() => pickValueField(source), [source])
@@ -164,7 +167,8 @@ export function QueryBuilderFunnelChart({
 							name: group,
 							color: colors.get(group) ?? "",
 							value,
-							widthPct: groupMax > 0 ? Math.max(value > 0 ? BAR_MIN_PCT : 0, value / groupMax) : 0,
+							widthPct:
+								groupMax > 0 ? Math.max(value > 0 ? BAR_MIN_PCT : 0, value / groupMax) : 0,
 							pctOfFirst: groupFirst > 0 ? value / groupFirst : 0,
 						}
 					}),
@@ -314,7 +318,9 @@ export function QueryBuilderFunnelChart({
 									</>
 								) : (
 									<>
-										<span className="text-foreground/90">{fmtValue(stage.value, unit)}</span>
+										<span className="text-foreground/90">
+											{fmtValue(stage.value, unit)}
+										</span>
 										{showShareOfFirst && (
 											<>
 												<span className="px-1 text-muted-foreground/50">·</span>
@@ -348,8 +354,9 @@ export function QueryBuilderFunnelChart({
 												width: `${group.widthPct * 100}%`,
 												backgroundColor: group.color,
 												opacity:
-													(hoverGroup !== null && hoverGroup !== group.name ? 0.35 : 1) *
-													fade,
+													(hoverGroup !== null && hoverGroup !== group.name
+														? 0.35
+														: 1) * fade,
 												transition: "opacity 140ms ease, width 220ms ease",
 											}}
 										/>

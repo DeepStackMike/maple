@@ -4,6 +4,8 @@ const LEVELS = ["log", "info", "warn", "error", "debug"] as const
 type Level = (typeof LEVELS)[number]
 
 const MAX_MESSAGE = 2_000
+/** No array logged into a 2,000-character message needs more elements than this. */
+const MAX_ARRAY_ELEMENTS = 100
 
 /**
  * Capture `console.*` calls as session events. Wraps each method, emits a
@@ -12,21 +14,29 @@ const MAX_MESSAGE = 2_000
  */
 export function installConsoleCapture(emit: Emit): () => void {
 	const original: Partial<Record<Level, (...args: unknown[]) => void>> = {}
+	const wrappers: Partial<Record<Level, (...args: unknown[]) => void>> = {}
+	// Two captures can stack (breadcrumbs and replay). After teardown a wrapper
+	// still inside someone else's chain only forwards.
+	let active = true
 
 	for (const level of LEVELS) {
 		const orig = console[level] as (...args: unknown[]) => void
 		original[level] = orig
-		console[level] = (...args: unknown[]) => {
+		const wrapper = (...args: unknown[]): void => {
 			// Capture must never break the host app's logging.
-			safeEmit(emit, { type: "console", level, message: formatArgs(args) })
+			if (active) safeEmit(emit, { type: "console", level, message: formatArgs(args) })
 			orig.apply(console, args)
 		}
+		wrappers[level] = wrapper
+		console[level] = wrapper as never
 	}
 
 	return () => {
+		active = false
 		for (const level of LEVELS) {
 			const orig = original[level]
-			if (orig) console[level] = orig as never
+			// Only undo our own wrapper: one installed on top of it stays, and keeps working.
+			if (orig && console[level] === wrappers[level]) console[level] = orig as never
 		}
 	}
 }
@@ -37,11 +47,32 @@ function formatArgs(args: unknown[]): string {
 			if (typeof a === "string") return a
 			if (a instanceof Error) return `${a.name}: ${a.message}`
 			try {
-				return JSON.stringify(a)
+				return boundedStringify(a, MAX_MESSAGE) ?? String(a)
 			} catch {
 				return String(a)
 			}
 		})
 		.join(" ")
 	return text.length > MAX_MESSAGE ? `${text.slice(0, MAX_MESSAGE)}…` : text
+}
+
+/**
+ * `JSON.stringify` that stops descending once roughly `budget` characters have
+ * been produced. The message is cut to `MAX_MESSAGE` anyway, and serializing a
+ * whole store object on every `console.log` first was a main-thread cost paid
+ * on the host app's hot path. A replacer returning `undefined` skips a value
+ * without visiting its children, so the walk is bounded by the budget.
+ */
+function boundedStringify(value: unknown, budget: number): string | undefined {
+	let used = 0
+	return JSON.stringify(value, (key, nested: unknown) => {
+		if (used > budget) return undefined
+		used += key.length + (typeof nested === "string" ? nested.length : 4)
+		// An array is walked index by index even when every element is skipped,
+		// so a million-element array is cut down before it is visited.
+		if (Array.isArray(nested) && nested.length > MAX_ARRAY_ELEMENTS) {
+			return nested.slice(0, MAX_ARRAY_ELEMENTS)
+		}
+		return nested
+	})
 }

@@ -8,8 +8,9 @@
  * page stops showing and starts arguing.
  *
  * The fourth pillar ("Your perimeter") absorbs what Raindrop spends a whole
- * security section on. Maple has no SOC 2 and must not imply one, and "you can
- * read the source and run it on your own boxes" is the stronger claim anyway.
+ * security section on. SOC 2 and ISO 27001 are in progress, not held, so nothing
+ * here may imply either; "you can read the source and run it on your own boxes"
+ * is the stronger claim anyway.
  */
 import * as m from "../paraglide/messages.js";
 
@@ -48,7 +49,7 @@ const pillars = [
 						<dt class="mb-3 text-[10px] uppercase tracking-[0.16em] opacity-70">
 							{String(i + 1).padStart(2, "0")} · {pillar.label}
 						</dt>
-						<dd class="font-display text-lg font-semibold leading-snug md:text-xl">{pillar.body}</dd>
+						<dd class="font-display text-lg font-medium leading-snug md:text-xl">{pillar.body}</dd>
 					</div>
 				))
 			}

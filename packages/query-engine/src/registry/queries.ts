@@ -37,6 +37,8 @@ import type {
 	ServiceHealthBaselineRequest,
 	ServiceHealthSnapshotRequest,
 	ServiceOverviewRequest,
+	ReleasesListRequest,
+	ReleaseDetailRequest,
 	WorkloadDetailSummaryRequest,
 	WebAnalyticsSummaryRequest,
 	WebAnalyticsLiveRequest,
@@ -45,9 +47,11 @@ import type {
 	WebAnalyticsPagesRequest,
 	WebAnalyticsEventsRequest,
 	WebAnalyticsBreakdownsRequest,
+	WebAnalyticsAiReferralsRequest,
+	WebAnalyticsAiCrawlersRequest,
 } from "@maple/domain/http"
 import { Match } from "effect"
-import { WEB_ANALYTICS_LIVE_WINDOW_SECONDS } from "@maple/domain/query-engine"
+import { SESSION_LIVE_WINDOW_SECONDS } from "@maple/domain/query-engine"
 import { formatWarehouseDateTime } from "../datetime"
 import { attributeIndexMode, logBodySearchMode } from "../capabilities"
 import * as CH from "../ch"
@@ -56,7 +60,19 @@ import { makeTimeRangeCachePolicy, timeRangeCache } from "../runtime/query-engin
 import { defineQuery } from "./query-definition"
 
 export { logsCount, logsTimeseries } from "./logs"
-export { productEventsFunnel, productEventsFunnelBreakdown, productEventNames } from "./product-events"
+export {
+	productEventsFunnel,
+	productEventsFunnelBreakdown,
+	productEventsFunnelTiming,
+	productEventsFunnelLeavers,
+	productEventsPaths,
+	productEventNames,
+	productEventsForTrace,
+	productEventTraceSamples,
+	productEventsTimeseries,
+	productEventsBreakdown,
+	productEventsList,
+} from "./product-events"
 
 /**
  * Declarative compile, execution, and cache policy. Handlers retain response
@@ -514,6 +530,104 @@ export const workloadDetailSummary = defineQuery({
 		),
 })
 
+// Releases page. The list and the timeline share one payload so the bundle
+// handler forwards it to both; the detail reuses the list query scoped to one
+// service, which is the comparison table.
+export const releasesList = defineQuery({
+	id: "releasesList",
+	profile: "list",
+	cache: timeRangeCache,
+	compile: (payload: ReleasesListRequest, orgId: string) =>
+		CH.compile(
+			CH.releasesListQuery({
+				environments: payload.environments,
+				namespaces: payload.namespaces,
+				serviceNames: payload.services,
+				excludedEnvironments: payload.excludedEnvironments,
+			}),
+			{ orgId, startTime: payload.startTime, endTime: payload.endTime },
+			{ rowSchema: CH.releasesListRowSchema },
+		),
+})
+
+export const releasesTimeline = defineQuery({
+	id: "releasesTimeline",
+	profile: "list",
+	cache: timeRangeCache,
+	compile: (payload: ReleasesListRequest, orgId: string) =>
+		CH.compile(
+			CH.releasesTimelineQuery({
+				environments: payload.environments,
+				namespaces: payload.namespaces,
+				serviceNames: payload.services,
+				excludedEnvironments: payload.excludedEnvironments,
+				bucketSeconds: payload.bucketSeconds,
+			}),
+			{
+				orgId,
+				startTime: payload.startTime,
+				endTime: payload.endTime,
+				bucketSeconds: payload.bucketSeconds,
+			},
+		),
+})
+
+export const releaseVersions = defineQuery({
+	id: "releaseVersions",
+	profile: "list",
+	cache: timeRangeCache,
+	compile: (payload: ReleaseDetailRequest, orgId: string) =>
+		CH.compile(
+			CH.releasesListQuery({
+				serviceName: payload.serviceName,
+				environments: payload.environments,
+				limit: 100,
+			}),
+			{ orgId, startTime: payload.startTime, endTime: payload.endTime },
+			{ rowSchema: CH.releasesListRowSchema },
+		),
+})
+
+export const releaseTimeline = defineQuery({
+	id: "releaseTimeline",
+	profile: "list",
+	cache: timeRangeCache,
+	compile: (payload: ReleaseDetailRequest, orgId: string) =>
+		CH.compile(
+			CH.releasesTimelineQuery({
+				serviceName: payload.serviceName,
+				environments: payload.environments,
+				bucketSeconds: payload.bucketSeconds,
+			}),
+			{
+				orgId,
+				startTime: payload.startTime,
+				endTime: payload.endTime,
+				bucketSeconds: payload.bucketSeconds,
+			},
+		),
+})
+
+export const releaseErrorFingerprints = defineQuery({
+	id: "releaseErrorFingerprints",
+	profile: "list",
+	cache: timeRangeCache,
+	compile: (payload: ReleaseDetailRequest, orgId: string) =>
+		CH.compile(
+			CH.releaseErrorFingerprintsQuery({
+				serviceName: payload.serviceName,
+				environments: payload.environments,
+			}),
+			{
+				orgId,
+				startTime: payload.startTime,
+				endTime: payload.endTime,
+				serviceVersion: payload.commitSha,
+			},
+			{ rowSchema: CH.releaseErrorFingerprintsRowSchema },
+		),
+})
+
 // Bundle subqueries keep distinct ids and minimal payloads to preserve standalone cache keys.
 export const serviceReleases = defineQuery({
 	id: "serviceReleases",
@@ -759,7 +873,7 @@ const webAnalyticsLiveDef = (useProductEvents: boolean) => ({
 		return CH.compile(
 			CH.webAnalyticsLiveQuery({
 				...webAnalyticsFilters(payload, useProductEvents),
-				windowSeconds: WEB_ANALYTICS_LIVE_WINDOW_SECONDS,
+				windowSeconds: SESSION_LIVE_WINDOW_SECONDS,
 			}),
 			{
 				orgId,
@@ -859,6 +973,67 @@ const webAnalyticsBreakdownsDef = (useProductEvents: boolean) => ({
 
 export const webAnalyticsBreakdowns = defineQuery(webAnalyticsBreakdownsDef(true))
 export const webAnalyticsBreakdownsRaw = defineQuery(webAnalyticsBreakdownsDef(false))
+
+const webAnalyticsAiReferralsDef = (useProductEvents: boolean) => ({
+	id: "webAnalyticsAiReferrals" as const,
+	profile: "aggregation" as const,
+	cache: timeRangeCache,
+	compile: (payload: WebAnalyticsAiReferralsRequest, orgId: string) =>
+		CH.compile(
+			CH.webAnalyticsAiReferralsQuery({
+				...webAnalyticsFilters(payload, useProductEvents),
+				bucketSeconds: payload.bucketSeconds,
+			}),
+			{ orgId, startTime: payload.startTime, endTime: payload.endTime },
+		),
+})
+
+export const webAnalyticsAiReferrals = defineQuery(webAnalyticsAiReferralsDef(true))
+export const webAnalyticsAiReferralsRaw = defineQuery(webAnalyticsAiReferralsDef(false))
+
+// The three crawler reads share one request; each is a small scan of `ai_crawler_requests`.
+const aiCrawlerWindow = (payload: WebAnalyticsAiCrawlersRequest, orgId: string) => ({
+	orgId,
+	startTime: payload.startTime,
+	endTime: payload.endTime,
+})
+
+export const webAnalyticsAiCrawlers = defineQuery({
+	id: "webAnalyticsAiCrawlers",
+	profile: "aggregation",
+	cache: timeRangeCache,
+	compile: (payload: WebAnalyticsAiCrawlersRequest, orgId: string) =>
+		CH.compile(
+			CH.webAnalyticsAiCrawlersQuery({ host: payload.host, pagePath: payload.pagePath }),
+			aiCrawlerWindow(payload, orgId),
+		),
+})
+
+export const webAnalyticsAiCrawlerFormats = defineQuery({
+	id: "webAnalyticsAiCrawlerFormats",
+	profile: "aggregation",
+	cache: timeRangeCache,
+	compile: (payload: WebAnalyticsAiCrawlersRequest, orgId: string) =>
+		CH.compile(
+			CH.webAnalyticsAiCrawlerFormatsQuery({ host: payload.host, pagePath: payload.pagePath }),
+			aiCrawlerWindow(payload, orgId),
+		),
+})
+
+export const webAnalyticsAiCrawledPages = defineQuery({
+	id: "webAnalyticsAiCrawledPages",
+	profile: "aggregation",
+	cache: timeRangeCache,
+	compile: (payload: WebAnalyticsAiCrawlersRequest, orgId: string) =>
+		CH.compile(
+			CH.webAnalyticsAiCrawledPagesQuery({
+				host: payload.host,
+				pagePath: payload.pagePath,
+				limit: payload.pagesLimit,
+			}),
+			aiCrawlerWindow(payload, orgId),
+		),
+})
 
 export const podFacets = defineQuery({
 	id: "podFacets",

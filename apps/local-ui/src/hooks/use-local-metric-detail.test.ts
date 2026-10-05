@@ -4,6 +4,7 @@ import {
 	DEFAULT_EXPLORER_OPTIONS,
 	compileMetricRateTimeseriesQuery,
 	compileMetricValueTimeseriesQuery,
+	mergeSeriesPoints,
 } from "./use-local-metric-detail"
 
 const params = {
@@ -24,8 +25,8 @@ describe("metric detail timeseries queries", () => {
 		const { sql } = Effect.runSync(
 			compileMetricValueTimeseriesQuery({ metricType: "gauge", options }, params),
 		)
-		expect(sql).toContain("WITH __series_base AS")
-		expect(sql).toContain("LIMIT 5")
+		expect(sql).toContain("max(dataPointCount) OVER (PARTITION BY groupName)")
+		expect(sql).toContain("WHERE __series_rank <= 5")
 	})
 
 	it("caps the rate timeseries the same way", () => {
@@ -35,8 +36,8 @@ describe("metric detail timeseries queries", () => {
 				params,
 			),
 		)
-		expect(sql).toContain("WITH __series_base AS")
-		expect(sql).toContain("LIMIT 5")
+		expect(sql).toContain("max(dataPointCount) OVER (PARTITION BY groupName)")
+		expect(sql).toContain("WHERE __series_rank <= 5")
 	})
 
 	// A series limit above the chart's own budget would refill the tail the cap
@@ -48,7 +49,7 @@ describe("metric detail timeseries queries", () => {
 				params,
 			),
 		)
-		expect(sql).toContain("LIMIT 60")
+		expect(sql).toContain("WHERE __series_rank <= 60")
 	})
 
 	it("groups by an attribute key and applies the filter row", () => {
@@ -81,5 +82,30 @@ describe("metric detail timeseries queries", () => {
 			),
 		)
 		expect(sql).toContain("Attributes['http.method'] = 'GET'")
+	})
+})
+
+describe("mergeSeriesPoints", () => {
+	// Grouping by an attribute returns one row per service per value, so a
+	// bucket can carry the same series twice.
+	const rows = [
+		{ bucket: "b1", series: "GET", value: 10, count: 1 },
+		{ bucket: "b1", series: "GET", value: 20, count: 3 },
+		{ bucket: "b1", series: "", value: 5, count: 2 },
+	]
+
+	it("adds rates across services", () => {
+		expect(mergeSeriesPoints(rows, true, "(none)")).toEqual([
+			{ bucket: "b1", series: "GET", value: 30 },
+			{ bucket: "b1", series: "(none)", value: 5 },
+		])
+	})
+
+	it("recombines averages as a datapoint-weighted mean", () => {
+		expect(mergeSeriesPoints(rows, false, "(none)")[0]).toEqual({
+			bucket: "b1",
+			series: "GET",
+			value: 17.5,
+		})
 	})
 })

@@ -6,19 +6,19 @@ import { BooleanFromStringParam } from "@/lib/search-params"
 import { useEffectiveTimeRange } from "@/hooks/use-effective-time-range"
 import { DashboardLayout } from "@/components/layout/dashboard-layout"
 import { ErrorsFilterSidebar } from "@/components/errors/errors-filter-sidebar"
+import { ErrorsHub } from "@/components/errors/errors-hub"
+import { PageRefreshProvider } from "@/components/time-range-picker/page-refresh-context"
+import { ReloadControls } from "@/components/time-range-picker/reload-controls"
+import { ActiveFilterChips } from "@maple/ui/components/filters/active-filter-chips"
 import {
 	ERRORS_WINDOW,
-	ErrorsHub,
 	HUB_SORTS,
 	HUB_VIEWS,
 	SEVERITY_FILTERS,
 	type HubSort,
 	type HubView,
 	type SeverityFilter,
-} from "@/components/errors/errors-hub"
-import { PageRefreshProvider } from "@/components/time-range-picker/page-refresh-context"
-import { ReloadControls } from "@/components/time-range-picker/reload-controls"
-import { ActiveFilterChips } from "@maple/ui/components/filters/active-filter-chips"
+} from "@/lib/errors/hub-params"
 import { CLEARED_ERROR_FILTERS, errorFilterChips, hasErrorFilters } from "@/lib/errors/error-filter-chips"
 
 /**
@@ -86,10 +86,7 @@ function ErrorsContent() {
 				</DashboardLayout.Filters>
 				<DashboardLayout.Content>
 					<DashboardLayout.Sticky>
-						<DashboardLayout.Header
-							title="Errors"
-							description="Every error fingerprint, with what it is doing and who is on it."
-						>
+						<DashboardLayout.Header title="Errors">
 							<ReloadControls />
 						</DashboardLayout.Header>
 					</DashboardLayout.Sticky>

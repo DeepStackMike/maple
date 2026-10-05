@@ -4,8 +4,9 @@ import { CurrentTenant } from "@maple/domain/http"
 import { MapleApiV2, V2InsufficientPermissions } from "@maple/domain/http/v2"
 import type { V2IngestKeys } from "@maple/domain/http/v2"
 import { Effect } from "effect"
-import { OrgIngestKeysService } from "@/services/org/OrgIngestKeysService"
-import { requireAdmin } from "@/services/auth/auth"
+import { recordHttpAudit } from "@maple/backend/services/audit/AuditLogService"
+import { OrgIngestKeysService } from "@maple/backend/services/org/OrgIngestKeysService"
+import { requireAdmin } from "@maple/backend/services/auth/auth"
 
 const adminOnly = (action: string) => () =>
 	V2InsufficientPermissions.make(`Only org admins can ${action} ingest keys`)
@@ -37,6 +38,9 @@ export const HttpV2IngestKeysLive = HttpApiBuilder.group(MapleApiV2, "ingestKeys
 					const tenant = yield* CurrentTenant.Context
 					yield* requireAdmin(tenant.roles, adminOnly("roll"))
 					const keys = yield* ingestKeys.rerollPublic(tenant.orgId, tenant.userId)
+					yield* recordHttpAudit("ingest_key.rolled", {
+						metadata: { key_type: "public" },
+					})
 
 					return toV2IngestKeys(keys)
 				}),
@@ -46,6 +50,9 @@ export const HttpV2IngestKeysLive = HttpApiBuilder.group(MapleApiV2, "ingestKeys
 					const tenant = yield* CurrentTenant.Context
 					yield* requireAdmin(tenant.roles, adminOnly("roll"))
 					const keys = yield* ingestKeys.rerollPrivate(tenant.orgId, tenant.userId)
+					yield* recordHttpAudit("ingest_key.rolled", {
+						metadata: { key_type: "private" },
+					})
 
 					return toV2IngestKeys(keys)
 				}),

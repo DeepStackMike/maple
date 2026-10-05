@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it } from "bun:test"
 import { Effect, Exit, Schema } from "effect"
 import { FetchHttpClient } from "effect/unstable/http"
-import { encodePublicId } from "@maple/domain/http/v2"
 import * as Remote from "./remote-ops"
 import { makeV2Client, toV2Timestamp } from "./v2-client"
 
@@ -15,14 +14,9 @@ import { makeV2Client, toV2Timestamp } from "./v2-client"
 // So the rule here: assert the OUTBOUND request. URL, method, and body shape
 // are the contract with the server, and they are what drifts.
 //
-// Two mechanics matter for the harness itself:
-//
-//  - Plain awaited tests, not `it.effect`. The stub is global state, and
-//    overlapping test fibers let one test's stub answer another's request.
-//  - The stub is installed ONCE, at module scope, with a swappable responder.
-//    `FetchHttpClient` captures `globalThis.fetch` when the client is first
-//    built, so reassigning it per test only ever affects whichever test ran
-//    first — every later test's request lands in the first test's recorder.
+// Run plain awaited tests because the recorder and responder are shared within
+// this file. Supply the fetch stub through Effect's service context: a global
+// replacement depends on whether another suite has already built an HTTP client.
 
 interface CapturedRequest {
 	readonly url: string
@@ -62,8 +56,6 @@ const fetchStub = Object.assign(
 	{ preconnect: globalThis.fetch.preconnect },
 ) satisfies typeof fetch
 
-globalThis.fetch = fetchStub
-
 const stubV2 = (respond: (url: string) => StubResponse) => {
 	responder = respond
 	return requests
@@ -73,6 +65,7 @@ const RANGE = { startTime: "2026-08-15 12:00:00", endTime: "2026-08-15 13:00:00"
 
 const v2Client = makeV2Client("https://api.maple.test", "maple_ak_testtoken").pipe(
 	Effect.provide(FetchHttpClient.layer),
+	Effect.provideService(FetchHttpClient.Fetch, fetchStub),
 )
 
 const listEnvelope = (data: ReadonlyArray<unknown>) => ({
@@ -81,45 +74,6 @@ const listEnvelope = (data: ReadonlyArray<unknown>) => ({
 	has_more: false,
 	next_cursor: null,
 })
-
-const ISSUE_ID = encodePublicId("iss", "018f2b3c-4d5e-6f70-8192-a3b4c5d6e7f8")
-
-/** A full `V2ErrorIssue` — the client decodes the response, so a partial stub fails. */
-const errorIssue = {
-	id: ISSUE_ID,
-	object: "error_issue",
-	kind: "error",
-	fingerprint_hash: "12345",
-	service_name: "api",
-	exception_type: "TypeError",
-	exception_message: "boom",
-	error_label: "TypeError: boom",
-	top_frame: "src/index.ts:12",
-	workflow_state: "triage",
-	priority: 1,
-	severity: null,
-	severity_source: null,
-	source_ref: null,
-	assigned_actor: null,
-	lease_holder: null,
-	lease_expires_at: null,
-	claimed_at: null,
-	notes: null,
-	first_seen_at: "2026-08-15T12:00:00.000Z",
-	last_seen_at: "2026-08-15T12:30:00.000Z",
-	occurrence_count: 3,
-	resolved_at: null,
-	last_resolved_at: null,
-	last_regressed_at: null,
-	regression_count: 0,
-	resolved_versions: [],
-	snooze_until: null,
-	archived_at: null,
-	has_open_incident: false,
-	comment_count: 0,
-	open_pull_request_count: 0,
-	merged_pull_request_count: 0,
-}
 
 beforeEach(() => {
 	requests = []
@@ -286,69 +240,6 @@ describe("remote-ops request shapes", () => {
 				"p99Duration",
 			].sort(),
 		)
-	})
-
-	it("errorDetail resolves a fingerprint through /v2/error_issues", async () => {
-		const traceId = "7f3a4b5c6d7e8f901234567890abcdef"
-		const requests = stubV2((url) => {
-			if (url.includes(`/v2/error_issues/${ISSUE_ID}`)) {
-				return {
-					...errorIssue,
-					timeseries: [{ bucket: "2026-08-15T12:00:00.000Z", count: 3 }],
-					sample_traces: [
-						{
-							trace_id: traceId,
-							span_id: "0123456789abcdef",
-							service_name: "api",
-							timestamp: "2026-08-15T12:30:00.000Z",
-							exception_message: "boom",
-							duration_micros: 1500,
-						},
-					],
-					incidents: [],
-					environments: [],
-				}
-			}
-			if (url.includes("/v2/error_issues")) return listEnvelope([errorIssue])
-			if (url.includes("/logs/search")) return listEnvelope([])
-			return {
-				id: traceId,
-				object: "trace",
-				start_time: "2026-08-15T12:30:00.000Z",
-				end_time: "2026-08-15T12:30:02.000Z",
-				duration_ms: 2000,
-				span_count: 3,
-				service_count: 2,
-				truncated: false,
-				spans: [],
-			}
-		})
-		const result = await Effect.runPromise(
-			Effect.flatMap(v2Client, (v2) =>
-				Remote.errorDetail(v2, { fingerprintHash: "12345", range: RANGE, limit: 5 }),
-			),
-		)
-
-		const lookup = new URL(requests[0]!.url)
-		expect(lookup.pathname).toBe("/v2/error_issues")
-		expect(lookup.searchParams.get("fingerprint_hash")).toBe("12345")
-		// The lookup is unwindowed on purpose — a fingerprint is an identity, and
-		// the list's window filters triage activity, not the events asked about.
-		expect(lookup.searchParams.get("start_time")).toBeNull()
-		expect(new URL(requests[1]!.url).searchParams.get("sample_limit")).toBe("5")
-		expect(result.traces[0]).toMatchObject({ traceId, spanCount: 3, errorMessage: "boom" })
-		expect(result.timeseries).toEqual([{ bucket: "2026-08-15T12:00:00.000Z", count: 3 }])
-	})
-
-	it("errorDetail says what remote mode cannot see when no issue matches", async () => {
-		stubV2(() => listEnvelope([]))
-		const exit = await Effect.runPromise(
-			Effect.flatMap(v2Client, (v2) =>
-				Effect.exit(Remote.errorDetail(v2, { fingerprintHash: "12345", range: RANGE })),
-			),
-		)
-
-		expect(Exit.isFailure(exit)).toBe(true)
 	})
 })
 

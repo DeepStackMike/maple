@@ -25,9 +25,9 @@
 // row schemas are built from `CHNumber` — compile with them or BYO-CH orgs get
 // arithmetic over strings.
 
-import * as CH from "@maple-dev/clickhouse-builder/expr"
+import * as CH from "@maple-dev/effect-clickhouse/expr"
 import { envLabel } from "./environment"
-import { from, param, unionAll, type CHUnionQuery } from "@maple-dev/clickhouse-builder"
+import { from, param, unionAll, type CHUnionQuery } from "@maple-dev/effect-clickhouse"
 import { Logs, ServiceOperationsMinutely, ServiceOverviewSpans } from "../tables"
 
 export interface ServiceLivenessOutput {
