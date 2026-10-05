@@ -17,6 +17,7 @@ import {
 	useLocalLogHistogram,
 	useLocalLogs,
 	useLocalLogSeverities,
+	logHistogramBucketSeconds,
 	type LogFilters,
 } from "../hooks/use-local-logs"
 import { useLocalLogServices } from "../hooks/use-local-log-services"
@@ -28,6 +29,7 @@ import {
 	formatLocalTimestamp,
 	formatUtcTitle,
 	parseCustomRange,
+	resolveRangeWindow,
 	WIDEST_RANGE,
 } from "../lib/time"
 import {
@@ -41,7 +43,7 @@ import { LogDetailSheet } from "../components/log-detail-sheet"
 import { HighlightedText } from "../components/highlighted-text"
 import { PageShell } from "../components/page-shell"
 import { SignalEmptyState } from "../components/signal-empty-state"
-import { LogSeverityHistogram } from "../components/log-severity-histogram"
+import { EmptyLogVolumeStrip, LogSeverityHistogram } from "../components/log-severity-histogram"
 import { Toolbar, ToolbarSearch, ToolbarStats, TimeRangeSelect, RefreshButton } from "../components/toolbar"
 import { ErrorState, ListSkeleton } from "../components/view-states"
 
@@ -178,11 +180,16 @@ export function LogsView() {
 	)
 
 	const volume = histogram.data ?? EMPTY_LOG_HISTOGRAM
+	// The window as asked for (unpadded), for the empty strip's baseline labels.
+	const requestedWindow = resolveRangeWindow(range, timeWindow.anchorMs)
 
 	return (
 		<PageShell sidebar={sidebar} toolbar={toolbar} activeFilterCount={activeFilterCount}>
 			<div className="flex h-full min-h-0 flex-col">
-				{volume.buckets.length > 0 ? (
+				{/* Hidden only until the first answer: once the histogram has
+				    spoken, an empty window keeps the strip's height as a silhouette
+				    rather than collapsing and moving the list under the pointer. */}
+				{histogram.data ? (
 					<div className="shrink-0 border-b px-4 pb-1 pt-3">
 						<div className="mb-1 flex items-baseline gap-2">
 							{/* The count is summed from the very buckets drawn below it,
@@ -206,11 +213,20 @@ export function LogsView() {
 								</button>
 							) : null}
 						</div>
-						<LogSeverityHistogram
-							histogram={volume}
-							stale={histogram.isFetching}
-							onZoomToBucket={zoomToBucket}
-						/>
+						{volume.total > 0 && volume.buckets.length > 0 ? (
+							<LogSeverityHistogram
+								histogram={volume}
+								stale={histogram.isFetching}
+								onZoomToBucket={zoomToBucket}
+							/>
+						) : (
+							<EmptyLogVolumeStrip
+								startMs={requestedWindow.startMs}
+								endMs={requestedWindow.endMs}
+								bucketSeconds={logHistogramBucketSeconds(timeWindow.bounds)}
+								stale={histogram.isFetching}
+							/>
+						)}
 					</div>
 				) : null}
 

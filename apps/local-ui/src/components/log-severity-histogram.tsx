@@ -302,3 +302,145 @@ function anchorTooltip(columnX: number, width: number): { left: number } | { rig
 	const GAP = 10
 	return columnX < width / 2 ? { left: columnX + GAP } : { right: width - columnX + GAP }
 }
+
+/** Number of time labels along the empty strip's baseline. */
+const EMPTY_STRIP_TICKS = 5
+
+/** Ghost columns behind the empty strip's caption: a silhouette of the histogram, not data. */
+const EMPTY_STRIP_BARS = 64
+
+/**
+ * The severities the empty strip's legend names, in the stacking order the real
+ * histogram uses (`orderBySeverity`), so the caption describes the chart that
+ * will replace it.
+ */
+const EMPTY_STRIP_LEGEND = ["INFO", "WARN", "ERROR", "DEBUG", "TRACE"] as const
+
+/**
+ * Deterministic ghost columns (heights as a fraction of the plot) so the
+ * silhouette is the same on every render — a random one would flicker like it
+ * was loading. Two slow sine waves give a soft, plausibly log-like contour, and
+ * each column is split into severity slices bottom-up the way the real strip
+ * stacks them: mostly info, a thin warn band, an occasional error cap. Ported
+ * from the hosted volume chart's empty state.
+ */
+const EMPTY_STRIP_COLUMNS = Array.from({ length: EMPTY_STRIP_BARS }, (_, i) => {
+	const t = i / (EMPTY_STRIP_BARS - 1)
+	const wave = 0.5 + 0.3 * Math.sin(t * Math.PI * 3.1 + 0.8) + 0.2 * Math.sin(t * Math.PI * 7.3 + 2.1)
+	const total = 0.18 + wave * 0.45
+	const warn = total * (0.08 + 0.1 * (0.5 + 0.5 * Math.sin(t * Math.PI * 5.7 + 1.3)))
+	// Errors cluster: a few columns carry a cap, most carry none.
+	const errorPulse = Math.max(0, Math.sin(t * Math.PI * 9.4 + 0.4) - 0.55)
+	const error = total * errorPulse * 0.5
+	return [
+		{ severity: "INFO", height: total - warn - error },
+		{ severity: "WARN", height: warn },
+		{ severity: "ERROR", height: error },
+	]
+})
+
+export interface EmptyLogVolumeStripProps {
+	/** The window the user asked for (unpadded), epoch ms. */
+	startMs: number
+	endMs: number
+	/** The bucket width the real strip would use, for tick label granularity. */
+	bucketSeconds: number
+	stale?: boolean
+}
+
+/**
+ * What the volume strip shows when the window holds no logs.
+ *
+ * Rather than collapsing to nothing — which moves the list up the page and
+ * back down again the moment a log arrives — keep the strip's height and
+ * gutter and use the space to say what it is: the window along the baseline,
+ * a ghost of the stacked columns, and the severities it stacks, coloured with
+ * the same `getSeverityColor` the real bands and the facet swatches use.
+ */
+export function EmptyLogVolumeStrip({ startMs, endMs, bucketSeconds, stale }: EmptyLogVolumeStripProps) {
+	const rangeMs = Math.max(0, endMs - startMs)
+	const axisContext = { rangeMs, bucketSeconds }
+	const ticks = Array.from({ length: EMPTY_STRIP_TICKS }, (_, i) => {
+		const ms = startMs + (rangeMs * i) / (EMPTY_STRIP_TICKS - 1)
+		return {
+			label: formatBucketLabel(toClickHouseDateTime(ms), axisContext, "tick"),
+			left: (i / (EMPTY_STRIP_TICKS - 1)) * 100,
+		}
+	})
+
+	return (
+		<div
+			role="img"
+			aria-label="Log volume by severity, no logs in the selected range"
+			className={cn(
+				"flex w-full select-none text-muted-foreground transition-opacity",
+				stale && "opacity-60",
+			)}
+			style={{ height: PLOT_HEIGHT + AXIS_HEIGHT, paddingRight: RIGHT_PAD }}
+		>
+			<div
+				className="flex shrink-0 flex-col justify-end pr-1.5 text-right text-[9px] leading-none tabular-nums"
+				style={{ width: Y_GUTTER, paddingBottom: AXIS_HEIGHT }}
+			>
+				0
+			</div>
+			<div className="relative flex min-w-0 flex-1 flex-col">
+				<div className="relative" style={{ height: PLOT_HEIGHT }}>
+					<div
+						className="absolute inset-x-0 border-t border-dashed border-border/60"
+						style={{ top: TOP_PAD }}
+					/>
+					<div className="absolute inset-x-0 top-1/2 border-t border-dashed border-border/60" />
+					<div aria-hidden className="absolute inset-0 flex items-end gap-px opacity-[0.18]">
+						{EMPTY_STRIP_COLUMNS.map((slices, i) => (
+							<div key={i} className="flex h-full min-w-0 flex-1 flex-col-reverse">
+								{slices.map((slice) => (
+									<div
+										key={slice.severity}
+										style={{
+											height: `${slice.height * 100}%`,
+											backgroundColor: getSeverityColor(slice.severity),
+										}}
+									/>
+								))}
+							</div>
+						))}
+					</div>
+					<div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
+						<span className="text-xs">No log volume in this window</span>
+						<ul className="flex items-center gap-3 text-[10px] uppercase tracking-wide opacity-60">
+							{EMPTY_STRIP_LEGEND.map((severity) => (
+								<li key={severity} className="flex items-center gap-1.5">
+									<span
+										className="size-1.5 rounded-[2px]"
+										style={{ backgroundColor: getSeverityColor(severity) }}
+									/>
+									{severity}
+								</li>
+							))}
+						</ul>
+					</div>
+				</div>
+				<div className="relative border-t border-border" style={{ height: AXIS_HEIGHT }}>
+					{ticks.map((tick, i) => (
+						<span
+							key={i}
+							className="absolute top-1 whitespace-nowrap text-[9px] leading-none tabular-nums"
+							style={{
+								left: `${tick.left}%`,
+								transform:
+									i === 0
+										? "none"
+										: i === ticks.length - 1
+											? "translateX(-100%)"
+											: "translateX(-50%)",
+							}}
+						>
+							{tick.label}
+						</span>
+					))}
+				</div>
+			</div>
+		</div>
+	)
+}
