@@ -2,6 +2,7 @@
 // have no namespace column of their own.
 import { describe, expect, it } from "vitest"
 import { compileUnionUnsafe, compileUnsafe } from "@maple-dev/effect-clickhouse"
+import { errorSessionsQuery } from "./errors"
 import {
 	sessionReplaysFacetsQuery,
 	sessionReplaysListQuery,
@@ -60,6 +61,13 @@ describe("project scope by service list", () => {
 		const sql = compileUnsafe(spark, params).sql
 		expect(sql).toContain(IN)
 		expect(sql).toContain("'unknown') IN ('unknown')")
+	})
+
+	it("keeps only the project's sessions among those that hit an error", () => {
+		const q = errorSessionsQuery({ fingerprintHash: "123", messageMatch: "boom", services: SERVICES })
+		const { sql } = compileUnsafe(q, params)
+		expect(sql).toMatch(/SessionId IN \(SELECT\s+SessionId/)
+		expect(sql).toContain(IN)
 	})
 
 	it("matches nothing for a project with no services, rather than everything", () => {

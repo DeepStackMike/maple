@@ -35,7 +35,7 @@ import {
 	nameExclusionCondition,
 	type FacetOutput,
 } from "./query-helpers"
-import { envLabel, resourceEnvLabel } from "./environment"
+import { envLabel, resourceEnvLabel, servicesIn } from "./environment"
 import { httpDisplaySpanName } from "../../traces-shared"
 import { CHNumber } from "../schema"
 
@@ -1581,6 +1581,14 @@ export interface ErrorSessionsOpts {
 	 * runs, which is the right call when the text is empty or generic.
 	 */
 	messageMatch?: string
+	/**
+	 * The header's project, as its services: only sessions recorded by one of
+	 * them. The trace-id branch is already project-bound (the fingerprint
+	 * includes the service), but the message branch matches error text from any
+	 * session. An empty list matches nothing; a session whose meta row never
+	 * arrived has no service to match, so it drops out while a project is set.
+	 */
+	services?: readonly string[]
 	limit?: number
 }
 
@@ -1647,6 +1655,18 @@ export function errorSessionsQuery(opts: ErrorSessionsOpts) {
 				$.Timestamp.gte(param.dateTimeString("startTime")),
 				$.Timestamp.lte(param.dateTimeString("endTime")),
 				byMessage ? byTrace.or(byMessage) : byTrace,
+				opts.services
+					? inSubquery(
+							$.SessionId,
+							from(SessionReplays)
+								.select(($s) => ({ SessionId: $s.SessionId }))
+								.where(($s) => [
+									$s.OrgId.eq(param.string("orgId")),
+									servicesIn($s.ServiceName, opts.services),
+								])
+								.groupBy("SessionId"),
+						)
+					: undefined,
 			]
 		})
 		.groupBy("sessionId")
