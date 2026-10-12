@@ -304,6 +304,7 @@ const makeRecordingEdge = (
 	rawGetDetailed: () => Effect.succeed({ status: "miss" as const, value: Option.none(), readMs: 0 }),
 	rawGet: () => Effect.succeed(Option.none()),
 	rawPut: () => Effect.void,
+	rawDelete: () => Effect.void,
 })
 
 describe("QueryEngineService.cachedDirect TTL", () => {
