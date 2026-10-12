@@ -597,6 +597,7 @@ export const infraFixtureRules = (): FixtureRule[] => [
 				containerName: p.owner[1],
 				restarts: RESTARTS.get(p.podName) ?? 0,
 				totalRestarts: (RESTARTS.get(p.podName) ?? 0) + 2,
+				lastTerminatedReason: RESTARTS.has(p.podName) ? "OOMKilled" : "",
 			})),
 	},
 	{

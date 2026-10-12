@@ -273,54 +273,6 @@ export function hostFilesystemsQuery(opts: HostFilesystemsOpts) {
 		.format("JSON")
 }
 
-// Pod container restarts, from the k8s_cluster receiver's `k8s.container.restarts`
-// (a running total per container). The window's restarts are max − min per container.
-
-export interface PodRestartsOpts {
-	podNames?: ReadonlyArray<string>
-	namespace?: string
-	workloadKind?: "deployment" | "statefulset" | "daemonset"
-	workloadName?: string
-	limit?: number
-}
-
-export interface PodRestartsOutput {
-	readonly namespace: string
-	readonly podName: string
-	readonly containerName: string
-	readonly restarts: number
-	readonly totalRestarts: number
-}
-
-export function podRestartsQuery(opts: PodRestartsOpts) {
-	return from(MetricsGauge)
-		.select(($) => ({
-			namespace: $.ResourceAttributes.get("k8s.namespace.name"),
-			podName: $.ResourceAttributes.get("k8s.pod.name"),
-			containerName: $.ResourceAttributes.get("k8s.container.name"),
-			restarts: CH.ifNotFinite(CH.max_($.Value).sub(CH.min_($.Value)), 0),
-			totalRestarts: CH.ifNotFinite(CH.max_($.Value), 0),
-		}))
-		.where(($) => [
-			$.OrgId.eq(orgIdParam),
-			$.TimeUnix.gte(param.dateTime("startTime")),
-			$.TimeUnix.lte(param.dateTime("endTime")),
-			$.MetricName.eq("k8s.container.restarts"),
-			$.ResourceAttributes.get("k8s.pod.name").neq(""),
-			CH.when(opts.podNames, (names: ReadonlyArray<string>) =>
-				$.ResourceAttributes.get("k8s.pod.name").in_(...names),
-			),
-			CH.when(opts.namespace, (v: string) => $.ResourceAttributes.get("k8s.namespace.name").eq(v)),
-			CH.when(opts.workloadName, (v: string) =>
-				$.ResourceAttributes.get(workloadAttrKey(opts.workloadKind ?? "deployment")).eq(v),
-			),
-		])
-		.groupBy("namespace", "podName", "containerName")
-		.orderBy(["restarts", "desc"])
-		.limit(opts.limit ?? 50)
-		.format("JSON")
-}
-
 // Kubernetes — pod aggregations over k8s.pod.* metrics emitted by the kubelet
 // stats receiver. Identity carried on ResourceAttributes:
 //   k8s.pod.name, k8s.pod.uid, k8s.namespace.name, k8s.node.name,
@@ -780,6 +732,65 @@ export function podDetailSummaryQuery(opts: PodDetailSummaryOpts) {
 			$.MetricName.in_(...POD_METRIC_NAMES),
 		])
 		.groupBy("podName")
+		.format("JSON")
+}
+
+// Pod container restarts, from the k8s_cluster receiver's `k8s.container.restarts`
+// (a running total per container). The window's restarts are last - first, floored at 0:
+// a kubelet that prunes dead containers can reset the total, so this undercounts, never over.
+
+export interface PodRestartsOpts {
+	podNames?: ReadonlyArray<string>
+	namespace?: string
+	workloadKind?: "deployment" | "statefulset" | "daemonset"
+	workloadName?: string
+	limit?: number
+}
+
+export interface PodRestartsOutput {
+	readonly podName: string
+	readonly namespace: string
+	readonly containerName: string
+	readonly restarts: number
+	readonly totalRestarts: number
+	/** `k8s.container.status.last_terminated_reason` (OOMKilled, Error, ...); empty when never terminated. */
+	readonly lastTerminatedReason: string
+}
+
+export function podRestartsQuery(opts: PodRestartsOpts) {
+	return from(MetricsGauge)
+		.select(($) => ({
+			podName: $.ResourceAttributes.get("k8s.pod.name"),
+			namespace: $.ResourceAttributes.get("k8s.namespace.name"),
+			containerName: $.ResourceAttributes.get("k8s.container.name"),
+			restarts: CH.ifNotFinite(
+				CH.greatest_(CH.argMax($.Value, $.TimeUnix).sub(CH.argMin($.Value, $.TimeUnix)), CH.lit(0)),
+				0,
+			),
+			totalRestarts: CH.ifNotFinite(CH.argMax($.Value, $.TimeUnix), 0),
+			// The attribute rides on the resource, so the newest sample carries the newest reason.
+			lastTerminatedReason: CH.argMax(
+				$.ResourceAttributes.get("k8s.container.status.last_terminated_reason"),
+				$.TimeUnix,
+			),
+		}))
+		.where(($) => [
+			$.OrgId.eq(orgIdParam),
+			$.TimeUnix.gte(param.dateTime("startTime")),
+			$.TimeUnix.lte(param.dateTime("endTime")),
+			$.MetricName.eq("k8s.container.restarts"),
+			$.ResourceAttributes.get("k8s.pod.name").neq(""),
+			opts.podNames?.length
+				? CH.inList($.ResourceAttributes.get("k8s.pod.name"), opts.podNames)
+				: undefined,
+			CH.when(opts.namespace, (v: string) => $.ResourceAttributes.get("k8s.namespace.name").eq(v)),
+			CH.when(opts.workloadName, (v: string) =>
+				$.ResourceAttributes.get(workloadAttrKey(opts.workloadKind ?? "deployment")).eq(v),
+			),
+		])
+		.groupBy("podName", "namespace", "containerName")
+		.orderBy(["restarts", "desc"], ["totalRestarts", "desc"])
+		.limit(opts.limit ?? 50)
 		.format("JSON")
 }
 

@@ -2118,6 +2118,34 @@ export class PodDetailSummaryResponse extends Schema.Class<PodDetailSummaryRespo
 	),
 }) {}
 
+/**
+ * Container restarts for a set of pods, from the cluster receiver's
+ * `k8s.container.restarts`. One row per container; the pod list sends its page.
+ */
+export class PodRestartsRequest extends Schema.Class<PodRestartsRequest>("PodRestartsRequest")({
+	startTime: TinybirdDateTime,
+	endTime: TinybirdDateTime,
+	podNames: Schema.optional(StringArray),
+	namespace: Schema.optional(Schema.String),
+	limit: Schema.optional(Schema.Number),
+}) {}
+
+export class PodRestartsResponse extends Schema.Class<PodRestartsResponse>("PodRestartsResponse")({
+	data: Schema.Array(
+		Schema.Struct({
+			podName: Schema.String,
+			namespace: Schema.String,
+			containerName: Schema.String,
+			/** Restarts inside the window (last - first of the running total, floored at 0). */
+			restarts: Schema.Number,
+			/** The running total at the window's newest sample. */
+			totalRestarts: Schema.Number,
+			/** Why the container last terminated (OOMKilled, Error, ...); empty when it never has. */
+			lastTerminatedReason: Schema.String,
+		}),
+	),
+}) {}
+
 export class PodInfraTimeseriesRequest extends Schema.Class<PodInfraTimeseriesRequest>(
 	"PodInfraTimeseriesRequest",
 )({
@@ -2845,6 +2873,13 @@ export class QueryEngineApiGroup extends HttpApiGroup.make("queryEngine")
 		HttpApiEndpoint.post("podDetailSummary", "/pod-detail-summary", {
 			payload: PodDetailSummaryRequest,
 			success: PodDetailSummaryResponse,
+			error: queryEngineEndpointErrors,
+		}),
+	)
+	.add(
+		HttpApiEndpoint.post("podRestarts", "/pod-restarts", {
+			payload: PodRestartsRequest,
+			success: PodRestartsResponse,
 			error: queryEngineEndpointErrors,
 		}),
 	)

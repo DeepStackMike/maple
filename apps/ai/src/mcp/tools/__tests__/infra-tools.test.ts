@@ -77,6 +77,7 @@ describe("list_infra", () => {
 					containerName: "checkout",
 					restarts: 1,
 					totalRestarts: 3,
+					lastTerminatedReason: "",
 				},
 				{
 					namespace: "staging",
@@ -84,6 +85,7 @@ describe("list_infra", () => {
 					containerName: "checkout",
 					restarts: 7,
 					totalRestarts: 9,
+					lastTerminatedReason: "",
 				},
 			],
 		})
