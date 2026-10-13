@@ -1,8 +1,10 @@
+import { useCallback } from "react"
 import { keepPreviousData, skipToken, useQuery } from "@tanstack/react-query"
 import { DateTime } from "effect"
 import { CH } from "@maple/query-engine"
 import { boundsKey, executeLocalCompiledQuery, localParams } from "@/lib/query"
 import type { SeriesPoint } from "../lib/chart-series"
+import { fillGoldenSignals, type GoldenSignalRow } from "../lib/golden-signals"
 import { parseClickHouseDateTime, type ChartWindow, type TimeBounds } from "../lib/time"
 import { toCatalogEntry, type ServiceCatalogEntry } from "./use-local-service-catalog"
 
@@ -103,5 +105,49 @@ export function useLocalServiceOperationsTimeseries(
 							value: r.count,
 						}))
 					},
+	})
+}
+
+/**
+ * Latency, throughput, error rate and Apdex over the chart window, from the service's
+ * entry spans (the same `rootOnly` scope as the header stats). The cache holds the raw
+ * buckets; `select` fills them against the current window, so a window that narrows once
+ * the overview's first-seen time lands redraws without a refetch.
+ */
+export function useLocalServiceGoldenSignals(serviceName: string, bounds: TimeBounds, window: ChartWindow) {
+	const { bucketSeconds } = window
+	const select = useCallback(
+		(rows: ReadonlyArray<GoldenSignalRow>) => fillGoldenSignals(rows, window),
+		[window],
+	)
+	return useQuery({
+		queryKey: ["local", "services", "golden-signals", serviceName, bucketSeconds, boundsKey(bounds)],
+		placeholderData: keepPreviousData,
+		select,
+		queryFn: async ({ signal }): Promise<ReadonlyArray<GoldenSignalRow>> => {
+			const rows = await executeLocalCompiledQuery(
+				CH.compile(
+					CH.tracesTimeseriesQuery({
+						metric: "count",
+						needsSampling: false,
+						allMetrics: true,
+						serviceName,
+						rootOnly: true,
+						bucketSeconds,
+					}),
+					{ ...localParams(bounds), bucketSeconds },
+				),
+				signal,
+			)
+			return rows.map((row) => ({
+				bucketMs: DateTime.toEpochMillis(row.bucket),
+				count: row.count,
+				errorRate: row.errorRate,
+				p50Ms: row.p50Duration,
+				p95Ms: row.p95Duration,
+				p99Ms: row.p99Duration,
+				apdexScore: row.apdexScore,
+			}))
+		},
 	})
 }
