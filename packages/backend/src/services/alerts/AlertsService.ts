@@ -47,11 +47,11 @@ import {
 	type AlertGroupBy,
 	UNGROUPED_GROUP_KEY,
 	OrgId,
-	type AlertRuleId,
+	AlertRuleId,
 	type AlertDestinationId,
 	type AlertIncidentId,
 	type WarehouseQueryPathError,
-	type QueryEngineTimeoutError,
+	QueryEngineTimeoutError,
 	type QueryEngineValidationError,
 	RoleName,
 	type UserId,
@@ -73,6 +73,7 @@ import type { MapleDb } from "@maple/db/client"
 import {
 	Array as Arr,
 	Chunk,
+	Duration,
 	Effect,
 	HashSet,
 	Layer,
@@ -80,12 +81,14 @@ import {
 	Metric,
 	MutableHashMap,
 	Option,
+	Order,
 	Random,
 	Record,
 	Result,
 	Redacted,
 	Ref,
 	Schema,
+	Stream,
 	Context,
 } from "effect"
 import { HttpClient } from "effect/http"
@@ -138,6 +141,27 @@ import { summarizeCause } from "@maple/backend/platform/describe-cause"
 export { AlertRuntime, type AlertRuntimeApi } from "./AlertRuntime"
 
 type EvaluatedRule = import("@maple/alerting-core").AlertEvaluation
+
+/**
+ * A tick's claim on a rule expired and another tick re-claimed it before this
+ * one finished writing. The rule's remaining writes and notifications belong to
+ * the new claimant, so this tick stops processing the rule.
+ */
+class AlertRuleClaimLostError extends Schema.TaggedError<AlertRuleClaimLostError>()(
+	"@maple/alerts/AlertRuleClaimLostError",
+	{
+		message: Schema.String,
+		ruleId: AlertRuleId,
+		claimedAt: Schema.Number,
+		currentClaimAt: Schema.NullOr(Schema.Number),
+	},
+) {}
+
+/** The claim a tick holds on a rule: its `alert_rule_claims.last_scheduled_at`. */
+interface RuleClaim {
+	readonly ruleId: AlertRuleId
+	readonly claimedAt: number
+}
 
 type AlertDestinationStorageError = AlertDestinationDecryptionError | AlertDestinationStoredConfigInvalidError
 
@@ -302,6 +326,17 @@ export const interleaveAlertRulesByOrg = <T extends { readonly orgId: string }>(
 	rows: ReadonlyArray<T>,
 ): ReadonlyArray<T> => interleaveAlertRulesByTenant(rows, (row) => row.orgId)
 
+// Least recently claimed first (never claimed sorts first), so the rules a tick
+// deferred lead the next one instead of staying in the tail. The sort is stable.
+const orderAlertRulesByLastClaim = <T extends { readonly id: string }>(
+	rows: ReadonlyArray<T>,
+	lastClaimedAt: ReadonlyMap<string, number>,
+): ReadonlyArray<T> =>
+	Arr.sort(
+		rows,
+		Order.mapInput(Order.Number, (row: T) => lastClaimedAt.get(row.id) ?? 0),
+	)
+
 const toIngestDateTime64 = warehouseDateTime64
 
 type StoredDeliveryPayloadType = Schema.Schema.Type<typeof StoredDeliveryPayloadSchema>
@@ -441,6 +476,43 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 			const dbExecute = makeDbExecute(database, "AlertsService", makePersistenceError)
 
 			/**
+			 * Run `write` only while `claim` still owns the rule. The claim row is
+			 * locked FOR UPDATE and re-read in the same transaction as the write, so a
+			 * later tick's re-claim (an upsert on that row) waits for this commit, and
+			 * a write after a re-claim rolls back with `AlertRuleClaimLostError`.
+			 * Keep `write` short: it holds the claim row lock. `null` writes unfenced,
+			 * for callers that hold no claim.
+			 */
+			const writeUnderClaim = <A, E, R>(
+				claim: RuleClaim | null,
+				write: (db: MapleDb) => Effect.Effect<A, E, R>,
+			) =>
+				dbExecute((db) =>
+					claim === null
+						? write(db)
+						: db.transaction(
+								Effect.gen(function* () {
+									const current = yield* db.run(
+										PG.from(AlertRuleClaims)
+											.select("lastScheduledAt")
+											.where(($) => [$.ruleId.eq(claim.ruleId)])
+											.forUpdate(),
+									)
+									const currentClaimAt = current[0]?.lastScheduledAt ?? null
+									if (currentClaimAt !== claim.claimedAt) {
+										return yield* new AlertRuleClaimLostError({
+											message: "Alert rule was re-claimed by a later scheduler tick",
+											ruleId: claim.ruleId,
+											claimedAt: claim.claimedAt,
+											currentClaimAt,
+										})
+									}
+									return yield* write(db)
+								}),
+							),
+				)
+
+			/**
 			 * Services a rule's telemetry-liveness probe should cover. An empty list
 			 * means the rule is org-wide, and the probe falls back to the org pulse.
 			 */
@@ -564,6 +636,7 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 				decision: Extract<LivenessGateDecision, { kind: "hold" }>,
 				liveness: LivenessVerdict,
 				timestamp: number,
+				claim: RuleClaim | null,
 			) {
 				yield* Effect.annotateCurrentSpan({
 					"maple.alert.incident_id": incident.id,
@@ -588,7 +661,7 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 					yield* Metric.update(AlertingMetrics.incidentsHeldTotal, 1)
 				}
 				if (incident.holdReason === decision.reason) return
-				yield* dbExecute((db) =>
+				yield* writeUnderClaim(claim, (db) =>
 					db.run(
 						PG.update(AlertIncidents)
 							.set({
@@ -1873,11 +1946,13 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 				pushBudget: IncidentPushBudget,
 				prefetch: TickPrefetch,
 			) {
-				// Serialized per rule via the claim lock at runSchedulerTick (SCHEDULER_LOCK_TTL_MS
-				// CAS on alertRules.lastScheduledAt). The statements below are separate
-				// sequential writes (no transaction) and stay idempotent on retry: state
-				// upsert via onConflictDoUpdate, incident insert keyed on unique
-				// incidentKey, delivery events via onConflictDoNothing on deliveryKey.
+				// `timestamp` is the tick's claim on the rule. The claim can expire while
+				// this runs (slow notification enrichment, a late warehouse result), so
+				// every state and incident write goes through `writeUnderClaim`: once a
+				// later tick re-claims the rule, the next write fails with
+				// AlertRuleClaimLostError and the rest of the rule is left to that tick.
+				// Notifications are queued after the write commits, never inside it.
+				const claim: RuleClaim = { ruleId: row.id, claimedAt: timestamp }
 				const evaluateTransition = Effect.fnUntraced(function* () {
 					// Both reads come from the tick-head prefetch rather than a query per
 					// group. Safe because this function is the only writer of either key
@@ -1917,7 +1992,7 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 							state.lastEvaluatedAt != null &&
 							timestamp - state.lastEvaluatedAt < STATE_HEARTBEAT_MS
 						if (unchanged) return Effect.void
-						return dbExecute((db) =>
+						return writeUnderClaim(claim, (db) =>
 							db.run(
 								PG.insertInto(AlertRuleStates)
 									.values({
@@ -2032,7 +2107,7 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 							timestamp,
 						)
 						if (gate.kind === "hold") {
-							yield* recordHold(openIncident, gate, liveness, timestamp)
+							yield* recordHold(openIncident, gate, liveness, timestamp, claim)
 						} else {
 							heldForMs = gate.heldForMs
 							resolveEvaluation =
@@ -2085,12 +2160,11 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 						}
 
 						// `alert_incidents_open_group_idx` allows one open incident per
-						// (org, rule, group). The scheduler claim already serializes rules
-						// in the common case; this is the backstop for an expired claim —
-						// a chunk that outran SCHEDULER_LOCK_TTL_MS being re-claimed by the
-						// next tick, both working from tick-head prefetch that saw no open
-						// incident. The loser lands here and must not notify.
-						const inserted = yield* dbExecute((db) =>
+						// (org, rule, group). `writeUnderClaim` stops a tick whose claim
+						// expired; this is the backstop for the tick that re-claimed it,
+						// whose tick-head prefetch can predate the open. The loser lands
+						// here and must not notify.
+						const inserted = yield* writeUnderClaim(claim, (db) =>
 							db.run(
 								PG.insertInto(AlertIncidents)
 									.values(incident)
@@ -2153,7 +2227,10 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 							heldSince: null,
 							updatedAt: timestamp,
 						}
-						yield* dbExecute((db) =>
+						// `status = 'open'` plus RETURNING: the prefetch can predate a resolve
+						// by a tick that held this rule before us, and a resolved incident
+						// must not be refreshed or renotified.
+						const refreshed = yield* writeUnderClaim(claim, (db) =>
 							db.run(
 								PG.update(AlertIncidents)
 									.set({
@@ -2168,9 +2245,19 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 											? timestamp
 											: openIncident.lastNotifiedAt,
 									})
-									.where(($) => [$.id.eq(openIncident.id)]),
+									.where(($) => [$.id.eq(openIncident.id), $.status.eq("open")])
+									.returning("id"),
 							),
 						)
+						if (refreshed.length === 0) {
+							return {
+								transition: "none" as const,
+								incidentId: null,
+								openedIncidentId: null,
+								consecutiveBreaches: lifecycle.state.consecutiveBreaches,
+								consecutiveHealthy: lifecycle.state.consecutiveHealthy,
+							}
+						}
 						if (lifecycle.eventType === "renotify") {
 							yield* queueIncidentNotifications(
 								row.orgId,
@@ -2203,7 +2290,9 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 							heldSince: null,
 							updatedAt: timestamp,
 						}
-						yield* dbExecute((db) =>
+						// Same `status = 'open'` guard as above: only the write that actually
+						// resolves the incident sends the resolve notification.
+						const resolved = yield* writeUnderClaim(claim, (db) =>
 							db.run(
 								PG.update(AlertIncidents)
 									.set({
@@ -2216,9 +2305,19 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 										heldSince: null,
 										updatedAt: timestamp,
 									})
-									.where(($) => [$.id.eq(openIncident.id)]),
+									.where(($) => [$.id.eq(openIncident.id), $.status.eq("open")])
+									.returning("id"),
 							),
 						)
+						if (resolved.length === 0) {
+							return {
+								transition: "none" as const,
+								incidentId: null,
+								openedIncidentId: null,
+								consecutiveBreaches: lifecycle.state.consecutiveBreaches,
+								consecutiveHealthy: lifecycle.state.consecutiveHealthy,
+							}
+						}
 						if (openIncident.holdReason !== null) {
 							yield* Metric.update(AlertingMetrics.incidentsResolvedAfterHoldTotal, 1)
 						}
@@ -2599,7 +2698,7 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 								timestamp,
 							)
 							if (gate.kind === "hold") {
-								yield* recordHold(incident, gate, liveness, timestamp)
+								yield* recordHold(incident, gate, liveness, timestamp, null)
 								return false
 							}
 							const syntheticEvaluation = makeSyntheticResolveEvaluation(
@@ -2684,12 +2783,14 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 
 			const SCHEDULER_LOCK_TTL_MS = 30_000
 
-			// Rules claimed per round trip. The ceiling is SCHEDULER_LOCK_TTL_MS (30s):
-			// a chunk's locks are all dated from its claim, so the chunk must finish
-			// well inside that window or the next tick can re-claim a rule this one is
-			// still evaluating. At concurrency 5 and the observed p50 per rule, 25
-			// rules run ~10s — a 3x margin. Raising this trades round trips for lock
-			// staleness; do not raise it without also raising the TTL.
+			// The tick deadline sits this far below SCHEDULER_LOCK_TTL_MS, leaving room
+			// for processEvaluation's Postgres writes after the last warehouse call.
+			const SCHEDULER_LOCK_MARGIN_MS = 5_000
+
+			// Rules claimed per round trip. A chunk's locks are all dated from its
+			// claim and its rules queue for the 5 lanes, so a larger chunk means older
+			// locks by the time the last rule starts. The tick deadline bounds that
+			// age below SCHEDULER_LOCK_TTL_MS; a larger chunk only defers more rules.
 			const RULE_CLAIM_CHUNK_SIZE = 25
 
 			// Unchanged-state ticks skip the alert_rule_states upsert so the Electric
@@ -2784,6 +2885,48 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 
 						return claimed
 					}),
+				)
+
+			const loadLastClaimTimes = (rows: ReadonlyArray<StoredAlertRuleRow>) =>
+				Arr.isReadonlyArrayEmpty(rows)
+					? Effect.succeed(new Map<string, number>())
+					: dbExecute((db) =>
+							db.run(
+								PG.from(AlertRuleClaims)
+									.select("ruleId", "lastScheduledAt")
+									.where(($) => [$.ruleId.in_(...Arr.map(rows, (row) => row.id))]),
+							),
+						).pipe(
+							Effect.map(
+								(claims) =>
+									new Map(
+										claims.map((claim) => [claim.ruleId, claim.lastScheduledAt] as const),
+									),
+							),
+						)
+
+			// Expires this tick's own claims (the timestamp predicate leaves a newer
+			// claim alone), so the next tick can take them and orders them first.
+			// Best-effort: an unreleased claim still expires after SCHEDULER_LOCK_TTL_MS.
+			const releaseClaims = (claims: ReadonlyArray<{ id: AlertRuleId; timestamp: number }>) =>
+				Effect.forEach(
+					Record.values(Arr.groupBy(claims, (claim) => String(claim.timestamp))),
+					(group) => {
+						const [first, ...rest] = group
+						return dbExecute((db) =>
+							db.run(
+								PG.update(AlertRuleClaims)
+									.set({ lastScheduledAt: 0 })
+									.where(($) => [
+										$.ruleId.in_(first.id, ...rest.map((claim) => claim.id)),
+										$.lastScheduledAt.eq(first.timestamp),
+									]),
+							),
+						)
+					},
+					{ discard: true },
+				).pipe(
+					Effect.ignore({ log: "Warn", message: "Failed to release unstarted alert rule claims" }),
 				)
 
 			/**
@@ -3205,191 +3348,264 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 					)
 				})
 
-				// One claim round trip per chunk, then that chunk's winners evaluate at
-				// the same concurrency as before. The chunk boundary is a barrier, which
-				// is what bounds each lock's age to a chunk rather than to the tick —
-				// see `claimRuleChunk`. Sized so a chunk stays well inside
-				// SCHEDULER_LOCK_TTL_MS at the observed per-rule cost.
-				yield* Effect.forEach(
-					Arr.chunksOf(interleaveAlertRulesByOrg(rows), RULE_CLAIM_CHUNK_SIZE),
-					(chunk) =>
+				// No claim and no evaluation starts after `deadline`, and an evaluation
+				// cannot run past it, so a rule's warehouse work ends before its claim
+				// (dated at or after tickStart) expires and the next tick re-claims it.
+				// Rules not started are left unclaimed or expire, and run next tick.
+				const deadline =
+					tickStart +
+					Math.min(
+						runtime.schedulerTickBudgetMs(),
+						SCHEDULER_LOCK_TTL_MS - SCHEDULER_LOCK_MARGIN_MS,
+					)
+				const deferredRules = yield* Ref.make(0)
+				const deferRules = (count: number) => Ref.update(deferredRules, (n) => n + count)
+				// Claims won but never started, released after the pool drains.
+				const unstartedClaims = yield* Ref.make(Chunk.empty<{ id: AlertRuleId; timestamp: number }>())
+				const evaluatedRules = yield* Ref.make(0)
+
+				const evaluateBeforeDeadline = (orgId: OrgId, rule: NormalizedRule) =>
+					Effect.flatMap(now, (startedAt) =>
+						evaluateRule(orgId, rule).pipe(
+							Effect.timeoutOrElse({
+								duration: Duration.millis(
+									Math.max(
+										0,
+										Math.min(runtime.schedulerEvalTimeoutMs(), deadline - startedAt),
+									),
+								),
+								orElse: () =>
+									Effect.fail(
+										new QueryEngineTimeoutError({
+											message: "Alert evaluation exceeded the scheduler tick deadline",
+										}),
+									),
+							}),
+						),
+					)
+
+				// A rule whose claim this tick won. `timestamp` is its chunk's claim time,
+				// which processEvaluation stamps on state and incident rows.
+				const evaluateClaimedRule = (row: StoredAlertRuleRow, timestamp: number) =>
+					Effect.gen(function* () {
+						const ruleStart = yield* now
+						const normalized = yield* normalizeRuleRow(row)
+
+						if (normalized.serviceNames.length > 1) {
+							yield* Effect.forEach(yield* perServiceRules(normalized), ({ groupKey, rule }) =>
+								Effect.gen(function* () {
+									const observations = yield* evaluateBeforeDeadline(row.orgId, rule)
+									// A service with no rows at all used to be dropped here,
+									// which left its open incident frozen for as long as it
+									// stayed quiet. An empty window is an observation too,
+									// the same one the ungrouped path derives, and its open
+									// incident goes through the liveness gate like any other.
+									const evaluation =
+										observations[0]?.evaluation ??
+										applyEvaluationLogic(rule, {
+											value: null,
+											sampleCount: 0,
+											hasData: false,
+										})
+									yield* recordEvaluationStatus(evaluation)
+									yield* processEvaluation(
+										row,
+										normalized,
+										evaluation,
+										groupKey,
+										timestamp,
+										pendingChecks,
+										issueBudget,
+										pushBudget,
+										prefetch,
+									)
+								}),
+							)
+
+							yield* resolveOrphanedGroupIncidents(
+								row.orgId,
+								normalized.id,
+								normalized,
+								HashSet.fromIterable(normalized.serviceNames),
+								timestamp,
+								prefetch.openIncidentsForRule(row.orgId, row.id),
+								pushBudget,
+							)
+							yield* Metric.update(
+								AlertingMetrics.ruleEvaluationDurationMs,
+								(yield* now) - ruleStart,
+							)
+							return
+						}
+
+						// Uniform grouped/ungrouped path. `evaluateRule` returns one
+						// outcome per group already keyed in storage vocabulary: a single
+						// UNGROUPED_GROUP_KEY entry (with a no-data fallback) when the
+						// compiled plan is ungrouped. So both shapes flow through the
+						// same loop with no key translation here.
+						const grouped = isGroupedPlan(normalized.compiledPlan)
+						const results = yield* evaluateBeforeDeadline(row.orgId, normalized)
+						const excludeSet = HashSet.fromIterable(normalized.excludeServiceNames)
+						const eligible = grouped
+							? Arr.filter(results, (r) => !HashSet.has(excludeSet, r.groupKey))
+							: results
+
+						yield* Effect.forEach(eligible, ({ evaluation, groupKey }) =>
+							Effect.gen(function* () {
+								yield* recordEvaluationStatus(evaluation)
+								yield* processEvaluation(
+									row,
+									normalized,
+									evaluation,
+									groupKey,
+									timestamp,
+									pendingChecks,
+									issueBudget,
+									pushBudget,
+									prefetch,
+								)
+							}),
+						)
+
+						const evaluatedGroups = HashSet.fromIterable(Arr.map(eligible, (r) => r.groupKey))
+						yield* resolveOrphanedGroupIncidents(
+							row.orgId,
+							normalized.id,
+							normalized,
+							evaluatedGroups,
+							timestamp,
+							prefetch.openIncidentsForRule(row.orgId, row.id),
+							pushBudget,
+						)
+
+						// Self-heal state rows whose key shape contradicts the rule's
+						// groupedness: a grouped rule can never legitimately own an
+						// ungrouped row (left behind when this rule evaluated ungrouped,
+						// or by recordEvaluationFailure), and vice versa. Orphan resolution
+						// above only deletes incident-backed rows. Zero rows touched in
+						// steady state, so the Electric shape stays quiet.
+						//
+						// Applied set-based after the loop (see `flushSelfHeal`). Safe to
+						// defer: it is scoped to this rule and this rule's own writes are
+						// already done, so end-of-tick is the same state it would have seen
+						// here.
+						yield* Ref.update(
+							selfHealTargets,
+							Chunk.append({ orgId: row.orgId, ruleId: row.id, grouped }),
+						)
+
+						yield* Metric.update(
+							AlertingMetrics.ruleEvaluationDurationMs,
+							(yield* now) - ruleStart,
+						)
+					}).pipe(
+						// The rule evaluated cleanly: clear any stored evaluation error.
+						// Conditional on lastError IS NOT NULL so healthy steady-state
+						// ticks touch zero rows (no Electric shape churn). This also
+						// covers grouped/multi-service rules, whose "__total__" error row
+						// is never revisited by upsertState.
+						//
+						// Accumulated and applied set-based after the loop. Only rules that
+						// reach here are cleared, so a rule that failed this tick keeps the
+						// `lastError` that `recordEvaluationFailure` just wrote for it.
+						Effect.tap(() =>
+							Ref.update(clearErrorTargets, Chunk.append({ orgId: row.orgId, ruleId: row.id })),
+						),
+						// Not an evaluation failure: the tick that re-claimed the rule owns
+						// its state now, so record nothing and leave the rest to it.
+						Effect.catchTag("@maple/alerts/AlertRuleClaimLostError", (lost) =>
+							Effect.logWarning(
+								"Alert rule claim lost mid-evaluation; stopping this rule",
+							).pipe(
+								Effect.annotateLogs({
+									workerId,
+									ruleId: lost.ruleId,
+									claimedAt: lost.claimedAt,
+									currentClaimAt: lost.currentClaimAt ?? undefined,
+								}),
+							),
+						),
+						Effect.catch((error) =>
+							recordEvaluationFailure(
+								row,
+								error,
+								error.error.code,
+								"pipeName" in error
+									? {
+											pipe: error.pipeName,
+											...(error._tag ===
+											"@maple/http/errors/WarehouseQuotaExceededError"
+												? {
+														quotaSetting: error.setting,
+													}
+												: undefined),
+											...(error._tag === "@maple/http/errors/WarehouseUpstreamError" ||
+											error._tag === "@maple/http/errors/WarehouseAuthError"
+												? {
+														upstreamStatus: error.upstreamStatus,
+													}
+												: undefined),
+										}
+									: undefined,
+							),
+						),
+					)
+
+				// Rolling pool: a lane that frees pulls the next claimed rule, and the
+				// next chunk is claimed only when the current one is fully handed out.
+				// Lock ages stay bounded by a chunk's queueing, as before, but one slow
+				// rule no longer idles the other lanes until its chunk drains.
+				const lastClaimedAt = yield* loadLastClaimTimes(rows)
+				yield* Stream.fromIterable(
+					Arr.chunksOf(
+						interleaveAlertRulesByOrg(orderAlertRulesByLastClaim(rows, lastClaimedAt)),
+						RULE_CLAIM_CHUNK_SIZE,
+					),
+				).pipe(
+					Stream.mapEffect((chunk) =>
 						Effect.gen(function* () {
 							const timestamp = yield* now
+							if (timestamp >= deadline) {
+								yield* deferRules(chunk.length)
+								return []
+							}
 							const claimed = yield* claimRuleChunk(chunk, timestamp)
-							if (claimed.length === 0) return
 							const claimedIds = new Set(claimed.map((row) => row.id))
-
-							yield* Effect.forEach(
-								chunk.filter((row) => claimedIds.has(row.id)),
-								(row) =>
-									Effect.gen(function* () {
-										const ruleStart = yield* now
-										const normalized = yield* normalizeRuleRow(row)
-
-										if (normalized.serviceNames.length > 1) {
-											yield* Effect.forEach(
-												yield* perServiceRules(normalized),
-												({ groupKey, rule }) =>
-													Effect.gen(function* () {
-														const observations = yield* evaluateRule(
-															row.orgId,
-															rule,
-														)
-														// A service with no rows at all used to be dropped here,
-														// which left its open incident frozen for as long as it
-														// stayed quiet. An empty window is an observation too —
-														// the same one the ungrouped path derives — and its open
-														// incident goes through the liveness gate like any other.
-														const evaluation =
-															observations[0]?.evaluation ??
-															applyEvaluationLogic(rule, {
-																value: null,
-																sampleCount: 0,
-																hasData: false,
-															})
-														yield* recordEvaluationStatus(evaluation)
-														yield* processEvaluation(
-															row,
-															normalized,
-															evaluation,
-															groupKey,
-															timestamp,
-															pendingChecks,
-															issueBudget,
-															pushBudget,
-															prefetch,
-														)
-													}),
-											)
-
-											yield* resolveOrphanedGroupIncidents(
-												row.orgId,
-												normalized.id,
-												normalized,
-												HashSet.fromIterable(normalized.serviceNames),
-												timestamp,
-												prefetch.openIncidentsForRule(row.orgId, row.id),
-												pushBudget,
-											)
-											yield* Metric.update(
-												AlertingMetrics.ruleEvaluationDurationMs,
-												(yield* now) - ruleStart,
-											)
-											return
-										}
-
-										// Uniform grouped/ungrouped path. `evaluateRule` returns one
-										// outcome per group already keyed in storage vocabulary — a single
-										// UNGROUPED_GROUP_KEY entry (with a no-data fallback) when the
-										// compiled plan is ungrouped — so both shapes flow through the
-										// same loop with no key translation here.
-										const grouped = isGroupedPlan(normalized.compiledPlan)
-										const results = yield* evaluateRule(row.orgId, normalized)
-										const excludeSet = HashSet.fromIterable(
-											normalized.excludeServiceNames,
-										)
-										const eligible = grouped
-											? Arr.filter(results, (r) => !HashSet.has(excludeSet, r.groupKey))
-											: results
-
-										yield* Effect.forEach(eligible, ({ evaluation, groupKey }) =>
-											Effect.gen(function* () {
-												yield* recordEvaluationStatus(evaluation)
-												yield* processEvaluation(
-													row,
-													normalized,
-													evaluation,
-													groupKey,
-													timestamp,
-													pendingChecks,
-													issueBudget,
-													pushBudget,
-													prefetch,
-												)
-											}),
-										)
-
-										const evaluatedGroups = HashSet.fromIterable(
-											Arr.map(eligible, (r) => r.groupKey),
-										)
-										yield* resolveOrphanedGroupIncidents(
-											row.orgId,
-											normalized.id,
-											normalized,
-											evaluatedGroups,
-											timestamp,
-											prefetch.openIncidentsForRule(row.orgId, row.id),
-											pushBudget,
-										)
-
-										// Self-heal state rows whose key shape contradicts the rule's
-										// groupedness: a grouped rule can never legitimately own an
-										// ungrouped row (left behind when this rule evaluated ungrouped,
-										// or by recordEvaluationFailure), and vice versa. Orphan resolution
-										// above only deletes incident-backed rows. Zero rows touched in
-										// steady state, so the Electric shape stays quiet.
-										//
-										// Applied set-based after the loop (see `flushSelfHeal`). Safe to
-										// defer: it is scoped to this rule and this rule's own writes are
-										// already done, so end-of-tick is the same state it would have seen
-										// here.
-										yield* Ref.update(
-											selfHealTargets,
-											Chunk.append({ orgId: row.orgId, ruleId: row.id, grouped }),
-										)
-
-										yield* Metric.update(
-											AlertingMetrics.ruleEvaluationDurationMs,
-											(yield* now) - ruleStart,
-										)
-									}).pipe(
-										// The rule evaluated cleanly — clear any stored evaluation error.
-										// Conditional on lastError IS NOT NULL so healthy steady-state
-										// ticks touch zero rows (no Electric shape churn). This also
-										// covers grouped/multi-service rules, whose "__total__" error row
-										// is never revisited by upsertState.
-										//
-										// Accumulated and applied set-based after the loop. Only rules that
-										// reach here are cleared, so a rule that failed this tick keeps the
-										// `lastError` that `recordEvaluationFailure` just wrote for it.
-										Effect.tap(() =>
-											Ref.update(
-												clearErrorTargets,
-												Chunk.append({ orgId: row.orgId, ruleId: row.id }),
-											),
-										),
-										Effect.catch((error) =>
-											recordEvaluationFailure(
-												row,
-												error,
-												error.error.code,
-												"pipeName" in error
-													? {
-															pipe: error.pipeName,
-															...(error._tag ===
-															"@maple/http/errors/WarehouseQuotaExceededError"
-																? {
-																		quotaSetting: error.setting,
-																	}
-																: undefined),
-															...(error._tag ===
-																"@maple/http/errors/WarehouseUpstreamError" ||
-															error._tag ===
-																"@maple/http/errors/WarehouseAuthError"
-																? {
-																		upstreamStatus: error.upstreamStatus,
-																	}
-																: undefined),
-														}
-													: undefined,
-											),
-										),
-									),
-								{ concurrency: 5 },
-							)
+							return chunk
+								.filter((row) => claimedIds.has(row.id))
+								.map((row) => ({ row, timestamp }))
 						}),
-					{ concurrency: 1 },
+					),
+					Stream.flattenIterable,
+					Stream.mapEffect(
+						({ row, timestamp }) =>
+							Effect.flatMap(now, (startedAt) =>
+								startedAt >= deadline
+									? deferRules(1).pipe(
+											Effect.andThen(
+												Ref.update(
+													unstartedClaims,
+													Chunk.append({ id: row.id, timestamp }),
+												),
+											),
+										)
+									: evaluateClaimedRule(row, timestamp).pipe(
+											Effect.andThen(Ref.update(evaluatedRules, (n) => n + 1)),
+										),
+							),
+						{ concurrency: 5, unordered: true },
+					),
+					Stream.runDrain,
 				)
+
+				yield* releaseClaims(Chunk.toReadonlyArray(yield* Ref.get(unstartedClaims)))
+				const deferred = yield* Ref.get(deferredRules)
+				yield* Effect.annotateCurrentSpan("maple.alerting.rules_deferred", deferred)
+				if (deferred > 0) {
+					yield* Effect.logWarning("Alert scheduler tick deadline reached").pipe(
+						Effect.annotateLogs({ workerId, deferredRules: deferred }),
+					)
+				}
 
 				yield* flushRuleStateHousekeeping(
 					Chunk.toReadonlyArray(yield* Ref.get(selfHealTargets)),
@@ -3477,10 +3693,11 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 				}
 
 				const deliveryResult = yield* processQueuedDeliveries()
-				yield* Metric.update(AlertingMetrics.rulesEvaluatedTotal, rows.length)
+				const evaluatedCount = yield* Ref.get(evaluatedRules)
+				yield* Metric.update(AlertingMetrics.rulesEvaluatedTotal, evaluatedCount)
 				yield* Metric.update(AlertingMetrics.tickDurationMs, (yield* now) - tickStart)
 				return {
-					evaluatedCount: rows.length,
+					evaluatedCount,
 					processedCount: deliveryResult.processedCount,
 					evaluationFailureCount: yield* Ref.get(evaluationFailureCount),
 					deliveryFailureCount: deliveryResult.failureCount,
