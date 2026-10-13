@@ -46,6 +46,7 @@ import {
 	writeBackupConfig,
 } from "../server/checkpoints"
 import { resolveUiAssets } from "../server/ui-assets"
+import { clearStartFailures, guardStartFailures } from "./start-failures"
 import { debugLog } from "../lib/debug"
 import { MAPLE_VERSION } from "../version"
 import { jsonFormatRequested, writeJson } from "./json-output"
@@ -1434,6 +1435,7 @@ export const start = Command.make("start", {
 						assets,
 					})
 					started = true
+					yield* clearStartFailures(dataDir)
 
 					const bindAddr = serverUrl(bindHost, boundPort)
 					const connectAddr = serverUrl(advertiseHost, boundPort)
@@ -1501,7 +1503,7 @@ export const start = Command.make("start", {
 
 					return yield* Effect.never
 				}),
-			)
+			).pipe(guardStartFailures(dataDir, { detachedChild: pidHandoverFrom() !== undefined }))
 		}),
 	),
 )
