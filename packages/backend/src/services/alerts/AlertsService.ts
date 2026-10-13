@@ -72,6 +72,7 @@ import {
 import type { MapleDb } from "@maple/db/client"
 import {
 	Array as Arr,
+	Cause,
 	Chunk,
 	Duration,
 	Effect,
@@ -336,6 +337,27 @@ const orderAlertRulesByLastClaim = <T extends { readonly id: string }>(
 		rows,
 		Order.mapInput(Order.Number, (row: T) => lastClaimedAt.get(row.id) ?? 0),
 	)
+
+// Deliveries claimed per batch. The drain takes batches until the queue is
+// empty or DELIVERY_DRAIN_BUDGET_MS has passed; the rest wait for the next tick.
+const DELIVERY_DRAIN_LIMIT = 50
+const DELIVERY_DRAIN_BUDGET_MS = 20_000
+
+// Logs and drops a typed failure or a defect, so one rule, chunk or delivery
+// cannot end the tick. Interruption still propagates.
+const isolate =
+	(message: string, annotations: Record<string, unknown>) =>
+	<A, E, R>(self: Effect.Effect<A, E, R>): Effect.Effect<void, never, R> => {
+		const log = (cause: Cause.Cause<unknown>) =>
+			Effect.logError(message).pipe(
+				Effect.annotateLogs({ ...annotations, cause: summarizeCause(cause) }),
+			)
+		return self.pipe(
+			Effect.asVoid,
+			Effect.catch((error) => log(Cause.fail(error))),
+			Effect.catchDefect((defect) => log(Cause.die(defect))),
+		)
+	}
 
 const toIngestDateTime64 = warehouseDateTime64
 
@@ -1646,19 +1668,21 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 				},
 			)
 
-			const processQueuedDeliveries = Effect.fn("AlertsService.processQueuedDeliveries")(function* () {
+			const processDeliveryBatch = Effect.fn("AlertsService.processDeliveryBatch")(function* () {
 				const currentTime = yield* now
 				const rows = yield* dbExecute((db) =>
 					db.run(
 						PG.from(AlertDeliveryEvents)
 							.select()
 							.where(($) => [claimableDeliveryWhere($, currentTime)])
-							.orderBy(["scheduledAt", "asc"]),
+							.orderBy(["scheduledAt", "asc"])
+							.limit(DELIVERY_DRAIN_LIMIT),
 					),
 				)
 
 				if (rows.length === 0) {
 					return {
+						claimedCount: 0,
 						processedCount: 0,
 						failureCount: 0,
 					}
@@ -1854,7 +1878,33 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 					)
 				})
 
-				const recoverDeliveryFailure = Effect.fnUntraced(function* (
+				const recoverDeliveryDefect = Effect.fnUntraced(function* (
+					row: AlertDeliveryEventRow,
+					defect: unknown,
+				) {
+					yield* Effect.logError("Alert delivery crashed").pipe(
+						Effect.annotateLogs({
+							deliveryKey: row.deliveryKey,
+							attemptNumber: row.attemptNumber,
+							cause: summarizeCause(Cause.die(defect)),
+						}),
+					)
+					// Retried through the bounded attempts, since a crash may be transient
+					// and nothing was sent. It is Maple's fault, so the destination's
+					// failure streak is left alone. A row whose stored data cannot be
+					// read fails its retry insert too, and so is not re-queued.
+					yield* recordFailedAttempt(
+						row,
+						{
+							message: "Internal error while delivering this notification",
+							kind: "internal",
+							retryable: true,
+						},
+						false,
+					)
+				})
+
+				const recoverDeliveryFailure = (
 					row: AlertDeliveryEventRow,
 					error:
 						| AlertValidationError
@@ -1862,8 +1912,16 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 						| AlertPersistenceError
 						| AlertDestinationStorageError
 						| AlertRuleStoredConfigInvalidError,
-				) {
+				) => {
 					const failure = toDeliveryAttemptFailure(error)
+					return recordFailedAttempt(row, failure, !failure.retryable)
+				}
+
+				const recordFailedAttempt = Effect.fnUntraced(function* (
+					row: AlertDeliveryEventRow,
+					failure: DeliveryAttemptFailure,
+					countsAgainstDestination: boolean,
+				) {
 					// Fresh for the same reason as the claim in `processOneDelivery`:
 					// retry scheduling from the batch timestamp would date the backoff
 					// from before this attempt even started.
@@ -1903,7 +1961,7 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 					// A terminal failure is never retried for this delivery, so without
 					// this the destination would keep receiving (and losing) every
 					// future incident.
-					if (!failure.retryable) {
+					if (countsAgainstDestination) {
 						yield* noteTerminalDestinationFailure(
 							row,
 							destinationMap.get(row.destinationId)?.type ?? null,
@@ -1926,13 +1984,43 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 				})
 
 				yield* Effect.forEach(rows, (row) =>
-					processOneDelivery(row).pipe(Effect.catch((error) => recoverDeliveryFailure(row, error))),
+					processOneDelivery(row).pipe(
+						Effect.catch((error) => recoverDeliveryFailure(row, error)),
+						// A crash finalizes the row, so it cannot be re-claimed first on
+						// every tick and stall the queue behind it.
+						Effect.catchDefect((defect) => recoverDeliveryDefect(row, defect)),
+						isolate("Alert delivery recovery failed", { deliveryKey: row.deliveryKey }),
+					),
 				)
 
 				return {
+					claimedCount: rows.length,
 					processedCount: yield* Ref.get(processedCount),
 					failureCount: yield* Ref.get(failureCount),
 				}
+			})
+
+			// Batches until the queue is drained or the budget is spent, so a burst
+			// larger than one batch does not build a backlog across ticks.
+			const processQueuedDeliveries = Effect.fn("AlertsService.processQueuedDeliveries")(function* () {
+				const deadline = (yield* now) + DELIVERY_DRAIN_BUDGET_MS
+				const totals = yield* Ref.make({ processedCount: 0, failureCount: 0 })
+				yield* processDeliveryBatch().pipe(
+					Effect.tap((batch) =>
+						Ref.update(totals, (sum) => ({
+							processedCount: sum.processedCount + batch.processedCount,
+							failureCount: sum.failureCount + batch.failureCount,
+						})),
+					),
+					Effect.flatMap((batch) =>
+						Effect.map(
+							now,
+							(time) => batch.claimedCount === DELIVERY_DRAIN_LIMIT && time < deadline,
+						),
+					),
+					Effect.repeat({ while: (more) => more }),
+				)
+				return yield* Ref.get(totals)
 			})
 
 			const processEvaluation = Effect.fn("AlertsService.processEvaluation")(function* (
@@ -3165,7 +3253,7 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 					Match.exhaustive,
 				)
 
-			const runSchedulerTick = Effect.fn("AlertsService.runSchedulerTick")(function* () {
+			const evaluateScheduledRules = Effect.fn("AlertsService.evaluateScheduledRules")(function* () {
 				const tickStart = yield* now
 				const rows = yield* dbExecute((db) =>
 					db.run(
@@ -3231,14 +3319,7 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 
 				const recordEvaluationFailure = Effect.fnUntraced(function* (
 					row: StoredAlertRuleRow,
-					error:
-						| AlertValidationError
-						| AlertDeliveryFailure
-						| AlertPersistenceError
-						| AlertRuleStoredConfigInvalidError
-						| QueryEngineValidationError
-						| QueryEngineTimeoutError
-						| WarehouseQueryPathError,
+					error: { readonly message: string },
 					failureCategory: string,
 					fields?: {
 						readonly upstreamStatus?: number
@@ -3558,6 +3639,23 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 									: undefined,
 							),
 						),
+						// A crash in one rule must not end the tick for every rule after it.
+						Effect.catchDefect((defect) =>
+							Effect.logError("Alert rule evaluation crashed").pipe(
+								Effect.annotateLogs({
+									ruleId: row.id,
+									orgId: row.orgId,
+									cause: summarizeCause(Cause.die(defect)),
+								}),
+								Effect.andThen(
+									recordEvaluationFailure(
+										row,
+										{ message: "Internal error while evaluating this rule" },
+										"defect",
+									),
+								),
+							),
+						),
 					)
 
 				// Rolling pool: a lane that frees pulls the next claimed rule, and the
@@ -3578,7 +3676,20 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 								yield* deferRules(chunk.length)
 								return []
 							}
-							const claimed = yield* claimRuleChunk(chunk, timestamp)
+							// A failed claim skips this chunk; its rules are claimed next tick.
+							const skipChunk = (cause: Cause.Cause<unknown>) =>
+								Effect.logError("Alert rule chunk claim failed").pipe(
+									Effect.annotateLogs({
+										chunkSize: chunk.length,
+										cause: summarizeCause(cause),
+									}),
+									Effect.andThen(deferRules(chunk.length)),
+									Effect.as([]),
+								)
+							const claimed = yield* claimRuleChunk(chunk, timestamp).pipe(
+								Effect.catch((error) => skipChunk(Cause.fail(error))),
+								Effect.catchDefect((defect) => skipChunk(Cause.die(defect))),
+							)
 							const claimedIds = new Set(claimed.map((row) => row.id))
 							return chunk
 								.filter((row) => claimedIds.has(row.id))
@@ -3663,7 +3774,7 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 							resolveAll: true,
 							pushBudget,
 						})
-					}),
+					}).pipe(isolate("Disabled alert rule sweep failed", { ruleId, orgId })),
 				)
 
 				// Flush accumulated alert_check audit rows to Tinybird, one POST per
@@ -3701,14 +3812,26 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 					)
 				}
 
-				const deliveryResult = yield* processQueuedDeliveries()
 				const evaluatedCount = yield* Ref.get(evaluatedRules)
 				yield* Metric.update(AlertingMetrics.rulesEvaluatedTotal, evaluatedCount)
-				yield* Metric.update(AlertingMetrics.tickDurationMs, (yield* now) - tickStart)
 				return {
 					evaluatedCount,
-					processedCount: deliveryResult.processedCount,
 					evaluationFailureCount: yield* Ref.get(evaluationFailureCount),
+				}
+			})
+
+			// Deliveries drain even when evaluation fails, so a broken rule pass
+			// never holds back notifications already queued. The failure is raised
+			// after the drain.
+			const runSchedulerTick = Effect.fn("AlertsService.runSchedulerTick")(function* () {
+				const tickStart = yield* now
+				const evaluation = yield* Effect.exit(evaluateScheduledRules())
+				const deliveryResult = yield* processQueuedDeliveries()
+				const evaluated = yield* evaluation
+				yield* Metric.update(AlertingMetrics.tickDurationMs, (yield* now) - tickStart)
+				return {
+					...evaluated,
+					processedCount: deliveryResult.processedCount,
 					deliveryFailureCount: deliveryResult.failureCount,
 				}
 			}, withAlertEvaluationScope)
