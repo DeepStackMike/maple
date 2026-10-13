@@ -111,6 +111,7 @@ import { simulateFiringSpans } from "./alert-firing-spans"
 import { ChatSessions } from "@maple/backend/platform/bindings"
 import { Database } from "@maple/backend/platform/DatabaseLive"
 import { formatComparator } from "./alert-formatting"
+import { buildChatDigestBlocks, CHAT_DIGEST_THRESHOLD, type ChatDigestItem } from "./delivery/chat-digest"
 import { makeIncidentPushBudget, type IncidentPushBudget } from "./alert-push-budget"
 import { EmailService } from "@maple/backend/platform/EmailService"
 import { Env } from "@maple/backend/platform/Env"
@@ -1934,6 +1935,8 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 						| AlertPersistenceError
 						| AlertDestinationStorageError
 						| AlertRuleStoredConfigInvalidError,
+					// False for all but one row of a digest: one refused post is one destination failure.
+					countable = true,
 				) => {
 					const failure = toDeliveryAttemptFailure(error)
 					// Only the provider's own refusal counts: a Maple fault (decryption,
@@ -1941,7 +1944,7 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 					return recordFailedAttempt(
 						row,
 						failure,
-						!failure.retryable && isProviderDeliveryFailure(error),
+						countable && !failure.retryable && isProviderDeliveryFailure(error),
 					)
 				}
 
@@ -2011,15 +2014,179 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 					)
 				})
 
-				yield* Effect.forEach(rows, (row) =>
-					processOneDelivery(row).pipe(
+				const digestItem = Effect.fnUntraced(function* (row: AlertDeliveryEventRow) {
+					const incident = row.incidentId != null ? (incidentMap.get(row.incidentId) ?? null) : null
+					const ruleRow = ruleMap.get(row.ruleId) ?? null
+					// Best effort per line: one unreadable payload must not sink the whole digest.
+					const payloadRule = Option.getOrUndefined(
+						yield* Effect.option(parseDeliveryPayload(row.payloadJson)),
+					)?.rule
+					const storedRule =
+						ruleRow === null
+							? null
+							: Option.getOrNull(yield* Effect.option(decodeStoredAlertRuleMetadata(ruleRow)))
+					const groupKey = incident?.groupKey ?? payloadRule?.groupKey ?? null
+					return {
+						ruleName: ruleRow?.name ?? payloadRule?.name ?? "Alert",
+						eventType: row.eventType,
+						severity: decodeAlertSeveritySync(
+							incident?.severity ?? payloadRule?.severity ?? "warning",
+						),
+						groupKey,
+						linkUrl: resolveNotificationLinkUrl(
+							{
+								serviceNames: storedRule?.serviceNames ?? [],
+								groupBy: storedRule?.groupBy ?? null,
+							},
+							groupKey,
+						),
+					} satisfies ChatDigestItem
+				})
+
+				// One chat message for a burst to one destination; each row still finalizes on its own.
+				const processChatDigest = Effect.fn("AlertsService.processChatDigest")(function* (
+					destinationRow: AlertDestinationRow,
+					group: ReadonlyArray<AlertDeliveryEventRow>,
+				) {
+					const claimTime = yield* now
+					const claimed = (yield* Effect.forEach(group, (row) =>
+						claimDeliveryEvent(row.id, claimTime).pipe(
+							Effect.map((ids) => (ids.length > 0 ? [row] : [])),
+						),
+					)).flat()
+					if (claimed.length === 0) return
+					yield* Ref.update(processedCount, (count) => count + claimed.length)
+					yield* Metric.update(AlertingMetrics.deliveriesAttemptedTotal, claimed.length)
+					yield* Effect.annotateCurrentSpan({
+						"maple.delivery.destination_id": destinationRow.id,
+						"maple.delivery.destination_type": "chat",
+						"maple.delivery.digest_size": claimed.length,
+					})
+					yield* Effect.gen(function* () {
+						const hydrated = yield* hydrateDestination(destinationRow)
+						const config = hydrated.secretConfig
+						if (config.type !== "chat")
+							return yield* new AlertValidationError({
+								message: "Chat destination has a non-chat config",
+								details: [],
+							})
+						const items = yield* Effect.forEach(claimed, digestItem)
+						const posted = yield* chatAlertPoster.post({
+							orgId: destinationRow.orgId,
+							workspaceId: config.workspaceId,
+							channelId: config.channelId,
+							blocks: buildChatDigestBlocks(items, composeLinkUrl(null), claimTime),
+						})
+						return { posted, channelName: config.channelName }
+					}).pipe(
+						Effect.matchEffect({
+							onFailure: (error) =>
+								Effect.forEach(
+									claimed,
+									(row, index) =>
+										recoverDeliveryFailure(row, error, index === 0).pipe(
+											isolate("Alert delivery recovery failed", {
+												deliveryKey: row.deliveryKey,
+											}),
+										),
+									{ discard: true },
+								),
+							onSuccess: ({ posted, channelName }) =>
+								finalizeDigest(destinationRow, claimed, claimTime, {
+									providerMessage: `Delivered to ${posted.connectorName} #${channelName} in a digest of ${claimed.length}`,
+									providerReference: posted.messageId,
+								}),
+						}),
+						Effect.catchDefect((defect) =>
+							Effect.forEach(
+								claimed,
+								(row) =>
+									recoverDeliveryDefect(row, defect).pipe(
+										isolate("Alert delivery recovery failed", {
+											deliveryKey: row.deliveryKey,
+										}),
+									),
+								{ discard: true },
+							),
+						),
+					)
+				})
+
+				const finalizeDigest = Effect.fnUntraced(function* (
+					destinationRow: AlertDestinationRow,
+					claimed: ReadonlyArray<AlertDeliveryEventRow>,
+					claimTime: number,
+					result: { readonly providerMessage: string; readonly providerReference: string },
+				) {
+					yield* Metric.update(AlertingMetrics.deliveriesSucceededTotal, claimed.length)
+					yield* Effect.forEach(
+						claimed,
+						(row) =>
+							Effect.gen(function* () {
+								yield* finalizeClaimedDelivery(row.id, claimTime, {
+									status: "success",
+									attemptedAt: claimTime,
+									providerMessage: result.providerMessage,
+									providerReference: result.providerReference,
+									responseCode: null,
+									errorMessage: null,
+								})
+								const incidentId = row.incidentId
+								if (incidentId === null) return
+								yield* dbExecute((db) =>
+									db.run(
+										PG.update(AlertIncidents)
+											.set({
+												lastDeliveredEventType: row.eventType,
+												lastNotifiedAt: claimTime,
+												updatedAt: claimTime,
+											})
+											.where(($) => [$.id.eq(incidentId)]),
+									),
+								)
+							}),
+						{ discard: true },
+					)
+					yield* clearDestinationFailureStreak(destinationRow.id, claimTime)
+				})
+
+				// Bursts of more than CHAT_DIGEST_THRESHOLD for one enabled chat destination.
+				const digestGroups = Object.values(
+					Arr.groupBy(
+						rows.filter(
+							(row) =>
+								row.eventType !== "test" &&
+								destinationMap.get(row.destinationId)?.type === "chat" &&
+								destinationMap.get(row.destinationId)?.enabled === true,
+						),
+						(row) => row.destinationId,
+					),
+				).filter((group) => group.length > CHAT_DIGEST_THRESHOLD)
+				// Each row maps to its digest; the digest goes out where its first row sits in batch order.
+				const digestOf = new Map(
+					digestGroups.flatMap((group) => group.map((row) => [row.id, group] as const)),
+				)
+
+				yield* Effect.forEach(rows, (row) => {
+					const group = digestOf.get(row.id)
+					if (group !== undefined) {
+						const destinationRow = destinationMap.get(row.destinationId)
+						return group[0].id !== row.id || destinationRow === undefined
+							? Effect.void
+							: processChatDigest(destinationRow, group).pipe(
+									isolate("Alert digest delivery failed", {
+										destinationId: destinationRow.id,
+									}),
+								)
+					}
+					return processOneDelivery(row).pipe(
 						Effect.catch((error) => recoverDeliveryFailure(row, error)),
 						// A crash finalizes the row, so it cannot be re-claimed first on
 						// every tick and stall the queue behind it.
 						Effect.catchDefect((defect) => recoverDeliveryDefect(row, defect)),
 						isolate("Alert delivery recovery failed", { deliveryKey: row.deliveryKey }),
-					),
-				)
+					)
+				})
 
 				return {
 					claimedCount: rows.length,
