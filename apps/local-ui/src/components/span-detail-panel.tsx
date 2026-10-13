@@ -19,6 +19,7 @@ import {
 	SelectableValue,
 } from "@maple/ui/components/attributes"
 import { ServiceDot } from "@maple/ui/components/service-dot"
+import { SpanPositionBar } from "@maple/ui/components/traces/span-position-bar"
 import { IconButton } from "@maple/ui/components/ui/icon-button"
 import { getCacheInfo, cacheResultStyles } from "@maple/ui/lib/cache"
 import { getServiceColor } from "@maple/ui/lib/colors"
@@ -35,12 +36,26 @@ import { LogDetailSheet } from "./log-detail-sheet"
 /** Matches the query limit in `useLocalSpanLogs`; a full page means "at least". */
 const LOG_LIMIT = 100
 
+/**
+ * A deep-linked panel opens with nothing focused, so the trace view's Escape handler
+ * would never hear the key: take focus then. A click keeps focus where it was (the
+ * timeline's own keyboard navigation).
+ */
+const focusOnMount = (node: HTMLElement | null) => {
+	if (node && (document.activeElement === null || document.activeElement === document.body)) {
+		node.focus({ preventScroll: true })
+	}
+}
+
 interface SpanDetailPanelProps {
 	span: SpanNode
+	/** The trace's start and length, for the span's position bar. */
+	traceStartTime: string
+	totalDurationMs: number
 	onClose: () => void
 }
 
-export function SpanDetailPanel({ span, onClose }: SpanDetailPanelProps) {
+export function SpanDetailPanel({ span, traceStartTime, totalDurationMs, onClose }: SpanDetailPanelProps) {
 	const cacheInfo = getCacheInfo(span.spanAttributes)
 	const statusStyle = getSpanStatusBadgeClass(span.statusCode)
 	const kindLabel = getSpanKindLabel(span.spanKind)
@@ -58,7 +73,11 @@ export function SpanDetailPanel({ span, onClose }: SpanDetailPanelProps) {
 	)
 
 	return (
-		<aside className="flex h-full w-full shrink-0 flex-col overflow-hidden border-l bg-background sm:w-[28rem]">
+		<aside
+			ref={focusOnMount}
+			tabIndex={-1}
+			className="flex h-full w-full shrink-0 flex-col overflow-hidden border-l bg-background focus:outline-none sm:w-[28rem]"
+		>
 			{/* Header: the left rail carries the span's service identity color */}
 			<div className="relative flex shrink-0 items-center justify-between border-b px-3 py-2">
 				<span
@@ -153,6 +172,12 @@ export function SpanDetailPanel({ span, onClose }: SpanDetailPanelProps) {
 						<div className="space-y-3 p-3">
 							<div className="space-y-1">
 								<h4 className="text-xs font-medium text-muted-foreground">Timing</h4>
+								<SpanPositionBar
+									span={span}
+									traceStartTime={traceStartTime}
+									totalDurationMs={totalDurationMs}
+									color={serviceColor}
+								/>
 								<KeyValueList className="gap-1 rounded-md border p-2">
 									<KeyValue label="Start time" mono>
 										<span title={formatUtcTitle(span.startTime)}>
