@@ -665,6 +665,14 @@ field instead of being stored mangled. A hex trace id read as base64 yields a
 _deterministic_ 24-byte value, so the trace still self-joins and looks correct
 until you compare it against the emitting service's logs.
 
+## Release workflow opt-in
+
+Set the repository Actions variable `MAPLE_RELEASE_ENABLED=true` to enable **Release**
+and **Local Binary Release**, including manual runs. Forks can leave it unset to skip
+these jobs. Use a repository variable or an organization variable scoped to this
+repository, not an environment variable.
+Upstream maintainers must set it before merging the gate to keep releases running.
+
 ## Release bundle
 
 `scripts/build-local-binary.sh` produces a relocatable **2-file bundle** (also built

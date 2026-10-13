@@ -43,6 +43,7 @@ permissions:
 
 jobs:
     build:
+        if: ${{ vars.MAPLE_RELEASE_ENABLED == 'true' }}
         name: Build ${{ matrix.target }}
         runs-on: ${{ matrix.runner }}
         timeout-minutes: 60
