@@ -98,9 +98,51 @@ export const formatDecimal = (n: number): string => {
 	return new Intl.NumberFormat("en-US", { maximumFractionDigits: digits }).format(n)
 }
 
-/** `2026-09-25 23:36:29.481465000` -> `2026-09-25 23:36:29`; anything else unchanged. */
-export const formatTimestamp = (value: string): string =>
-	/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}/.test(value) ? value.slice(0, 19).replace("T", " ") : value
+const WAREHOUSE_DATETIME = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}(?:\.\d+)?)$/
+
+/**
+ * The warehouse prints DateTime64 as `YYYY-MM-DD HH:mm:ss.fffffffff` with no
+ * zone, always UTC. JSON output spells it as ISO-8601 with `Z`.
+ */
+export const utcIso = (value: string): string => {
+	const match = WAREHOUSE_DATETIME.exec(value)
+	return match === null ? value : `${match[1]}T${match[2]}Z`
+}
+
+/** Result fields that hold an instant; log bodies and attributes never match. */
+const TIME_KEY = /(^|[a-z])([Tt]ime|[Tt]imestamp|Seen|[Bb]ucket)$/
+const ATTRIBUTES_KEY = /[aA]ttributes$/
+
+/**
+ * `JSON.stringify` replacer that applies `utcIso` to time fields only, so a
+ * log whose text happens to look like a datetime prints unchanged.
+ */
+export const utcTimestampReplacer = () => {
+	const attributeMaps = new WeakSet<object>()
+	return function (this: unknown, key: string, value: unknown) {
+		if (typeof this === "object" && this !== null && attributeMaps.has(this)) return value
+		if (ATTRIBUTES_KEY.test(key) && typeof value === "object" && value !== null) attributeMaps.add(value)
+		return typeof value === "string" && TIME_KEY.test(key) ? utcIso(value) : value
+	}
+}
+
+/** An instant to epoch ms, reading a zoneless one as UTC; NaN when unparseable. */
+export const timestampMs = (value: string): number => {
+	const iso = value
+		.trim()
+		.replace(" ", "T")
+		.replace(/(\.\d{3})\d+/, "$1")
+	return Date.parse(/Z|[+-]\d\d:?\d\d$/.test(iso) ? iso : `${iso}Z`)
+}
+
+/** `2026-09-25 23:36:29.481465000` -> `2026-09-25 23:36:29Z` (UTC); anything else unchanged. */
+export const formatTimestamp = (value: string): string => {
+	if (!/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}/.test(value)) return value
+	const ms = timestampMs(value)
+	return Number.isFinite(ms)
+		? `${new Date(ms).toISOString().slice(0, 19).replace("T", " ")}Z`
+		: value.slice(0, 19).replace("T", " ")
+}
 
 const DURATION_KEY = /(Ms|Duration)$/
 const RATE_KEY = /Rate$/
@@ -259,7 +301,9 @@ export const printResult = <A>(data: A, view?: View<A>): Effect.Effect<void> =>
 		const format = yield* resolveFormat
 		const empty = view?.isEmpty ? view.isEmpty(data) : isEmptyResult(data)
 		if (format === "json") {
-			process.stdout.write(`${JSON.stringify(data, null, 2)}\n`)
+			// Raw SQL rows stay as the query returned them.
+			const replacer = view?.raw ? undefined : utcTimestampReplacer()
+			process.stdout.write(`${JSON.stringify(data, replacer, 2)}\n`)
 		} else if (!empty) {
 			const sections = view?.table
 				? view.table(data)
