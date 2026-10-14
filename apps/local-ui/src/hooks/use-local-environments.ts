@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query"
+import { queryOptions, useQuery } from "@tanstack/react-query"
 import { CH } from "@maple/query-engine"
 import { executeLocalCompiledQuery } from "@/lib/query"
 import { LOCAL_ORG_ID } from "../lib/constants"
@@ -38,8 +38,12 @@ export function mergeEnvironments(...lists: ReadonlyArray<ReadonlyArray<string>>
  * Maple has seen recently, and narrowing it to the current window would make
  * the list shrink as the reader zooms in. One cache entry for the session.
  */
-export function useLocalEnvironments() {
-	return useQuery<ReadonlyArray<string>>({
+export function useLocalEnvironments(namespace?: string) {
+	const scoped = useQuery({
+		...namespaceEnvironmentsQueryOptions(namespace ?? ""),
+		enabled: namespace !== undefined,
+	})
+	const all = useQuery<ReadonlyArray<string>>({
 		queryKey: ["local", "environments"],
 		// A dev machine grows a new environment when something new is started, not
 		// between clicks.
@@ -55,6 +59,31 @@ export function useLocalEnvironments() {
 				services.map((row) => row.environment),
 				sessions.map((row) => row.environment),
 			)
+		},
+	})
+	return namespace === undefined ? all : scoped
+}
+
+/**
+ * The environments one project reported, for the header selector once a
+ * project is chosen. Shared with the project setter, which reads it to decide
+ * whether the selected environment survives a switch.
+ */
+export function namespaceEnvironmentsQueryOptions(namespace: string) {
+	return queryOptions({
+		queryKey: ["local", "environments", "namespace", namespace],
+		staleTime: 5 * 60_000,
+		queryFn: async ({ signal }): Promise<ReadonlyArray<string>> => {
+			const { startTime, endTime } = boundsForRange(ENVIRONMENT_LOOKBACK_RANGE)
+			const rows = await executeLocalCompiledQuery(
+				CH.compile(CH.namespaceEnvironmentsQuery({ namespace }), {
+					orgId: LOCAL_ORG_ID,
+					startTime,
+					endTime,
+				}),
+				signal,
+			)
+			return rows.map((row) => row.environment)
 		},
 	})
 }

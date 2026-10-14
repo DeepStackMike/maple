@@ -2,6 +2,7 @@ import { NativeSelect, NativeSelectOption } from "@maple/ui/components/ui/native
 import { LayersIcon } from "@maple/ui/components/icons"
 import { useLocalEnvironments } from "../hooks/use-local-environments"
 import { useEnvironment } from "../hooks/use-environment"
+import { useNamespace } from "../hooks/use-namespace"
 import { ALL_ENVIRONMENTS_LABEL, environmentLabel } from "../lib/environment"
 
 /**
@@ -20,7 +21,10 @@ import { ALL_ENVIRONMENTS_LABEL, environmentLabel } from "../lib/environment"
  * which is exactly when a reader needs to ask which rows forgot to say.
  */
 export function EnvironmentSelect() {
-	const environments = useLocalEnvironments()
+	// Scoped to the header project when one is chosen, so it only offers the
+	// environments that project actually reports.
+	const [namespace] = useNamespace()
+	const environments = useLocalEnvironments(namespace)
 	const [environment, setEnvironment] = useEnvironment()
 
 	const options = environments.data ?? []

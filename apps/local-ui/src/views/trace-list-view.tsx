@@ -145,7 +145,7 @@ export function TraceListView() {
 		// Through the setter as well: clearing the facet has to clear the
 		// remembered project, or the next render would resolve it straight back
 		// out of `localStorage`.
-		setNamespace(undefined)
+		void setNamespace(undefined)
 		setParams({ ...Object.fromEntries(FILTER_KEYS.map((key) => [key, null])), q: null, scope: null })
 	}
 
@@ -194,7 +194,7 @@ export function TraceListView() {
 					title="Namespace"
 					options={facets.data?.namespaces ?? []}
 					selected={filters.ns ? [filters.ns] : []}
-					onChange={(vals) => setNamespace(vals.at(-1))}
+					onChange={(vals) => void setNamespace(vals.at(-1))}
 				/>
 				<SearchableFilterSection
 					title="Service"

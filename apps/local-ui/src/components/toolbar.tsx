@@ -11,7 +11,13 @@ import {
 	TimeRangeSelect as SharedTimeRangeSelect,
 } from "@maple/ui/components/toolbar"
 import { Popover, PopoverPopup } from "@maple/ui/components/ui/popover"
-import { CUSTOM_RANGE_OPTION, DEFAULT_RANGE, formatAbsoluteRange, parseCustomRange, TIME_RANGES } from "../lib/time"
+import {
+	CUSTOM_RANGE_OPTION,
+	DEFAULT_RANGE,
+	formatAbsoluteRange,
+	parseCustomRange,
+	TIME_RANGES,
+} from "../lib/time"
 import { CustomRangePanel } from "./custom-range-popover"
 import { cn } from "@maple/ui/lib/utils"
 import { useNewDataSince } from "../hooks/use-local-server-status"

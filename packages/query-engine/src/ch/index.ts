@@ -316,10 +316,13 @@ export {
 export {
 	resourceNamespacesQuery,
 	namespaceServicesQuery,
+	namespaceEnvironmentsQuery,
 	type ResourceNamespacesOpts,
 	type ResourceNamespacesOutput,
 	type NamespaceServicesOpts,
 	type NamespaceServicesOutput,
+	type NamespaceEnvironmentsOpts,
+	type NamespaceEnvironmentsOutput,
 } from "./queries/namespaces"
 
 // Queries — Services

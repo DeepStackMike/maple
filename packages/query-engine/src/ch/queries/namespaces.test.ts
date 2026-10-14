@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { compileUnsafe } from "@maple-dev/effect-orm/clickhouse"
-import { namespaceServicesQuery, resourceNamespacesQuery } from "./namespaces"
+import { namespaceEnvironmentsQuery, namespaceServicesQuery, resourceNamespacesQuery } from "./namespaces"
 
 const baseParams = {
 	orgId: "org_1",
@@ -49,5 +49,15 @@ describe("namespaceServicesQuery", () => {
 	it("escapes the namespace", () => {
 		const { sql } = compileUnsafe(namespaceServicesQuery({ namespace: "it's" }), baseParams)
 		expect(sql).toContain("'it\\'s'")
+	})
+})
+
+describe("namespaceEnvironmentsQuery", () => {
+	it("lists the project's environments off every signal, untagged ones as unknown", () => {
+		const { sql } = compileUnsafe(namespaceEnvironmentsQuery({ namespace: "git-smoke" }), baseParams)
+		for (const table of SOURCES) expect(sql).toContain(`FROM ${table}`)
+		expect(sql).toMatch(/'unknown'\) AS environment/)
+		expect(sql).toContain("GROUP BY environment")
+		expect(sql.match(/\['service\.namespace'\] = 'git-smoke'/g)).toHaveLength(SOURCES.length)
 	})
 })

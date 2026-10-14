@@ -30,6 +30,7 @@ import {
 	Traces,
 	orgIdParam,
 } from "../tables"
+import { resourceEnvLabel } from "./environment"
 
 const NAMESPACE_KEY = "service.namespace"
 
@@ -50,6 +51,7 @@ const pairs = (namespace?: string) => {
 	}) => ({
 		namespace: $.ResourceAttributes.get(NAMESPACE_KEY),
 		serviceName: $.ServiceName,
+		environment: resourceEnvLabel($.ResourceAttributes),
 		rows: CH.count(),
 	})
 	return unionAll(
@@ -60,7 +62,7 @@ const pairs = (namespace?: string) => {
 				$.Timestamp.gte(param.dateTime("startTime")),
 				$.Timestamp.lte(param.dateTime("endTime")),
 			])
-			.groupBy("namespace", "serviceName"),
+			.groupBy("namespace", "serviceName", "environment"),
 		from(Logs)
 			.select(select)
 			.where(($) => [
@@ -68,7 +70,7 @@ const pairs = (namespace?: string) => {
 				$.Timestamp.gte(param.dateTime("startTime")),
 				$.Timestamp.lte(param.dateTime("endTime")),
 			])
-			.groupBy("namespace", "serviceName"),
+			.groupBy("namespace", "serviceName", "environment"),
 		from(SessionReplays)
 			.select(select)
 			.where(($) => [
@@ -76,7 +78,7 @@ const pairs = (namespace?: string) => {
 				$.StartTime.gte(param.dateTime("startTime")),
 				$.StartTime.lte(param.dateTime("endTime")),
 			])
-			.groupBy("namespace", "serviceName"),
+			.groupBy("namespace", "serviceName", "environment"),
 		from(MetricsSum)
 			.select(select)
 			.where(($) => [
@@ -84,7 +86,7 @@ const pairs = (namespace?: string) => {
 				$.TimeUnix.gte(param.dateTime("startTime")),
 				$.TimeUnix.lte(param.dateTime("endTime")),
 			])
-			.groupBy("namespace", "serviceName"),
+			.groupBy("namespace", "serviceName", "environment"),
 		from(MetricsGauge)
 			.select(select)
 			.where(($) => [
@@ -92,7 +94,7 @@ const pairs = (namespace?: string) => {
 				$.TimeUnix.gte(param.dateTime("startTime")),
 				$.TimeUnix.lte(param.dateTime("endTime")),
 			])
-			.groupBy("namespace", "serviceName"),
+			.groupBy("namespace", "serviceName", "environment"),
 		from(MetricsHistogram)
 			.select(select)
 			.where(($) => [
@@ -100,7 +102,7 @@ const pairs = (namespace?: string) => {
 				$.TimeUnix.gte(param.dateTime("startTime")),
 				$.TimeUnix.lte(param.dateTime("endTime")),
 			])
-			.groupBy("namespace", "serviceName"),
+			.groupBy("namespace", "serviceName", "environment"),
 	)
 }
 
@@ -145,5 +147,28 @@ export function namespaceServicesQuery(opts: NamespaceServicesOpts) {
 		.groupBy("serviceName")
 		.orderBy(["serviceName", "asc"])
 		.limit(1000)
+		.format("JSON")
+}
+
+export interface NamespaceEnvironmentsOpts {
+	readonly namespace: string
+}
+
+export interface NamespaceEnvironmentsOutput {
+	/** The labelled environment: an untagged row reads as `unknown`. */
+	readonly environment: string
+}
+
+/**
+ * The environments a project reported on any signal in the window — what the
+ * header's environment selector offers once a project is chosen, so it never
+ * lists a deployment the project has nothing in.
+ */
+export function namespaceEnvironmentsQuery(opts: NamespaceEnvironmentsOpts) {
+	return fromUnion(pairs(opts.namespace), "namespace_pairs")
+		.select(($) => ({ environment: $.environment }))
+		.groupBy("environment")
+		.orderBy(["environment", "asc"])
+		.limit(100)
 		.format("JSON")
 }

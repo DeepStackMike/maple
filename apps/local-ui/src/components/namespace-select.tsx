@@ -35,7 +35,7 @@ export function NamespaceSelect() {
 				size="sm"
 				aria-label="Project"
 				value={namespace ?? ""}
-				onChange={(event) => setNamespace(event.target.value || undefined)}
+				onChange={(event) => void setNamespace(event.target.value || undefined)}
 			>
 				<NativeSelectOption value="">{ALL_PROJECTS_LABEL}</NativeSelectOption>
 				{missingSelection ? (

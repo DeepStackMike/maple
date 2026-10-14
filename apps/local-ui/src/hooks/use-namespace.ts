@@ -1,6 +1,10 @@
 import { useCallback, useEffect } from "react"
+import { useQueryClient } from "@tanstack/react-query"
 import { namespaceParam, persistNamespace, resolveNamespace, storedNamespace } from "../lib/namespace"
-import { useQueryParams } from "../lib/router"
+import { persistEnvironment } from "../lib/environment"
+import { paramsAfterProjectChange } from "../lib/project-switch"
+import { navigate, parseLocation, useQueryParams } from "../lib/router"
+import { namespaceEnvironmentsQueryOptions } from "./use-local-environments"
 
 /**
  * The active project (`service.namespace`) for the current view, and a setter.
@@ -17,7 +21,7 @@ import { useQueryParams } from "../lib/router"
  * view that reads the param showed all of them. The mirror is a `replace`, so
  * it normalizes the URL without adding a history entry to step back through.
  */
-export function useNamespace(): readonly [string | undefined, (next: string | undefined) => void] {
+export function useNamespace(): readonly [string | undefined, (next: string | undefined) => Promise<void>] {
 	const [query, setParams] = useQueryParams()
 	const param = query.get("ns")
 	const namespace = resolveNamespace(param)
@@ -29,12 +33,28 @@ export function useNamespace(): readonly [string | undefined, (next: string | un
 		if (!param && storedNamespace()) setParams({ ns: namespaceParam(namespace) })
 	}, [param, namespace, setParams])
 
+	const queryClient = useQueryClient()
+	// A switch of project starts the page over (see `lib/project-switch.ts`):
+	// page filters go, standing choices stay, and the environment stays only if
+	// the new project reports it. A navigation, not a replace, so Back returns to
+	// the filtered view that was left.
 	const setNamespace = useCallback(
-		(next: string | undefined) => {
+		async (next: string | undefined) => {
 			persistNamespace(next)
-			setParams({ ns: namespaceParam(next) })
+			const current = parseLocation(window.location.hash.replace(/^#/, ""))
+			const environment = current.query.get("env")
+			const environments =
+				environment && next
+					? await queryClient
+							.fetchQuery(namespaceEnvironmentsQueryOptions(next))
+							.catch(() => undefined)
+					: undefined
+			// An unknown answer keeps the environment rather than silently dropping it.
+			const keepEnvironment = environments === undefined || environments.includes(environment ?? "")
+			if (!keepEnvironment) persistEnvironment(undefined)
+			navigate(current.path, paramsAfterProjectChange(current.query, next, keepEnvironment))
 		},
-		[setParams],
+		[queryClient],
 	)
 
 	return [namespace, setNamespace] as const

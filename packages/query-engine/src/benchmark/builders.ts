@@ -2138,6 +2138,14 @@ export const builderFixtures: ReadonlyArray<BuilderFixture> = [
 		label: "default",
 		compile: () => CH.compileUnsafe(CH.namespaceServicesQuery({ namespace: "shop" }), window),
 	},
+	{
+		// The selected project's services, which views without a namespace column
+		// (errors, product events, the service map) filter on instead.
+		module: "namespaces",
+		name: "namespaceEnvironmentsQuery",
+		label: "default",
+		compile: () => CH.compileUnsafe(CH.namespaceEnvironmentsQuery({ namespace: "shop" }), window),
+	},
 
 	// ----- activity: the only deliberately cross-org builders in the product.
 	// ----- Fixtured so the catalog's tenant-scope test actually exercises the

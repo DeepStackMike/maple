@@ -1862,82 +1862,169 @@ SELECT
         GROUP BY spanId
         FORMAT JSON
 
--- builder:namespaces:namespaceServicesQuery:default  [62e1903f]
+-- builder:namespaces:namespaceEnvironmentsQuery:default  [92dc5945]
 SELECT
-          namespace_pairs.serviceName AS serviceName
+          namespace_pairs.environment AS environment
         FROM (
 SELECT
           traces.ResourceAttributes['service.namespace'] AS namespace,
           traces.ServiceName AS serviceName,
+          coalesce(nullIf(coalesce(nullIf(traces.ResourceAttributes['deployment.environment.name'], ''), traces.ResourceAttributes['deployment.environment']), ''), 'unknown') AS environment,
           count() AS rows
         FROM traces
         WHERE traces.OrgId = 'org_sql_catalog'
           AND traces.ResourceAttributes['service.namespace'] = 'shop'
           AND traces.Timestamp >= '2026-01-01 10:30:00'
           AND traces.Timestamp <= '2026-01-03 14:15:00'
-        GROUP BY namespace, serviceName
+        GROUP BY namespace, serviceName, environment
 UNION ALL
 SELECT
           logs.ResourceAttributes['service.namespace'] AS namespace,
           logs.ServiceName AS serviceName,
+          coalesce(nullIf(coalesce(nullIf(logs.ResourceAttributes['deployment.environment.name'], ''), logs.ResourceAttributes['deployment.environment']), ''), 'unknown') AS environment,
           count() AS rows
         FROM logs
         WHERE logs.OrgId = 'org_sql_catalog'
           AND logs.ResourceAttributes['service.namespace'] = 'shop'
           AND logs.Timestamp >= '2026-01-01 10:30:00'
           AND logs.Timestamp <= '2026-01-03 14:15:00'
-        GROUP BY namespace, serviceName
+        GROUP BY namespace, serviceName, environment
 UNION ALL
 SELECT
           session_replays.ResourceAttributes['service.namespace'] AS namespace,
           session_replays.ServiceName AS serviceName,
+          coalesce(nullIf(coalesce(nullIf(session_replays.ResourceAttributes['deployment.environment.name'], ''), session_replays.ResourceAttributes['deployment.environment']), ''), 'unknown') AS environment,
           count() AS rows
         FROM session_replays
         WHERE session_replays.OrgId = 'org_sql_catalog'
           AND session_replays.ResourceAttributes['service.namespace'] = 'shop'
           AND session_replays.StartTime >= '2026-01-01 10:30:00'
           AND session_replays.StartTime <= '2026-01-03 14:15:00'
-        GROUP BY namespace, serviceName
+        GROUP BY namespace, serviceName, environment
 UNION ALL
 SELECT
           metrics_sum.ResourceAttributes['service.namespace'] AS namespace,
           metrics_sum.ServiceName AS serviceName,
+          coalesce(nullIf(coalesce(nullIf(metrics_sum.ResourceAttributes['deployment.environment.name'], ''), metrics_sum.ResourceAttributes['deployment.environment']), ''), 'unknown') AS environment,
           count() AS rows
         FROM metrics_sum
         WHERE metrics_sum.OrgId = 'org_sql_catalog'
           AND metrics_sum.ResourceAttributes['service.namespace'] = 'shop'
           AND metrics_sum.TimeUnix >= '2026-01-01 10:30:00'
           AND metrics_sum.TimeUnix <= '2026-01-03 14:15:00'
-        GROUP BY namespace, serviceName
+        GROUP BY namespace, serviceName, environment
 UNION ALL
 SELECT
           metrics_gauge.ResourceAttributes['service.namespace'] AS namespace,
           metrics_gauge.ServiceName AS serviceName,
+          coalesce(nullIf(coalesce(nullIf(metrics_gauge.ResourceAttributes['deployment.environment.name'], ''), metrics_gauge.ResourceAttributes['deployment.environment']), ''), 'unknown') AS environment,
           count() AS rows
         FROM metrics_gauge
         WHERE metrics_gauge.OrgId = 'org_sql_catalog'
           AND metrics_gauge.ResourceAttributes['service.namespace'] = 'shop'
           AND metrics_gauge.TimeUnix >= '2026-01-01 10:30:00'
           AND metrics_gauge.TimeUnix <= '2026-01-03 14:15:00'
-        GROUP BY namespace, serviceName
+        GROUP BY namespace, serviceName, environment
 UNION ALL
 SELECT
           metrics_histogram.ResourceAttributes['service.namespace'] AS namespace,
           metrics_histogram.ServiceName AS serviceName,
+          coalesce(nullIf(coalesce(nullIf(metrics_histogram.ResourceAttributes['deployment.environment.name'], ''), metrics_histogram.ResourceAttributes['deployment.environment']), ''), 'unknown') AS environment,
           count() AS rows
         FROM metrics_histogram
         WHERE metrics_histogram.OrgId = 'org_sql_catalog'
           AND metrics_histogram.ResourceAttributes['service.namespace'] = 'shop'
           AND metrics_histogram.TimeUnix >= '2026-01-01 10:30:00'
           AND metrics_histogram.TimeUnix <= '2026-01-03 14:15:00'
-        GROUP BY namespace, serviceName
+        GROUP BY namespace, serviceName, environment
+) AS namespace_pairs
+        GROUP BY environment
+        ORDER BY environment ASC
+        LIMIT 100
+        FORMAT JSON
+
+-- builder:namespaces:namespaceServicesQuery:default  [58bde059]
+SELECT
+          namespace_pairs.serviceName AS serviceName
+        FROM (
+SELECT
+          traces.ResourceAttributes['service.namespace'] AS namespace,
+          traces.ServiceName AS serviceName,
+          coalesce(nullIf(coalesce(nullIf(traces.ResourceAttributes['deployment.environment.name'], ''), traces.ResourceAttributes['deployment.environment']), ''), 'unknown') AS environment,
+          count() AS rows
+        FROM traces
+        WHERE traces.OrgId = 'org_sql_catalog'
+          AND traces.ResourceAttributes['service.namespace'] = 'shop'
+          AND traces.Timestamp >= '2026-01-01 10:30:00'
+          AND traces.Timestamp <= '2026-01-03 14:15:00'
+        GROUP BY namespace, serviceName, environment
+UNION ALL
+SELECT
+          logs.ResourceAttributes['service.namespace'] AS namespace,
+          logs.ServiceName AS serviceName,
+          coalesce(nullIf(coalesce(nullIf(logs.ResourceAttributes['deployment.environment.name'], ''), logs.ResourceAttributes['deployment.environment']), ''), 'unknown') AS environment,
+          count() AS rows
+        FROM logs
+        WHERE logs.OrgId = 'org_sql_catalog'
+          AND logs.ResourceAttributes['service.namespace'] = 'shop'
+          AND logs.Timestamp >= '2026-01-01 10:30:00'
+          AND logs.Timestamp <= '2026-01-03 14:15:00'
+        GROUP BY namespace, serviceName, environment
+UNION ALL
+SELECT
+          session_replays.ResourceAttributes['service.namespace'] AS namespace,
+          session_replays.ServiceName AS serviceName,
+          coalesce(nullIf(coalesce(nullIf(session_replays.ResourceAttributes['deployment.environment.name'], ''), session_replays.ResourceAttributes['deployment.environment']), ''), 'unknown') AS environment,
+          count() AS rows
+        FROM session_replays
+        WHERE session_replays.OrgId = 'org_sql_catalog'
+          AND session_replays.ResourceAttributes['service.namespace'] = 'shop'
+          AND session_replays.StartTime >= '2026-01-01 10:30:00'
+          AND session_replays.StartTime <= '2026-01-03 14:15:00'
+        GROUP BY namespace, serviceName, environment
+UNION ALL
+SELECT
+          metrics_sum.ResourceAttributes['service.namespace'] AS namespace,
+          metrics_sum.ServiceName AS serviceName,
+          coalesce(nullIf(coalesce(nullIf(metrics_sum.ResourceAttributes['deployment.environment.name'], ''), metrics_sum.ResourceAttributes['deployment.environment']), ''), 'unknown') AS environment,
+          count() AS rows
+        FROM metrics_sum
+        WHERE metrics_sum.OrgId = 'org_sql_catalog'
+          AND metrics_sum.ResourceAttributes['service.namespace'] = 'shop'
+          AND metrics_sum.TimeUnix >= '2026-01-01 10:30:00'
+          AND metrics_sum.TimeUnix <= '2026-01-03 14:15:00'
+        GROUP BY namespace, serviceName, environment
+UNION ALL
+SELECT
+          metrics_gauge.ResourceAttributes['service.namespace'] AS namespace,
+          metrics_gauge.ServiceName AS serviceName,
+          coalesce(nullIf(coalesce(nullIf(metrics_gauge.ResourceAttributes['deployment.environment.name'], ''), metrics_gauge.ResourceAttributes['deployment.environment']), ''), 'unknown') AS environment,
+          count() AS rows
+        FROM metrics_gauge
+        WHERE metrics_gauge.OrgId = 'org_sql_catalog'
+          AND metrics_gauge.ResourceAttributes['service.namespace'] = 'shop'
+          AND metrics_gauge.TimeUnix >= '2026-01-01 10:30:00'
+          AND metrics_gauge.TimeUnix <= '2026-01-03 14:15:00'
+        GROUP BY namespace, serviceName, environment
+UNION ALL
+SELECT
+          metrics_histogram.ResourceAttributes['service.namespace'] AS namespace,
+          metrics_histogram.ServiceName AS serviceName,
+          coalesce(nullIf(coalesce(nullIf(metrics_histogram.ResourceAttributes['deployment.environment.name'], ''), metrics_histogram.ResourceAttributes['deployment.environment']), ''), 'unknown') AS environment,
+          count() AS rows
+        FROM metrics_histogram
+        WHERE metrics_histogram.OrgId = 'org_sql_catalog'
+          AND metrics_histogram.ResourceAttributes['service.namespace'] = 'shop'
+          AND metrics_histogram.TimeUnix >= '2026-01-01 10:30:00'
+          AND metrics_histogram.TimeUnix <= '2026-01-03 14:15:00'
+        GROUP BY namespace, serviceName, environment
 ) AS namespace_pairs
         GROUP BY serviceName
         ORDER BY serviceName ASC
         LIMIT 1000
         FORMAT JSON
 
--- builder:namespaces:resourceNamespacesQuery:default  [b0e60c6a]
+-- builder:namespaces:resourceNamespacesQuery:default  [96c63b34]
 SELECT
           namespace_pairs.namespace AS namespace,
           sum(namespace_pairs.rows) AS spanCount
@@ -1945,68 +2032,74 @@ SELECT
 SELECT
           traces.ResourceAttributes['service.namespace'] AS namespace,
           traces.ServiceName AS serviceName,
+          coalesce(nullIf(coalesce(nullIf(traces.ResourceAttributes['deployment.environment.name'], ''), traces.ResourceAttributes['deployment.environment']), ''), 'unknown') AS environment,
           count() AS rows
         FROM traces
         WHERE traces.OrgId = 'org_sql_catalog'
           AND traces.ResourceAttributes['service.namespace'] != ''
           AND traces.Timestamp >= '2026-01-01 10:30:00'
           AND traces.Timestamp <= '2026-01-03 14:15:00'
-        GROUP BY namespace, serviceName
+        GROUP BY namespace, serviceName, environment
 UNION ALL
 SELECT
           logs.ResourceAttributes['service.namespace'] AS namespace,
           logs.ServiceName AS serviceName,
+          coalesce(nullIf(coalesce(nullIf(logs.ResourceAttributes['deployment.environment.name'], ''), logs.ResourceAttributes['deployment.environment']), ''), 'unknown') AS environment,
           count() AS rows
         FROM logs
         WHERE logs.OrgId = 'org_sql_catalog'
           AND logs.ResourceAttributes['service.namespace'] != ''
           AND logs.Timestamp >= '2026-01-01 10:30:00'
           AND logs.Timestamp <= '2026-01-03 14:15:00'
-        GROUP BY namespace, serviceName
+        GROUP BY namespace, serviceName, environment
 UNION ALL
 SELECT
           session_replays.ResourceAttributes['service.namespace'] AS namespace,
           session_replays.ServiceName AS serviceName,
+          coalesce(nullIf(coalesce(nullIf(session_replays.ResourceAttributes['deployment.environment.name'], ''), session_replays.ResourceAttributes['deployment.environment']), ''), 'unknown') AS environment,
           count() AS rows
         FROM session_replays
         WHERE session_replays.OrgId = 'org_sql_catalog'
           AND session_replays.ResourceAttributes['service.namespace'] != ''
           AND session_replays.StartTime >= '2026-01-01 10:30:00'
           AND session_replays.StartTime <= '2026-01-03 14:15:00'
-        GROUP BY namespace, serviceName
+        GROUP BY namespace, serviceName, environment
 UNION ALL
 SELECT
           metrics_sum.ResourceAttributes['service.namespace'] AS namespace,
           metrics_sum.ServiceName AS serviceName,
+          coalesce(nullIf(coalesce(nullIf(metrics_sum.ResourceAttributes['deployment.environment.name'], ''), metrics_sum.ResourceAttributes['deployment.environment']), ''), 'unknown') AS environment,
           count() AS rows
         FROM metrics_sum
         WHERE metrics_sum.OrgId = 'org_sql_catalog'
           AND metrics_sum.ResourceAttributes['service.namespace'] != ''
           AND metrics_sum.TimeUnix >= '2026-01-01 10:30:00'
           AND metrics_sum.TimeUnix <= '2026-01-03 14:15:00'
-        GROUP BY namespace, serviceName
+        GROUP BY namespace, serviceName, environment
 UNION ALL
 SELECT
           metrics_gauge.ResourceAttributes['service.namespace'] AS namespace,
           metrics_gauge.ServiceName AS serviceName,
+          coalesce(nullIf(coalesce(nullIf(metrics_gauge.ResourceAttributes['deployment.environment.name'], ''), metrics_gauge.ResourceAttributes['deployment.environment']), ''), 'unknown') AS environment,
           count() AS rows
         FROM metrics_gauge
         WHERE metrics_gauge.OrgId = 'org_sql_catalog'
           AND metrics_gauge.ResourceAttributes['service.namespace'] != ''
           AND metrics_gauge.TimeUnix >= '2026-01-01 10:30:00'
           AND metrics_gauge.TimeUnix <= '2026-01-03 14:15:00'
-        GROUP BY namespace, serviceName
+        GROUP BY namespace, serviceName, environment
 UNION ALL
 SELECT
           metrics_histogram.ResourceAttributes['service.namespace'] AS namespace,
           metrics_histogram.ServiceName AS serviceName,
+          coalesce(nullIf(coalesce(nullIf(metrics_histogram.ResourceAttributes['deployment.environment.name'], ''), metrics_histogram.ResourceAttributes['deployment.environment']), ''), 'unknown') AS environment,
           count() AS rows
         FROM metrics_histogram
         WHERE metrics_histogram.OrgId = 'org_sql_catalog'
           AND metrics_histogram.ResourceAttributes['service.namespace'] != ''
           AND metrics_histogram.TimeUnix >= '2026-01-01 10:30:00'
           AND metrics_histogram.TimeUnix <= '2026-01-03 14:15:00'
-        GROUP BY namespace, serviceName
+        GROUP BY namespace, serviceName, environment
 ) AS namespace_pairs
         GROUP BY namespace
         ORDER BY spanCount DESC, namespace ASC
