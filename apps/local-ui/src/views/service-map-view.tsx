@@ -1,8 +1,10 @@
-import { useMemo } from "react"
+import { lazy, Suspense, useMemo } from "react"
 import { CircleInfoIcon } from "@maple/ui/components/icons"
 import { cn } from "@maple/ui/lib/utils"
+import { ToggleGroup, ToggleGroupItem } from "@maple/ui/components/ui/toggle-group"
 import {
 	ServiceMapFlowCanvas,
+	type ServiceMap3DRenderProps,
 	type ServiceMapDetailPanelContext,
 } from "@maple/ui/components/service-map/service-map-canvas"
 import { ServiceMapLoading } from "@maple/ui/components/service-map/service-map-loading"
@@ -16,6 +18,7 @@ import { useEnvironment } from "../hooks/use-environment"
 import { useNamespaceServices } from "../hooks/use-namespace-services"
 import { scopeServiceMap } from "../lib/project-scope"
 import { useRange } from "../hooks/use-range"
+import { useQueryParams } from "../lib/router"
 import { useTimeWindow } from "../hooks/use-time-window"
 import { resolveRange, WIDEST_RANGE } from "../lib/time"
 import { useServiceMapLayout, useServiceMapViewPrefs } from "../lib/service-map-state"
@@ -23,6 +26,27 @@ import { ServiceMapDatabasePanel, ServiceMapServicePanel } from "../components/s
 import { SignalEmptyState } from "../components/signal-empty-state"
 import { RefreshButton, TimeRangeSelect, Toolbar, ToolbarStat, ToolbarStats } from "../components/toolbar"
 import { ErrorState } from "../components/view-states"
+
+// three.js and the scene only load once someone opens the 3D view.
+const LiveServiceMap3D = lazy(() => import("../components/service-map-3d/live-view"))
+
+function renderLiveServiceMap3D(props: ServiceMap3DRenderProps) {
+	return (
+		<Suspense fallback={<ServiceMapLoading />}>
+			<LiveServiceMap3D {...props} />
+		</Suspense>
+	)
+}
+
+type ServiceMapViewMode = "2d" | "3d"
+
+/** `view=3d` in the hash opens the isometric map; anything else is the 2D canvas. */
+function useServiceMapViewMode(): readonly [ServiceMapViewMode, (mode: ServiceMapViewMode) => void] {
+	const [query, setParams] = useQueryParams()
+	const mode: ServiceMapViewMode = query.get("view") === "3d" ? "3d" : "2d"
+	const setMode = (next: ServiceMapViewMode) => setParams({ view: next === "3d" ? next : null })
+	return [mode, setMode] as const
+}
 
 function buildGraph(data: LocalServiceMapData, durationSeconds: number) {
 	const { nodes, edges } = buildFlowElements({
@@ -65,6 +89,7 @@ export function ServiceMapView() {
 	const map = useLocalServiceMap(timeWindow.bounds, durationSeconds)
 	const [layout, setLayout] = useServiceMapLayout()
 	const [viewPrefs, setViewPrefs] = useServiceMapViewPrefs()
+	const [viewMode, setViewMode] = useServiceMapViewMode()
 	// Local fork: the header project (as its services) and environment, applied
 	// client-side — see `scopeServiceMap` for what each does to edges. Nothing is
 	// drawn until the project's services are known.
@@ -116,6 +141,20 @@ export function ServiceMapView() {
 		<div className="flex h-full flex-col">
 			<Toolbar>
 				<ToolbarStats>
+					<ToggleGroup
+						value={[viewMode]}
+						onValueChange={(values) => {
+							const next = values.find((value) => value !== viewMode)
+							if (next === "2d" || next === "3d") setViewMode(next)
+						}}
+						variant="outline"
+						size="sm"
+						aria-label="Service map view"
+						className="shrink-0"
+					>
+						<ToggleGroupItem value="2d">2D</ToggleGroupItem>
+						<ToggleGroupItem value="3d">3D</ToggleGroupItem>
+					</ToggleGroup>
 					<ToolbarStat value={graph?.services.length ?? 0} label="services" />
 					<ToolbarStat value={data?.edges.length ?? 0} label="connections" />
 					<ToolbarStat value={databaseCount} label="databases" />
@@ -137,6 +176,7 @@ export function ServiceMapView() {
 					<ErrorState label="the service map" error={map.error} onRetry={() => map.refetch()} />
 				) : graph ? (
 					<ServiceMapFlowCanvas
+						viewMode={viewMode}
 						nodes={graph.nodes}
 						edges={graph.edges}
 						services={graph.services}
@@ -153,6 +193,7 @@ export function ServiceMapView() {
 							/>
 						}
 						renderDetailPanel={renderDetailPanel}
+						render3D={renderLiveServiceMap3D}
 						showLayoutDebug={import.meta.env.DEV}
 					/>
 				) : null}
