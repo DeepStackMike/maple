@@ -1,8 +1,8 @@
-import { Duration, Effect, Option, Schema } from "effect"
+import { Clock, Config, Duration, Effect, Option, Schema } from "effect"
 import { FileSystem } from "effect/FileSystem"
-import * as Command from "effect/unstable/cli/Command"
-import * as Flag from "effect/unstable/cli/Flag"
-import { HttpClient, HttpClientResponse } from "effect/unstable/http"
+import * as Command from "effect/cli/Command"
+import * as Flag from "effect/cli/Flag"
+import { HttpClient, HttpClientResponse } from "effect/http"
 import { randomUUID } from "node:crypto"
 import {
 	closeSync,
@@ -30,6 +30,8 @@ import {
 	SERVER_PID_NAME,
 	serverDiscoveryPath,
 	serverPidPath,
+	storeMarkerPath,
+	UNVERSIONED_STORE,
 } from "../server/store-version"
 import { durableWrite } from "../server/durable-files"
 import { abandonLocalStoreMigration, localMigrationIsIncomplete } from "../server/local-store-migrations"
@@ -46,6 +48,7 @@ import {
 	writeBackupConfig,
 } from "../server/checkpoints"
 import { resolveUiAssets } from "../server/ui-assets"
+import { clearStartFailures, guardStartFailures } from "./start-failures"
 import { debugLog } from "../lib/debug"
 import { MAPLE_VERSION } from "../version"
 import { jsonFormatRequested, writeJson } from "./json-output"
@@ -122,20 +125,33 @@ const stateFileError =
 	(error: unknown): ServerStateFileError =>
 		new ServerStateFileError({ path, message: `could not ${action} ${path}: ${describeError(error)}` })
 
-const remoteUiUrl = (): Effect.Effect<string, ServerOptionError> => {
-	const configured = process.env.MAPLE_LOCAL_UI_URL?.trim() || DEFAULT_REMOTE_UI_URL
-	return Effect.try({
-		try: () => {
-			hostedUiOrigin(configured)
-			return configured
-		},
-		catch: (error) =>
-			new ServerOptionError({
-				source: "MAPLE_LOCAL_UI_URL",
-				message: `invalid MAPLE_LOCAL_UI_URL: ${describeError(error)}`,
-			}),
-	})
-}
+/** An unset or empty env var reads as `undefined`; never fails. */
+const optionalEnvString = (key: string): Effect.Effect<string | undefined> =>
+	Config.String(key).pipe(
+		Config.option,
+		Effect.map(Option.getOrUndefined),
+		Effect.orElseSucceed(() => undefined),
+	)
+
+const localUiUrlConfig = Effect.map(
+	optionalEnvString("MAPLE_LOCAL_UI_URL"),
+	(raw) => raw?.trim() || DEFAULT_REMOTE_UI_URL,
+)
+
+const remoteUiUrl = (): Effect.Effect<string, ServerOptionError> =>
+	Effect.flatMap(localUiUrlConfig, (configured) =>
+		Effect.try({
+			try: () => {
+				hostedUiOrigin(configured)
+				return configured
+			},
+			catch: (error) =>
+				new ServerOptionError({
+					source: "MAPLE_LOCAL_UI_URL",
+					message: `invalid MAPLE_LOCAL_UI_URL: ${describeError(error)}`,
+				}),
+		}),
+	)
 
 const validatedHost = (source: string, value: string): Effect.Effect<string, ServerOptionError> =>
 	Effect.try({
@@ -233,9 +249,11 @@ const processStartedAtMs = (pid: number): Effect.Effect<Option.Option<number>> =
 			Bun.spawnSync(["ps", "-o", "etime=", "-p", String(pid)], { stdout: "pipe", stderr: "ignore" }),
 		catch: (error) => error,
 	}).pipe(
-		Effect.map((result) => {
+		Effect.flatMap((result) => {
 			const seconds = result.success ? parseElapsedSeconds(result.stdout.toString()) : undefined
-			return seconds === undefined ? Option.none<number>() : Option.some(Date.now() - seconds * 1000)
+			return seconds === undefined
+				? Effect.succeed(Option.none<number>())
+				: Effect.map(Clock.currentTimeMillis, (nowMs) => Option.some(nowMs - seconds * 1000))
 		}),
 		Effect.orElseSucceed(() => Option.none<number>()),
 	)
@@ -738,7 +756,7 @@ const ensureInitialCheckpoint = (
 		yield* Effect.sync(() =>
 			process.stderr.write(dim("◌ taking the store's first checkpoint (restore point)…\n")),
 		)
-		const startedAt = Date.now()
+		const startedAt = yield* Clock.currentTimeMillis
 		return (yield* takeCheckpointQuietly(target, "initial"))
 			? Option.some(startedAt)
 			: Option.none<number>()
@@ -795,7 +813,10 @@ const takeCheckpointQuietly = (
 				}),
 		}),
 		(child) =>
-			Effect.promise(() => Promise.all([child.exited, new Response(child.stderr).text()])).pipe(
+			Effect.all(
+				[Effect.promise(() => child.exited), Effect.promise(() => new Response(child.stderr).text())],
+				{ concurrency: "unbounded" },
+			).pipe(
 				Effect.flatMap(([exitCode, stderr]) =>
 					exitCode === 0
 						? Effect.void
@@ -878,11 +899,14 @@ const checkpointRefreshLoop = (
 			if (lastTakenAtMs !== undefined) {
 				const status = yield* fetchLocalStatus(statusUrl, "5 seconds")
 				if (!storeChangedSince(Option.getOrUndefined(status), lastTakenAtMs)) {
-					debugLog("checkpoint refresh skipped", "nothing ingested or deleted since the last checkpoint")
+					debugLog(
+						"checkpoint refresh skipped",
+						"nothing ingested or deleted since the last checkpoint",
+					)
 					continue
 				}
 			}
-			const startedAt = Date.now()
+			const startedAt = yield* Clock.currentTimeMillis
 			if (yield* takeCheckpointQuietly(target, "refresh")) lastTakenAtMs = startedAt
 		}
 	})
@@ -1011,9 +1035,13 @@ const startDetached = (options: DetachedStart) =>
 		const probeAddr = serverProbeUrl(options.bindHost, options.port)
 		// One span for the whole readiness wait, never one per probe.
 		const readiness = yield* Effect.gen(function* () {
-			const startedAt = Date.now()
+			const startedAt = yield* Clock.currentTimeMillis
 			let noticed = false
-			for (let attempt = 1; Date.now() - startedAt < BACKGROUND_READY_TIMEOUT_MS; attempt++) {
+			for (
+				let attempt = 1;
+				(yield* Clock.currentTimeMillis) - startedAt < BACKGROUND_READY_TIMEOUT_MS;
+				attempt++
+			) {
 				yield* Effect.sleep(`${BACKGROUND_READY_POLL_MS} millis`)
 				if (!childRunning()) {
 					yield* Effect.annotateCurrentSpan({
@@ -1035,7 +1063,7 @@ const startDetached = (options: DetachedStart) =>
 					yield* Effect.annotateCurrentSpan({ "maple.server.probe_attempt": attempt })
 					return { kind: "ready" } satisfies ChildReadiness
 				}
-				if (!noticed && Date.now() - startedAt > BACKGROUND_SLOW_NOTICE_MS) {
+				if (!noticed && (yield* Clock.currentTimeMillis) - startedAt > BACKGROUND_SLOW_NOTICE_MS) {
 					noticed = true
 					yield* Effect.sync(() =>
 						process.stderr.write(dim("◌ still opening the store (large stores take longer)…\n")),
@@ -1153,7 +1181,7 @@ export const start = Command.make("start", {
 				"--advertise-host / MAPLE_LOCAL_ADVERTISE_HOST",
 				resolveAdvertiseHost(
 					Option.getOrUndefined(a.advertiseHost),
-					process.env.MAPLE_LOCAL_ADVERTISE_HOST,
+					yield* optionalEnvString("MAPLE_LOCAL_ADVERTISE_HOST"),
 					bindHost,
 				),
 			)
@@ -1284,7 +1312,13 @@ export const start = Command.make("start", {
 								`(store: ${compat.found}; build: ${compat.current}); loading it would crash chDB. ` +
 								`If a newer maple wrote it, reinstall that one (\`${bold("maple update")}\`). ` +
 								`Otherwise wipe it with \`${bold(mapleCommand("reset", scope))}\`, or start fresh via ` +
-								`\`${bold(mapleCommand("start --reset", scope))}\`.`,
+								`\`${bold(mapleCommand("start --reset", scope))}\`.` +
+								// The marker is a sidecar beside the data dir, so a volume mounted at
+								// the data dir itself loses it on every container re-creation.
+								(compat.found === UNVERSIONED_STORE
+									? ` The version marker lives beside the data dir (${prettyPath(storeMarkerPath(dataDir))}); ` +
+										`if ${prettyPath(dataDir)} is a mounted volume, mount its parent directory instead.`
+									: ""),
 						})
 					}
 
@@ -1409,6 +1443,7 @@ export const start = Command.make("start", {
 						assets,
 					})
 					started = true
+					yield* clearStartFailures(dataDir)
 
 					const bindAddr = serverUrl(bindHost, boundPort)
 					const connectAddr = serverUrl(advertiseHost, boundPort)
@@ -1476,7 +1511,7 @@ export const start = Command.make("start", {
 
 					return yield* Effect.never
 				}),
-			)
+			).pipe(guardStartFailures(dataDir, { detachedChild: pidHandoverFrom() !== undefined }))
 		}),
 	),
 )
@@ -1528,7 +1563,7 @@ const statusConfirmsPid = (
 		const urls = [
 			...(Option.isSome(discovery) && discovery.value.pid === pid ? [discovery.value.url] : []),
 			serverProbeUrl(
-				scope.host ?? resolveBindHost(process.env.MAPLE_LOCAL_BIND_HOST),
+				scope.host ?? resolveBindHost(yield* optionalEnvString("MAPLE_LOCAL_BIND_HOST")),
 				scope.port ?? 4318,
 			),
 		]

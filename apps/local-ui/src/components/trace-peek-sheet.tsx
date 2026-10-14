@@ -1,6 +1,6 @@
 // The peek: a trace's page, in a sheet, without leaving the list. Ported from
 // the hosted app (#896) onto Local's own trace pieces — the shared waterfall
-// (log badges and span panel included) and a local anatomy strip.
+// (log badges and span panel included) and the shared anatomy strip.
 //
 // Triage is a walk down a list, and a full navigation per row costs the scroll
 // and the filters each time. The sheet shows what the trace page would, ↑/↓
@@ -26,8 +26,7 @@ import { cn } from "@maple/ui/lib/utils"
 import { useLocalTraceDetail } from "../hooks/use-local-trace-detail"
 import { stepFor } from "../lib/trace-peek"
 import type { SpanPanelTab } from "./span-detail-panel"
-import { TraceAnatomyStrip } from "./trace-anatomy-strip"
-import { TraceWaterfall } from "./trace-waterfall"
+import { TraceAnatomy, TraceWaterfall, traceRootSpan } from "./trace-waterfall"
 import { ErrorState } from "./view-states"
 
 function isTextEntry(target: EventTarget | null): boolean {
@@ -227,7 +226,7 @@ export function TracePeekBody({
 	// dimmed view during a step is one coherent trace, never the next id over
 	// the previous spans.
 	const shownTraceId = data.spans[0]?.traceId ?? traceId
-	const rootSpan = data.rootSpans[0]
+	const rootSpan = traceRootSpan(data)
 
 	if (!rootSpan) {
 		return (
@@ -262,7 +261,7 @@ export function TracePeekBody({
 				</SheetDescription>
 			</PeekHeader>
 			<div className="flex min-h-0 flex-1 flex-col gap-3 px-4 pb-4">
-				<TraceAnatomyStrip traceId={shownTraceId} data={data} />
+				<TraceAnatomy traceId={shownTraceId} data={data} />
 				<div className="min-h-0 flex-1 overflow-hidden rounded-md border">
 					<TraceWaterfall
 						traceId={shownTraceId}

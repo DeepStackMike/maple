@@ -12,7 +12,7 @@ import { executeLocalCompiledFirstRow, executeLocalCompiledQuery } from "@/lib/q
 import { LOCAL_ORG_ID } from "../lib/constants"
 import { namespaceFilter } from "../lib/namespace"
 import { projectKey, scopedPlaceholder, scopedQueryFn, type ProjectScope } from "../lib/project-scope"
-import { boundsForRange } from "../lib/time"
+import { boundsForRange, warehouseString } from "../lib/time"
 import type { OverviewPoint } from "../lib/home-overview"
 import { bucketSecondsForRange } from "./use-local-metrics"
 
@@ -75,7 +75,7 @@ export function useLocalOverviewTimeseries(
 				),
 			)
 			return rows.map((row) => ({
-				bucket: row.bucket,
+				bucket: warehouseString(row.bucket),
 				serviceName: row.groupName,
 				count: Number(row.count),
 				errorRate: Number(row.errorRate),

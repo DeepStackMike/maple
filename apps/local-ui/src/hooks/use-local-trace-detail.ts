@@ -1,4 +1,5 @@
 import { keepPreviousData, skipToken, useQuery } from "@tanstack/react-query"
+import { DateTime } from "effect"
 import { CH } from "@maple/query-engine"
 import { buildTraceDetail, type TraceDetail } from "@maple/ui/lib/span-tree"
 import { executeLocalCompiledQuery } from "@/lib/query"
@@ -19,7 +20,10 @@ export function useLocalTraceDetail(traceId: string | undefined, opts?: { keepPr
 		queryFn: traceId
 			? async ({ signal }) => {
 					const compiled = CH.compile(CH.spanHierarchyQuery({ traceId }), { orgId: LOCAL_ORG_ID })
-					return buildTraceDetail(await executeLocalCompiledQuery(compiled, signal))
+					const rows = await executeLocalCompiledQuery(compiled, signal)
+					return buildTraceDetail(
+						rows.map((row) => ({ ...row, startTime: DateTime.formatIso(row.startTime) })),
+					)
 				}
 			: skipToken,
 	})

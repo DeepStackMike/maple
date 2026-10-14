@@ -1,5 +1,6 @@
 import { useMemo } from "react"
 import { keepPreviousData, useQuery } from "@tanstack/react-query"
+import { DateTime } from "effect"
 import { CH, coerceServiceOverviewRows } from "@maple/query-engine"
 import { boundsKey, executeLocalCompiledQuery, localParams } from "@/lib/query"
 import { LOCAL_ORG_ID } from "../lib/constants"
@@ -42,8 +43,8 @@ export interface ServiceCatalogEntry {
 }
 
 export function toCatalogEntry(row: CH.ServiceCatalogOutput, logCount: number): ServiceCatalogEntry {
-	const spanCount = Number(row.estimatedSpanCount) || Number(row.spanCount)
-	const errorCount = Number(row.estimatedErrorCount) || Number(row.errorCount)
+	const spanCount = row.estimatedSpanCount || row.spanCount
+	const errorCount = row.estimatedErrorCount || row.errorCount
 	return {
 		serviceName: row.serviceName,
 		serviceNamespaces: row.serviceNamespaces,
@@ -51,9 +52,9 @@ export function toCatalogEntry(row: CH.ServiceCatalogOutput, logCount: number): 
 		spanCount,
 		errorCount,
 		errorRate: spanCount > 0 ? errorCount / spanCount : 0,
-		p50LatencyMs: Number(row.p50LatencyMs),
-		p95LatencyMs: Number(row.p95LatencyMs),
-		p99LatencyMs: Number(row.p99LatencyMs),
+		p50LatencyMs: row.p50LatencyMs,
+		p95LatencyMs: row.p95LatencyMs,
+		p99LatencyMs: row.p99LatencyMs,
 		logCount,
 	}
 }
@@ -83,9 +84,7 @@ function useCatalog(env: string | undefined, ns: string | undefined, bounds: Tim
 				),
 				executeLocalCompiledQuery(CH.compile(CH.serviceUsageQuery({}), params), signal),
 			])
-			const logsByService = new Map(
-				usageRows.map((row) => [row.serviceName, Number(row.totalLogCount)]),
-			)
+			const logsByService = new Map(usageRows.map((row) => [row.serviceName, row.totalLogCount]))
 			return {
 				entries: catalogRows.map((row) =>
 					toCatalogEntry(row, logsByService.get(row.serviceName) ?? 0),
@@ -94,7 +93,7 @@ function useCatalog(env: string | undefined, ns: string | undefined, bounds: Tim
 				// signals and every service — including services with no entry-point
 				// spans (a Maple that has only received logs or metrics). Home's
 				// "nothing ingested yet" state reads this.
-				totalIngestedBytes: usageRows.reduce((sum, row) => sum + Number(row.totalSizeBytes), 0),
+				totalIngestedBytes: usageRows.reduce((sum, row) => sum + row.totalSizeBytes, 0),
 			}
 		},
 	})
@@ -290,8 +289,8 @@ export function useLocalServiceList(
 				const key = serviceRowKey(row.serviceName, row.environment)
 				const sighting: ServiceVersionSighting = {
 					version: row.version,
-					firstSeen: row.firstSeen,
-					lastSeen: row.lastSeen,
+					firstSeen: DateTime.formatIso(row.firstSeen),
+					lastSeen: DateTime.formatIso(row.lastSeen),
 					spanCount: Number(row.spanCount),
 				}
 				const existing = versions.get(key)

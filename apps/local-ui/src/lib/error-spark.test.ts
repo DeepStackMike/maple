@@ -86,6 +86,17 @@ describe("denseCounts", () => {
 		expect(counts).toEqual([4, 0, 0, 0, 1])
 	})
 
+	it("reads the ISO buckets the hook hands over the same as the warehouse form", () => {
+		const counts = denseCounts(
+			[
+				{ bucket: "2026-01-02T11:00:00.000Z", count: 4 },
+				{ bucket: "2026-01-02T12:00:00.000Z", count: 1 },
+			],
+			window,
+		)
+		expect(counts).toEqual([4, 0, 0, 0, 1])
+	})
+
 	it("lands a bucket on the slot ClickHouse's epoch-aligned interval produced", () => {
 		const counts = denseCounts([{ bucket: "2026-01-02 11:30:00", count: 7 }], window)
 		expect(counts).toEqual([0, 0, 7, 0, 0])

@@ -44,6 +44,7 @@ import {
 	type ErrorSlice,
 	type Introduction,
 	type NotComparedReason,
+	type VersionRow,
 	type VersionTraffic,
 } from "../lib/error-versions"
 import { hrefFor, useQueryParams } from "../lib/router"
@@ -288,7 +289,7 @@ function KpiCard({
 			<div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
 				{label}
 			</div>
-			<div className={cn("text-lg font-semibold tabular-nums", danger && "text-destructive")}>
+			<div className={cn("text-lg font-semibold tabular-nums", danger && "text-severity-error")}>
 				{value}
 			</div>
 			<div className="truncate text-[10px] text-muted-foreground">{hint}</div>
@@ -317,7 +318,7 @@ function ErrorTypeCard({
 	query,
 }: {
 	row: ErrorTypeRow
-	versions: ReadonlyArray<CH.ErrorVersionsOutput>
+	versions: ReadonlyArray<VersionRow>
 	slices: ReadonlyArray<ErrorSlice>
 	traffic: ReadonlyArray<VersionTraffic>
 	versionsPending: boolean
@@ -343,7 +344,7 @@ function ErrorTypeCard({
 				aria-controls={panelId}
 				className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-accent/40"
 			>
-				<CircleWarningIcon className="size-4 shrink-0 text-destructive" />
+				<CircleWarningIcon className="size-4 shrink-0 text-severity-error" />
 				<span className="min-w-0 flex-1">
 					<span className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
 						<span className="truncate text-sm font-medium">
@@ -351,11 +352,7 @@ function ErrorTypeCard({
 						</span>
 						{/* Names only; the affected-services number sits beside the count. */}
 						{row.serviceNames.map((serviceName) => (
-							<Badge
-								key={serviceName}
-								variant="outline"
-								className="gap-1.5 font-mono text-[10px]"
-							>
+							<Badge key={serviceName} variant="outline" size="xs" mono className="gap-1.5">
 								<ServiceDot serviceName={serviceName} />
 								{serviceName}
 							</Badge>
@@ -378,7 +375,7 @@ function ErrorTypeCard({
 					<OccurrenceSpark points={spark} window={window} />
 				</span>
 				<span className="shrink-0 text-right">
-					<span className="block text-sm font-semibold tabular-nums text-destructive">
+					<span className="block text-sm font-semibold tabular-nums text-severity-error">
 						{formatNumber(row.count)}
 					</span>
 					<span className="block text-[10px] text-muted-foreground">
@@ -539,7 +536,7 @@ function CompareVersions({
 	pending,
 }: {
 	compared: ReadonlyArray<ComparedVersion>
-	totals: ReadonlyArray<CH.ErrorVersionsOutput>
+	totals: ReadonlyArray<VersionRow>
 	pending: boolean
 }) {
 	if (pending) return <div className="h-12 animate-pulse rounded-md bg-muted/40" />
@@ -588,7 +585,7 @@ function CompareVersions({
 						<span className="shrink-0 tabular-nums text-muted-foreground">
 							{denominator > 0 ? formatErrorRate(row.count / denominator) : "—"}
 						</span>
-						<span className="w-14 shrink-0 text-right tabular-nums font-medium text-destructive">
+						<span className="w-14 shrink-0 text-right tabular-nums font-medium text-severity-error">
 							{formatNumber(row.count)}
 						</span>
 						<span className="w-20 shrink-0 text-right tabular-nums text-muted-foreground">
@@ -608,7 +605,7 @@ function CompareVersions({
 						<span className="shrink-0 tabular-nums">
 							{formatErrorRate(unattributed / denominator)}
 						</span>
-						<span className="w-14 shrink-0 text-right tabular-nums font-medium text-destructive">
+						<span className="w-14 shrink-0 text-right tabular-nums font-medium text-severity-error">
 							{formatNumber(unattributed)}
 						</span>
 						<span className="w-20 shrink-0" />
@@ -660,7 +657,7 @@ function VersionComparisonCell({ row }: { row: ComparedVersion }) {
 			className={cn(
 				"max-w-40 shrink-0 truncate tabular-nums",
 				verdict === "new" || verdict === "more"
-					? "font-medium text-destructive"
+					? "font-medium text-severity-error"
 					: "text-muted-foreground",
 			)}
 			title={title}

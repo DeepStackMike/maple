@@ -1,5 +1,8 @@
 import { useState, type ReactNode } from "react"
-import { Spinner } from "@maple/ui/components/ui/spinner"
+import { Badge } from "@maple/ui/components/ui/badge"
+import { ListFooter } from "@maple/ui/components/ui/list-footer"
+import { StatusDot } from "@maple/ui/components/ui/status-dot"
+import { shortId } from "@maple/ui/lib/ids"
 import {
 	ChevronRightIcon,
 	ClockIcon,
@@ -10,7 +13,6 @@ import {
 	MobileIcon,
 	PulseIcon,
 } from "@maple/ui/components/icons"
-import { Button } from "@maple/ui/components/ui/button"
 import { cn } from "@maple/ui/lib/utils"
 import { useLocalSessions, useLocalSessionFacets, type SessionListRow } from "../hooks/use-local-sessions"
 import { useLiveClock } from "../hooks/use-live-clock"
@@ -21,14 +23,10 @@ import { useTimeWindow } from "../hooks/use-time-window"
 import { countryLabel, countryName, flagEmoji } from "../lib/geo"
 import { hrefFor, useQueryParams } from "../lib/router"
 import { formatLocalDateTime, formatRelativeTime, formatUtcTitle, WIDEST_RANGE } from "../lib/time"
-import {
-	formatSessionDuration,
-	gradientFor,
-	hostFromUrl,
-	isMobileDevice,
-	isSessionLive,
-	sessionDurationMs,
-} from "@maple/ui/lib/replay-format"
+import { formatSessionDuration } from "@maple/ui/lib/replay-format"
+import { initialsFrom } from "@maple/ui/lib/initials"
+import { gradientFor, hostFromUrl, isMobileDevice } from "@maple/ui/lib/replay"
+import { isLocalSessionLive, localSessionDurationMs } from "../lib/session-liveness"
 import { sessionListItems } from "../lib/session-list-items"
 import {
 	asSessionTag,
@@ -46,6 +44,7 @@ import {
 import {
 	FilterSection,
 	SearchableFilterSection,
+	serviceColorMap,
 	SingleCheckboxFilter,
 	type FilterOption,
 } from "@maple/ui/components/filters/filter-section"
@@ -204,6 +203,7 @@ export function SessionsListView() {
 					options={facetData ? withSelected(facetData.service, service) : []}
 					selected={service ? [service] : []}
 					onChange={(vals) => setSingle("service", vals)}
+					colorMap={serviceColorMap(facetData?.service ?? [])}
 				/>
 				<SearchableFilterSection
 					title="Browser"
@@ -290,7 +290,7 @@ export function SessionsListView() {
 									key={item.session.sessionId}
 									session={item.session}
 									lowSignal={item.lowSignal}
-									live={isSessionLive(item.session, nowMs)}
+									live={isLocalSessionLive(item.session, nowMs)}
 									href={hrefFor(
 										`/sessions/${encodeURIComponent(item.session.sessionId)}`,
 										query,
@@ -300,18 +300,12 @@ export function SessionsListView() {
 							),
 						)}
 					</div>
-					{hasNextPage ? (
-						<div className="flex justify-center pt-4">
-							<Button
-								variant="outline"
-								size="sm"
-								onClick={() => fetchNextPage()}
-								disabled={isFetchingNextPage}
-							>
-								{isFetchingNextPage ? <Spinner className="size-4" /> : "Load more"}
-							</Button>
-						</div>
-					) : null}
+					<ListFooter
+						hasMore={hasNextPage}
+						loading={isFetchingNextPage}
+						onLoadMore={() => fetchNextPage()}
+						className="pb-0"
+					/>
 				</div>
 			)}
 		</PageShell>
@@ -333,14 +327,14 @@ function SessionCard({
 }: {
 	session: SessionListRow
 	href: string
-	/** Recent heartbeat, not just `status === "active"`; see `isSessionLive`. */
+	/** Recent heartbeat, not just `status === "active"`; see `isLocalSessionLive`. */
 	live: boolean
 	/** A noise tier with no errors: drawn quieter so the sessions worth opening stand out. */
 	lowSignal: boolean
 	onFilterTag: (tag: SessionTag) => void
 }) {
-	const label = session.userId || "Anonymous"
-	const initial = (label[0] ?? "?").toUpperCase()
+	const label = session.userName || session.userEmail || session.userId || "Anonymous"
+	const initial = initialsFrom(label)
 	const DeviceIcon = isMobileDevice(session.deviceType) ? MobileIcon : ComputerIcon
 
 	return (
@@ -372,9 +366,10 @@ function SessionCard({
 					>
 						{label}
 					</a>
-					<StatusDot active={live} />
+					<StatusDot tone={live ? "ok" : "neutral"} title={live ? "live" : "ended"} />
 					<span className="shrink-0 font-mono text-xs text-muted-foreground">
-						{session.sessionId.slice(0, 8)} · {formatSessionDuration(sessionDurationMs(session))}
+						{shortId(session.sessionId, "session", { length: 8 })} ·{" "}
+						{formatSessionDuration(localSessionDurationMs(session))}
 					</span>
 					<SessionTags tags={session.tags} onFilter={onFilterTag} />
 				</div>
@@ -409,15 +404,15 @@ function SessionCard({
 					title="page views"
 				/>
 				{session.traceCount > 0 && (
-					<span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-1.5 py-0.5 font-medium tabular-nums text-primary">
+					<Badge pill className="bg-primary/10 tabular-nums text-primary">
 						{session.traceCount} trace{session.traceCount === 1 ? "" : "s"}
-					</span>
+					</Badge>
 				)}
 				{session.errorCount > 0 && (
-					<span className="inline-flex items-center gap-1 rounded-full bg-destructive/10 px-1.5 py-0.5 font-medium tabular-nums text-destructive">
+					<Badge pill className="bg-severity-error/10 tabular-nums text-severity-error">
 						<CircleWarningIcon className="size-3" />
 						{session.errorCount}
-					</span>
+					</Badge>
 				)}
 			</div>
 
@@ -431,16 +426,6 @@ function SessionCard({
 				</span>
 			</div>
 		</div>
-	)
-}
-
-function StatusDot({ active }: { active: boolean }) {
-	if (!active) return <span className="size-1.5 shrink-0 rounded-full bg-muted-foreground/40" />
-	return (
-		<span className="relative flex size-1.5 shrink-0" aria-label="live">
-			<span className="absolute inline-flex size-full animate-ping rounded-full bg-success opacity-75" />
-			<span className="relative inline-flex size-1.5 rounded-full bg-success" />
-		</span>
 	)
 }
 

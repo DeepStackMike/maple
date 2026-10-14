@@ -1,7 +1,8 @@
 // The header's project, resolved to its services, reaching the queries that
 // have no namespace column of their own.
+import { OrgId } from "@maple/domain"
 import { describe, expect, it } from "vitest"
-import { compileUnionUnsafe, compileUnsafe } from "@maple-dev/effect-clickhouse"
+import { compileUnionUnsafe, compileUnsafe } from "@maple-dev/effect-orm/clickhouse"
 import { errorSessionsQuery } from "./errors"
 import {
 	sessionReplaysFacetsQuery,
@@ -17,7 +18,7 @@ import {
 } from "./metrics"
 
 const params = {
-	orgId: "org_1",
+	orgId: OrgId.make("org_1"),
 	startTime: "2024-01-01 00:00:00",
 	endTime: "2024-01-02 00:00:00",
 	metricName: "m",
@@ -66,7 +67,7 @@ describe("project scope by service list", () => {
 	it("keeps only the project's sessions among those that hit an error", () => {
 		const q = errorSessionsQuery({ fingerprintHash: "123", messageMatch: "boom", services: SERVICES })
 		const { sql } = compileUnsafe(q, params)
-		expect(sql).toMatch(/SessionId IN \(SELECT\s+SessionId/)
+		expect(sql).toMatch(/SessionId IN \(SELECT\s+session_replays\.SessionId/)
 		expect(sql).toContain(IN)
 	})
 

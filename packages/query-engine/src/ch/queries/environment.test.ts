@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
-import * as CH from "@maple-dev/effect-clickhouse/expr"
-import { compile } from "@maple-dev/effect-clickhouse/sql"
+import * as CH from "@maple-dev/effect-orm/expr"
+import { compile } from "@maple-dev/effect-orm/sql"
 import { UNKNOWN_ENVIRONMENT, envLabel, resourceEnvLabel } from "./environment"
 
 const render = (expr: CH.Expr<string>) => compile(expr.toFragment())
@@ -23,12 +23,6 @@ describe("envLabel", () => {
 		const projection = render(envLabel(DeploymentEnv))
 		const predicate = compile(envLabel(DeploymentEnv).eq(UNKNOWN_ENVIRONMENT).toFragment())
 		expect(predicate).toBe(`${projection} = 'unknown'`)
-	})
-
-	// `unknown` is a value, not a caption: it travels in the `env` URL param and
-	// sits in the same IN-list as `production`.
-	it("is a lower-case value", () => {
-		expect(UNKNOWN_ENVIRONMENT).toBe("unknown")
 	})
 })
 

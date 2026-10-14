@@ -1,8 +1,11 @@
+import { useCallback } from "react"
 import { keepPreviousData, skipToken, useQuery } from "@tanstack/react-query"
+import { DateTime } from "effect"
 import { CH } from "@maple/query-engine"
 import { healthCheckPatterns } from "@/lib/health-checks"
 import { boundsKey, executeLocalCompiledQuery, localParams } from "@/lib/query"
 import type { SeriesPoint } from "../lib/chart-series"
+import { fillGoldenSignals, type GoldenSignalRow } from "../lib/golden-signals"
 import { parseClickHouseDateTime, type ChartWindow, type TimeBounds } from "../lib/time"
 import { toCatalogEntry, type ServiceCatalogEntry } from "./use-local-service-catalog"
 
@@ -36,7 +39,7 @@ export function useLocalServiceOverview(serviceName: string, bounds: TimeBounds)
 			const row = catalogRows[0]
 			if (!row) return null
 			const firstSeenMs = overviewRows.reduce<number | null>((earliest, overview) => {
-				const ms = parseClickHouseDateTime(overview.firstSeen)
+				const ms = parseClickHouseDateTime(DateTime.formatIso(overview.firstSeen))
 				return ms !== null && (earliest === null || ms < earliest) ? ms : earliest
 			}, null)
 			return { stats: toCatalogEntry(row, 0), firstSeenMs }
@@ -77,7 +80,7 @@ export function useLocalServiceOperations(
 	})
 }
 
-/** Per-bucket throughput for the top operations (drives the detail chart). */
+/** Per-bucket span counts for the top operations (drives the detail chart). */
 export function useLocalServiceOperationsTimeseries(
 	serviceName: string,
 	spanNames: ReadonlyArray<string>,
@@ -115,10 +118,55 @@ export function useLocalServiceOperationsTimeseries(
 							signal,
 						)
 						return rows.map((r) => ({
-							bucket: r.bucket,
+							bucket: DateTime.formatIso(r.bucket),
 							series: r.spanName,
-							value: Number(r.count),
+							// Per bucket: the chart's `requests_per_sec` unit turns it into a rate.
+							value: r.count,
 						}))
 					},
+	})
+}
+
+/**
+ * Latency, throughput, error rate and Apdex over the chart window, from the service's
+ * entry spans (the same `rootOnly` scope as the header stats). The cache holds the raw
+ * buckets; `select` fills them against the current window, so a window that narrows once
+ * the overview's first-seen time lands redraws without a refetch.
+ */
+export function useLocalServiceGoldenSignals(serviceName: string, bounds: TimeBounds, window: ChartWindow) {
+	const { bucketSeconds } = window
+	const select = useCallback(
+		(rows: ReadonlyArray<GoldenSignalRow>) => fillGoldenSignals(rows, window),
+		[window],
+	)
+	return useQuery({
+		queryKey: ["local", "services", "golden-signals", serviceName, bucketSeconds, boundsKey(bounds)],
+		placeholderData: keepPreviousData,
+		select,
+		queryFn: async ({ signal }): Promise<ReadonlyArray<GoldenSignalRow>> => {
+			const rows = await executeLocalCompiledQuery(
+				CH.compile(
+					CH.tracesTimeseriesQuery({
+						metric: "count",
+						needsSampling: false,
+						allMetrics: true,
+						serviceName,
+						rootOnly: true,
+						bucketSeconds,
+					}),
+					{ ...localParams(bounds), bucketSeconds },
+				),
+				signal,
+			)
+			return rows.map((row) => ({
+				bucketMs: DateTime.toEpochMillis(row.bucket),
+				count: row.count,
+				errorRate: row.errorRate,
+				p50Ms: row.p50Duration,
+				p95Ms: row.p95Duration,
+				p99Ms: row.p99Duration,
+				apdexScore: row.apdexScore,
+			}))
+		},
 	})
 }

@@ -12,6 +12,7 @@ import {
 	PulseIcon,
 	SitemapIcon,
 	SquareActivityChartIcon,
+	LayersIcon,
 } from "@maple/ui/components/icons"
 import { HomeView } from "./views/home-view"
 import { TraceListView } from "./views/trace-list-view"
@@ -26,6 +27,7 @@ import { ServiceMapView } from "./views/service-map-view"
 import { SessionsListView } from "./views/sessions-list-view"
 import { SessionDetailView } from "./views/session-detail-view"
 import { AnalyticsView } from "./views/analytics-view"
+import { QueryView } from "./views/query-view"
 import { canGoBackInApp, decodeSegment, goBack, hrefFor, useLocation } from "./lib/router"
 import { AppErrorBoundary } from "./components/app-error-boundary"
 import { ConnectButton } from "./components/connect-button"
@@ -52,6 +54,7 @@ type Route =
 	| { name: "sessions" }
 	| { name: "session-detail"; sessionId: string }
 	| { name: "analytics" }
+	| { name: "query" }
 
 export function parseRoute(path: string): Route {
 	const detail = (prefix: string) => {
@@ -74,6 +77,7 @@ export function parseRoute(path: string): Route {
 	if (path.startsWith("/services")) return { name: "services" }
 	if (path.startsWith("/sessions")) return { name: "sessions" }
 	if (path.startsWith("/analytics")) return { name: "analytics" }
+	if (path.startsWith("/query")) return { name: "query" }
 	// `/` and `/home` both land here, and so does anything unrecognized: an
 	// overview is a better answer to a stale bookmark than an empty trace list.
 	return { name: "home" }
@@ -89,6 +93,7 @@ type Tab =
 	| "errors"
 	| "sessions"
 	| "analytics"
+	| "query"
 
 function activeTab(route: Route): Tab {
 	if (route.name === "traces" || route.name === "trace-detail") return "traces"
@@ -99,6 +104,7 @@ function activeTab(route: Route): Tab {
 	if (route.name === "service-map") return "service-map"
 	if (route.name === "sessions" || route.name === "session-detail") return "sessions"
 	if (route.name === "analytics") return "analytics"
+	if (route.name === "query") return "query"
 	return "home"
 }
 
@@ -112,6 +118,7 @@ const TABS: ReadonlyArray<{ tab: Tab; label: string; icon: ReactNode }> = [
 	{ tab: "errors", label: "Errors", icon: <CircleWarningIcon size={14} /> },
 	{ tab: "sessions", label: "Sessions", icon: <EyeIcon size={14} /> },
 	{ tab: "analytics", label: "Analytics", icon: <SquareActivityChartIcon size={14} /> },
+	{ tab: "query", label: "Query", icon: <LayersIcon size={14} /> },
 ]
 
 /** Detail-page params that must not leak back into a list's filters. */
@@ -221,6 +228,8 @@ export function App() {
 									<SessionsListView />
 								) : route.name === "analytics" ? (
 									<AnalyticsView />
+								) : route.name === "query" ? (
+									<QueryView />
 								) : route.name === "traces" ? (
 									<TraceListView />
 								) : (

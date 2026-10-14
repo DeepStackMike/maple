@@ -3,7 +3,7 @@
 // SPA, all on one port, backed by an embedded chDB. Replaces the Rust
 // `apps/ingest/src/bin/local.rs`. `maple start` calls `startServer`.
 
-import { Context, Effect, Exit, Layer, Result, Schema, type Scope } from "effect"
+import { Clock, Context, Effect, Exit, Layer, Result, Schema, type Scope } from "effect"
 import * as ManagedRuntime from "effect/ManagedRuntime"
 import { resolve } from "node:path"
 import { gunzipSync } from "node:zlib"
@@ -38,7 +38,12 @@ import {
 	decodeTraceRequest,
 	encodeExportResponse,
 } from "./otlp/proto"
-import { CURRENT_LOCAL_SCHEMA, LOCAL_SCHEMA_MANIFEST, LOCAL_SCHEMA_SQL, SCHEMA_FINGERPRINT } from "./schema-identity"
+import {
+	CURRENT_LOCAL_SCHEMA,
+	LOCAL_SCHEMA_MANIFEST,
+	LOCAL_SCHEMA_SQL,
+	SCHEMA_FINGERPRINT,
+} from "./schema-identity"
 import { hasSubject, resumePendingDelete, runScopedDelete, ScopedDeleteRequest } from "./scoped-delete"
 import { assertCurrentPhysicalSchema } from "./schema-physical"
 import {
@@ -628,7 +633,7 @@ const ingestSpan = (
 	recoverResponse(
 		Effect.gen(function* () {
 			const { response, accepted, requestBytes } = yield* ingest(db, authority, signal, req, readiness)
-			if (accepted > 0 && response.status < 300) status.lastIngestAtMs = Date.now()
+			if (accepted > 0 && response.status < 300) status.lastIngestAtMs = yield* Clock.currentTimeMillis
 			yield* Effect.annotateCurrentSpan({
 				"http.request.body.size": requestBytes,
 				"maple.ingest.item_count": accepted,
@@ -913,7 +918,7 @@ const handleRetirement = async (
 	const decoded = Schema.decodeUnknownResult(
 		Schema.Struct({
 			archiveDir: Schema.NonEmptyString,
-			rangeDate: Schema.String.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/)),
+			rangeDate: Schema.String.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/u)),
 			sealingLagHours: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
 		}),
 		{ onExcessProperty: "error" },
@@ -972,7 +977,13 @@ const handleScopedDelete = (
 			dryRun
 				? work
 				: // Even a failed delete may have changed rows, so the next checkpoint refresh must run.
-					work.pipe(Effect.ensuring(Effect.sync(() => (status.lastDeleteAtMs = Date.now())))),
+					work.pipe(
+						Effect.ensuring(
+							Effect.map(Clock.currentTimeMillis, (nowMs) => {
+								status.lastDeleteAtMs = nowMs
+							}),
+						),
+					),
 		)
 		return json(report)
 	}).pipe(
@@ -1115,7 +1126,7 @@ const recoverEventConsumerFailure = <R>(
 		),
 	)
 
-const ConsumerIdSchema = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9._-]{0,63}$/))
+const ConsumerIdSchema = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9._-]{0,63}$/u))
 
 /** Decodes a bounded consumer body, then runs the store call under ordinary admission. */
 const consumerRequest = <A, S extends Schema.Top & { readonly DecodingServices: never }>(
@@ -1218,7 +1229,7 @@ const handleConsumerAcknowledgement = (
 			req,
 			Schema.Struct({
 				consumerId: ConsumerIdSchema,
-				leaseToken: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/)),
+				leaseToken: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u)),
 				throughSequence: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
 			}),
 			"invalid event consumer acknowledgement fields",
@@ -1616,7 +1627,12 @@ export const startServer = (
 					),
 				),
 		)
-		const status: ServerStatus = { url: "", dataDir: resolve(options.dataDir), lastIngestAtMs: null, lastDeleteAtMs: null }
+		const status: ServerStatus = {
+			url: "",
+			dataDir: resolve(options.dataDir),
+			lastIngestAtMs: null,
+			lastDeleteAtMs: null,
+		}
 		const server = yield* Effect.acquireRelease(
 			Effect.try({
 				try: () =>

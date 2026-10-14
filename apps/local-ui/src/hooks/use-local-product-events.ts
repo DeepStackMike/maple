@@ -17,10 +17,11 @@
 
 import { useQuery } from "@tanstack/react-query"
 import { CH } from "@maple/query-engine"
+import { Result } from "effect"
 import { executeLocalCompiledQuery } from "@/lib/query"
 import { LOCAL_ORG_ID } from "../lib/constants"
 import { projectKey, scopedPlaceholder, scopedQueryFn, type ProjectScope } from "../lib/project-scope"
-import { boundsForRange } from "../lib/time"
+import { boundsForRange, warehouseString } from "../lib/time"
 import { bucketSecondsForRange } from "./use-local-metrics"
 import { isRunnableFunnel } from "../lib/product-analytics"
 
@@ -76,7 +77,8 @@ export function useLocalProductEventNames(
 					endTime,
 				},
 			)
-			return executeLocalCompiledQuery(compiled, signal)
+			const rows = await executeLocalCompiledQuery(compiled, signal)
+			return rows.map((row) => ({ ...row, lastSeen: warehouseString(row.lastSeen) }))
 		}),
 	})
 }
@@ -116,7 +118,8 @@ export function useLocalProductEventTimeseries(
 				}),
 				{ orgId: LOCAL_ORG_ID, startTime, endTime },
 			)
-			return executeLocalCompiledQuery(compiled, signal)
+			const rows = await executeLocalCompiledQuery(compiled, signal)
+			return rows.map((row) => ({ ...row, bucket: warehouseString(row.bucket) }))
 		}),
 	})
 }
@@ -241,15 +244,16 @@ export function useLocalProductEventFunnel(
 		placeholderData: scopedPlaceholder(project),
 		queryFn: scopedQueryFn(project, async ({ signal }): Promise<ReadonlyArray<FunnelStepCount>> => {
 			const { startTime, endTime } = boundsForRange(range)
-			const compiled = CH.compile(
-				CH.productEventsFunnelQuery({
-					steps: steps.map((eventName) => ({ kind: "event" as const, eventName })),
-					keyBy: FUNNEL_KEY_BY,
-					windowSeconds,
-					filters: { environment, services: project.services },
-				}),
-				{ orgId: LOCAL_ORG_ID, startTime, endTime },
-			)
+			// The builder validates the steps and answers a typed failure rather
+			// than throwing; surface it as this query's error.
+			const funnel = CH.productEventsFunnelQuery({
+				steps: steps.map((eventName) => ({ kind: "event" as const, eventName })),
+				keyBy: FUNNEL_KEY_BY,
+				windowSeconds,
+				filters: { environment, services: project.services },
+			})
+			if (Result.isFailure(funnel)) return Promise.reject(funnel.failure)
+			const compiled = CH.compile(funnel.success, { orgId: LOCAL_ORG_ID, startTime, endTime })
 			return executeLocalCompiledQuery(compiled, signal)
 		}),
 	})

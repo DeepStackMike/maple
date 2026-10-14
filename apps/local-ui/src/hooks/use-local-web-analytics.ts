@@ -29,7 +29,7 @@ import { CH } from "@maple/query-engine"
 import { executeLocalCompiledQuery } from "@/lib/query"
 import { LOCAL_ORG_ID } from "../lib/constants"
 import { projectKey, scopedPlaceholder, scopedQueryFn, type ProjectScope } from "../lib/project-scope"
-import { boundsForRange } from "../lib/time"
+import { boundsForRange, warehouseString } from "../lib/time"
 import { groupFacets, type FacetRow, type PageviewsPoint, type SessionsPoint } from "../lib/web-analytics"
 import { bucketSecondsForRange } from "./use-local-metrics"
 
@@ -64,7 +64,7 @@ export function useLocalWebSessionsTimeseries(
 		queryFn: scopedQueryFn(project, async ({ signal }): Promise<ReadonlyArray<SessionsPoint>> => {
 			const { startTime, endTime } = boundsForRange(range)
 			const bucketSeconds = bucketSecondsForRange(range)
-			return executeLocalCompiledQuery(
+			const rows = await executeLocalCompiledQuery(
 				CH.compile(
 					CH.webAnalyticsTimeseriesQuery({
 						bucketSeconds,
@@ -79,6 +79,7 @@ export function useLocalWebSessionsTimeseries(
 				),
 				signal,
 			)
+			return rows.map((row) => ({ ...row, bucket: warehouseString(row.bucket) }))
 		}),
 	})
 }
@@ -95,7 +96,7 @@ export function useLocalWebPageviewsTimeseries(
 		queryFn: scopedQueryFn(project, async ({ signal }): Promise<ReadonlyArray<PageviewsPoint>> => {
 			const { startTime, endTime } = boundsForRange(range)
 			const bucketSeconds = bucketSecondsForRange(range)
-			return executeLocalCompiledQuery(
+			const rows = await executeLocalCompiledQuery(
 				CH.compile(
 					CH.webAnalyticsPageviewsTimeseriesQuery({
 						bucketSeconds,
@@ -111,6 +112,7 @@ export function useLocalWebPageviewsTimeseries(
 				),
 				signal,
 			)
+			return rows.map((row) => ({ ...row, bucket: warehouseString(row.bucket) }))
 		}),
 	})
 }

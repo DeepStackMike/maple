@@ -1,6 +1,7 @@
 import * as React from "react"
 import { useVirtualizer } from "@tanstack/react-virtual"
 
+import { EmptyMessage } from "../ui/empty"
 import { SpanRow } from "./span-row"
 import { TraceDepthControls } from "./trace-depth-controls"
 import { useTraceView } from "./trace-view-context"
@@ -183,9 +184,7 @@ export function SpanHierarchy() {
 
 	if (rootSpans.length === 0) {
 		return (
-			<div className="rounded-md border p-8 text-center">
-				<p className="text-muted-foreground">No spans found for this trace</p>
-			</div>
+			<EmptyMessage className="rounded-md border p-8 text-sm">No spans found for this trace</EmptyMessage>
 		)
 	}
 
@@ -204,7 +203,7 @@ export function SpanHierarchy() {
 						onExpandAll={() => setExpandedSpans(collectAllCollapsibleIds(rootSpans))}
 					/>
 					{flat.length < totalSpanCount && (
-						<span className="shrink-0 font-normal tabular-nums text-[10px]">
+						<span className="shrink-0 font-normal tabular-nums text-3xs">
 							{flat.length} of {totalSpanCount}
 							<span className="hidden @min-[420px]/row:inline"> spans</span>
 						</span>

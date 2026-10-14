@@ -11,7 +11,8 @@ import {
 	type ProjectServices,
 } from "../lib/project-scope"
 import type { TimeBounds } from "../lib/time"
-import type { LogFilters } from "./use-local-logs"
+import { logAttributeQueryFilters } from "../lib/log-attribute-filters"
+import { attrsKey, type LogFilters } from "./use-local-logs"
 
 /**
  * Distinct services that emitted logs in the selected window, under every log
@@ -26,7 +27,7 @@ import type { LogFilters } from "./use-local-logs"
 export function compileLocalLogServicesQuery(
 	startTime: string,
 	endTime: string,
-	filters: Pick<LogFilters, "severity" | "environment" | "search"> = {},
+	filters: Pick<LogFilters, "severity" | "environment" | "search" | "attrs"> = {},
 	project: ProjectServices = undefined,
 ) {
 	return CH.compile(
@@ -38,6 +39,7 @@ export function compileLocalLogServicesQuery(
 			severity: filters.severity,
 			environments: filters.environment ? [filters.environment] : undefined,
 			search: filters.search,
+			...logAttributeQueryFilters(filters.attrs),
 		}),
 		localParams({ startTime, endTime }),
 	)
@@ -52,6 +54,7 @@ export function useLocalLogServices(filters: LogFilters, bounds: TimeBounds, sco
 			filters.severity ?? null,
 			filters.environment ?? null,
 			filters.search ?? null,
+			attrsKey(filters.attrs),
 			projectKey(scope),
 			boundsKey(bounds),
 		],

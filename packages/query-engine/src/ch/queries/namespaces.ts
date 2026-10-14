@@ -19,9 +19,17 @@
 // shows that service's rows from both; spans and services, which filter on the
 // namespace directly, stay exact.
 
-import * as CH from "@maple-dev/effect-clickhouse/expr"
-import { from, fromUnion, param, unionAll } from "@maple-dev/effect-clickhouse"
-import { Logs, MetricsGauge, MetricsHistogram, MetricsSum, SessionReplays, Traces } from "../tables"
+import * as CH from "@maple-dev/effect-orm/expr"
+import { from, fromUnion, param, unionAll } from "@maple-dev/effect-orm/clickhouse"
+import {
+	Logs,
+	MetricsGauge,
+	MetricsHistogram,
+	MetricsSum,
+	SessionReplays,
+	Traces,
+	orgIdParam,
+} from "../tables"
 
 const NAMESPACE_KEY = "service.namespace"
 
@@ -31,7 +39,7 @@ const pairs = (namespace?: string) => {
 		OrgId: CH.Expr<string>
 		ResourceAttributes: { get(k: string): CH.Expr<string> }
 	}) => [
-		$.OrgId.eq(param.string("orgId")),
+		$.OrgId.eq(orgIdParam),
 		namespace === undefined
 			? $.ResourceAttributes.get(NAMESPACE_KEY).neq("")
 			: $.ResourceAttributes.get(NAMESPACE_KEY).eq(namespace),
@@ -49,48 +57,48 @@ const pairs = (namespace?: string) => {
 			.select(select)
 			.where(($) => [
 				...where($),
-				$.Timestamp.gte(param.dateTimeString("startTime")),
-				$.Timestamp.lte(param.dateTimeString("endTime")),
+				$.Timestamp.gte(param.dateTime("startTime")),
+				$.Timestamp.lte(param.dateTime("endTime")),
 			])
 			.groupBy("namespace", "serviceName"),
 		from(Logs)
 			.select(select)
 			.where(($) => [
 				...where($),
-				$.Timestamp.gte(param.dateTimeString("startTime")),
-				$.Timestamp.lte(param.dateTimeString("endTime")),
+				$.Timestamp.gte(param.dateTime("startTime")),
+				$.Timestamp.lte(param.dateTime("endTime")),
 			])
 			.groupBy("namespace", "serviceName"),
 		from(SessionReplays)
 			.select(select)
 			.where(($) => [
 				...where($),
-				$.StartTime.gte(param.dateTimeString("startTime")),
-				$.StartTime.lte(param.dateTimeString("endTime")),
+				$.StartTime.gte(param.dateTime("startTime")),
+				$.StartTime.lte(param.dateTime("endTime")),
 			])
 			.groupBy("namespace", "serviceName"),
 		from(MetricsSum)
 			.select(select)
 			.where(($) => [
 				...where($),
-				$.TimeUnix.gte(param.dateTimeString("startTime")),
-				$.TimeUnix.lte(param.dateTimeString("endTime")),
+				$.TimeUnix.gte(param.dateTime("startTime")),
+				$.TimeUnix.lte(param.dateTime("endTime")),
 			])
 			.groupBy("namespace", "serviceName"),
 		from(MetricsGauge)
 			.select(select)
 			.where(($) => [
 				...where($),
-				$.TimeUnix.gte(param.dateTimeString("startTime")),
-				$.TimeUnix.lte(param.dateTimeString("endTime")),
+				$.TimeUnix.gte(param.dateTime("startTime")),
+				$.TimeUnix.lte(param.dateTime("endTime")),
 			])
 			.groupBy("namespace", "serviceName"),
 		from(MetricsHistogram)
 			.select(select)
 			.where(($) => [
 				...where($),
-				$.TimeUnix.gte(param.dateTimeString("startTime")),
-				$.TimeUnix.lte(param.dateTimeString("endTime")),
+				$.TimeUnix.gte(param.dateTime("startTime")),
+				$.TimeUnix.lte(param.dateTime("endTime")),
 			])
 			.groupBy("namespace", "serviceName"),
 	)

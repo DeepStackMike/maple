@@ -1,5 +1,6 @@
 import { useMemo } from "react"
 import { useQuery } from "@tanstack/react-query"
+import { DateTime } from "effect"
 import { CH } from "@maple/query-engine"
 import { boundsKey, executeLocalCompiledQuery, localParams } from "@/lib/query"
 import {
@@ -59,9 +60,12 @@ export function foldCatalogRows(rows: ReadonlyArray<CH.ListMetricsOutput>): Metr
 		const existing = byMetric.get(key)
 		if (existing) {
 			if (!existing.serviceNames.includes(row.serviceName)) existing.serviceNames.push(row.serviceName)
-			existing.dataPointCount += Number(row.dataPointCount)
-			if (row.lastSeen > existing.lastSeen) existing.lastSeen = row.lastSeen
-			if (row.firstSeen < existing.firstSeen) existing.firstSeen = row.firstSeen
+			existing.dataPointCount += row.dataPointCount
+			// ISO strings of one format compare chronologically.
+			const lastSeen = DateTime.formatIso(row.lastSeen)
+			const firstSeen = DateTime.formatIso(row.firstSeen)
+			if (lastSeen > existing.lastSeen) existing.lastSeen = lastSeen
+			if (firstSeen < existing.firstSeen) existing.firstSeen = firstSeen
 		} else {
 			byMetric.set(key, {
 				metricName: row.metricName,
@@ -69,9 +73,9 @@ export function foldCatalogRows(rows: ReadonlyArray<CH.ListMetricsOutput>): Metr
 				metricUnit: row.metricUnit,
 				metricDescription: row.metricDescription,
 				serviceNames: [row.serviceName],
-				dataPointCount: Number(row.dataPointCount),
-				firstSeen: row.firstSeen,
-				lastSeen: row.lastSeen,
+				dataPointCount: row.dataPointCount,
+				firstSeen: DateTime.formatIso(row.firstSeen),
+				lastSeen: DateTime.formatIso(row.lastSeen),
 				isMonotonic: Number(row.isMonotonic) === 1,
 			})
 		}
@@ -146,7 +150,7 @@ export function summarizeCatalogRows(rows: ReadonlyArray<CH.ListMetricsOutput>):
 		let entry = byType.get(row.metricType)
 		if (!entry) byType.set(row.metricType, (entry = { metrics: new Set(), dataPointCount: 0 }))
 		entry.metrics.add(row.metricName)
-		entry.dataPointCount += Number(row.dataPointCount)
+		entry.dataPointCount += row.dataPointCount
 	}
 	return [...byType.entries()].map(([metricType, entry]) => ({
 		metricType,
@@ -190,8 +194,8 @@ export function useLocalMetricsSummary(service: string | undefined, bounds: Time
 			)
 			return rows.map((r) => ({
 				metricType: r.metricType,
-				metricCount: Number(r.metricCount),
-				dataPointCount: Number(r.dataPointCount),
+				metricCount: r.metricCount,
+				dataPointCount: r.dataPointCount,
 			}))
 		}),
 	})
@@ -287,10 +291,10 @@ export function useLocalMetricsSparklines(
 					const points = new Map<string, SparklinePoint[]>()
 					for (const row of results.flat()) {
 						const point = {
-							bucket: row.bucket,
-							avgValue: Number(row.avgValue),
-							sumValue: Number(row.sumValue),
-							dataPointCount: Number(row.dataPointCount),
+							bucket: DateTime.formatIso(row.bucket),
+							avgValue: row.avgValue,
+							sumValue: row.sumValue,
+							dataPointCount: row.dataPointCount,
 						}
 						const list = points.get(row.metricName)
 						if (list) list.push(point)

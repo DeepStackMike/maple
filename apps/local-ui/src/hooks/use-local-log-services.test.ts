@@ -43,6 +43,21 @@ describe("compileLocalLogServicesQuery", () => {
 	})
 })
 
+describe("compileLocalLogServicesQuery with attribute filters", () => {
+	it("narrows the facet by log and resource attribute values, in or out", () => {
+		const { sql } = Effect.runSync(
+			compileLocalLogServicesQuery("2026-07-30 13:05:00", "2026-07-30 14:05:00", {
+				attrs: ["log:http.route=/checkout", "!res:k8s.pod.name=web-1"],
+			}),
+		)
+
+		expect(sql).toContain("LogAttributes['http.route']")
+		expect(sql).toContain("'/checkout'")
+		expect(sql).toContain("ResourceAttributes['k8s.pod.name']")
+		expect(sql).toContain("'web-1'")
+	})
+})
+
 describe("compileLocalLogServicesQuery under a project", () => {
 	it("lists only the project's services", () => {
 		const { sql } = Effect.runSync(

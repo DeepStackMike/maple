@@ -1,14 +1,11 @@
 // Folding runs of low-signal sessions in the list. Mirrors the hosted app's
 // `apps/web/src/components/replays/session-list-items.ts`.
 
-import { isSessionLive } from "@maple/ui/lib/replay-format"
+import { isLocalSessionLive, type LocalSessionTimes } from "./session-liveness"
 import { SESSION_TAG_LABELS, noiseTierOf, type SessionTag } from "./session-tags"
 
-interface ListableSession {
+interface ListableSession extends LocalSessionTimes {
 	readonly sessionId: string
-	readonly status: string
-	readonly startTime: string
-	readonly lastActivityAt: string | null
 	readonly errorCount: number
 	readonly tags: ReadonlyArray<SessionTag>
 }
@@ -31,7 +28,7 @@ export type SessionListItem<S extends ListableSession> =
  * now. An errored bot or a live bounce still gets its own row.
  */
 export const isLowSignal = (session: ListableSession, nowMs: number): boolean =>
-	noiseTierOf(session.tags) !== undefined && session.errorCount === 0 && !isSessionLive(session, nowMs)
+	noiseTierOf(session.tags) !== undefined && session.errorCount === 0 && !isLocalSessionLive(session, nowMs)
 
 const tiersOf = (sessions: ReadonlyArray<ListableSession>) => {
 	const counts = new Map<SessionTag, number>()

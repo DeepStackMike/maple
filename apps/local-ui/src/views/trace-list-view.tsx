@@ -1,18 +1,24 @@
 import { HttpSpanLabel } from "@maple/ui/components/traces/http-span-label"
 import { Badge } from "@maple/ui/components/ui/badge"
 import { Button } from "@maple/ui/components/ui/button"
-import { Spinner } from "@maple/ui/components/ui/spinner"
+import { ListFooter } from "@maple/ui/components/ui/list-footer"
+import { TableSkeleton } from "@maple/ui/components/ui/table-skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@maple/ui/components/ui/table"
-import { formatDuration } from "@maple/ui/lib/format"
+import { EMPTY_VALUE, formatDuration, formatNumber } from "@maple/ui/lib/format"
 import { cn } from "@maple/ui/lib/utils"
 import { useIsMobile } from "@maple/ui/hooks/use-media-query"
 import { useCallback, type MouseEvent } from "react"
 import { useHideHealthChecks } from "../hooks/use-hide-health-checks"
 import { useNamespace } from "../hooks/use-namespace"
+import { ServiceDot } from "@maple/ui/components/service-dot"
+import { ServicePills } from "@maple/ui/components/service-pills"
+import { TraceStatusBadge } from "@maple/ui/components/traces/trace-status-badge"
+import { getHttpInfo } from "@maple/ui/lib/http"
 import { DurationRangeFilter } from "@maple/ui/components/filters/duration-range-filter"
 import {
 	FilterSection,
 	SearchableFilterSection,
+	serviceColorMap,
 	SingleCheckboxFilter,
 } from "@maple/ui/components/filters/filter-section"
 import {
@@ -48,7 +54,7 @@ import {
 	TimeRangeSelect,
 	RefreshButton,
 } from "../components/toolbar"
-import { ErrorState, ListSkeleton } from "../components/view-states"
+import { ErrorState } from "../components/view-states"
 
 /** Parse a URL param as a non-negative integer; anything else means "unset". */
 function parseNonNegativeInt(raw: string | null): number | undefined {
@@ -173,7 +179,7 @@ export function TraceListView() {
 			<FilterSidebarHeader canClear={activeFilterCount > 0} onClear={clearFilters} />
 			<FilterSidebarBody>
 				<SingleCheckboxFilter
-					title="Errors only"
+					title="Has error"
 					checked={filters.errorsOnly === true}
 					onChange={(checked) => setParams({ errors: checked ? "1" : null })}
 					count={facets.data?.errorCount}
@@ -195,9 +201,10 @@ export function TraceListView() {
 					options={facets.data?.services ?? []}
 					selected={filters.service ? [filters.service] : []}
 					onChange={facetSelect("service")}
+					colorMap={serviceColorMap(facets.data?.services ?? [])}
 				/>
 				<SearchableFilterSection
-					title="Root Span"
+					title="Root span"
 					options={facets.data?.spanNames ?? []}
 					selected={filters.span ? [filters.span] : []}
 					onChange={facetSelect("span")}
@@ -215,13 +222,13 @@ export function TraceListView() {
 					debounceMs={300}
 				/>
 				<FilterSection
-					title="HTTP Method"
+					title="HTTP method"
 					options={facets.data?.httpMethods ?? []}
 					selected={filters.method ? [filters.method] : []}
 					onChange={facetSelect("method")}
 				/>
 				<FilterSection
-					title="Status Code"
+					title="Status code"
 					options={facets.data?.httpStatusCodes ?? []}
 					selected={filters.status ? [filters.status] : []}
 					onChange={facetSelect("status")}
@@ -259,7 +266,18 @@ export function TraceListView() {
 	return (
 		<PageShell sidebar={sidebar} toolbar={toolbar} activeFilterCount={activeFilterCount}>
 			{traces.isPending ? (
-				<ListSkeleton variant="table" />
+				<TableSkeleton
+					className="rounded-none border-0"
+					rows={12}
+					columns={[
+						{ header: "Trace", headClassName: "w-[40%]", skeleton: "w-56" },
+						{ header: "Services", skeleton: "w-40" },
+						{ header: "Duration", headClassName: "text-right", skeleton: "ml-auto w-14" },
+						{ header: "Spans", headClassName: "text-right", skeleton: "ml-auto w-8" },
+						{ header: "Status", skeleton: "w-10" },
+						{ header: "Started", headClassName: "text-right", skeleton: "ml-auto w-16" },
+					]}
+				/>
 			) : traces.isError ? (
 				<ErrorState label="traces" error={traces.error} onRetry={() => traces.refetch()} />
 			) : rows.length === 0 ? (
@@ -287,6 +305,7 @@ export function TraceListView() {
 								<TableHead>Services</TableHead>
 								<TableHead className="text-right">Duration</TableHead>
 								<TableHead className="text-right">Spans</TableHead>
+								<TableHead>Status</TableHead>
 								<TableHead className="text-right">Started</TableHead>
 							</TableRow>
 						</TableHeader>
@@ -303,18 +322,11 @@ export function TraceListView() {
 						</TableBody>
 					</Table>
 
-					{traces.hasNextPage ? (
-						<div className="flex justify-center p-4">
-							<Button
-								variant="outline"
-								size="sm"
-								onClick={() => traces.fetchNextPage()}
-								disabled={traces.isFetchingNextPage}
-							>
-								{traces.isFetchingNextPage ? <Spinner className="size-4" /> : "Load more"}
-							</Button>
-						</div>
-					) : null}
+					<ListFooter
+						hasMore={traces.hasNextPage}
+						loading={traces.isFetchingNextPage}
+						onLoadMore={() => traces.fetchNextPage()}
+					/>
 				</div>
 			)}
 			<TracePeekSheet
@@ -359,6 +371,7 @@ function SpanScopeBanner({
 				<>
 					<span className="text-muted-foreground">from</span>
 					<Badge variant="outline" className="font-mono text-xs">
+						<ServiceDot serviceName={service} size="sm" />
 						{service}
 					</Badge>
 				</>
@@ -392,8 +405,13 @@ function TraceListRow({
 	onClick?: (event: MouseEvent, traceId: string) => void
 }) {
 	const href = hrefFor(`/traces/${encodeURIComponent(row.traceId)}`, query)
+	const httpStatusCode = getHttpInfo({
+		spanName: row.rootSpanName,
+		spanKind: row.rootSpanKind,
+		spanAttributes: row.rootSpanAttributes,
+	})?.statusCode
 	return (
-		<LinkRow className={cn(row.hasError && "bg-destructive/5", active && "bg-primary/5")}>
+		<LinkRow className={cn(row.hasError && "bg-severity-error/5", active && "bg-primary/5")}>
 			{/* The link's hit area stretches over the whole row, so every click on the
 			    row is a click on it, and it bubbles here. */}
 			<TableCell
@@ -406,7 +424,7 @@ function TraceListRow({
 					className="flex items-center gap-2"
 				>
 					{row.hasError ? (
-						<span className="size-1.5 shrink-0 rounded-full bg-destructive">
+						<span className="size-1.5 shrink-0 rounded-full bg-severity-error">
 							<span className="sr-only">Errored</span>
 						</span>
 					) : null}
@@ -415,28 +433,21 @@ function TraceListRow({
 						spanKind={row.rootSpanKind}
 						spanAttributes={row.rootSpanAttributes}
 						className="min-w-0"
+						textClassName="text-xs"
 					/>
 				</RowLink>
 			</TableCell>
-			<TableCell className="text-muted-foreground">
-				<div className="flex flex-wrap gap-1">
-					{row.services.slice(0, 3).map((svc) => (
-						<Badge key={svc} variant="secondary" className="font-mono text-[10px]">
-							{svc}
-						</Badge>
-					))}
-					{row.services.length > 3 ? (
-						<Badge variant="secondary" className="font-mono text-[10px]">
-							+{row.services.length - 3}
-						</Badge>
-					) : null}
-				</div>
+			<TableCell>
+				<ServicePills services={row.services} />
 			</TableCell>
 			<TableCell className="text-right font-mono tabular-nums">
 				{formatDuration(row.durationMs)}
 			</TableCell>
 			<TableCell className="text-right font-mono tabular-nums text-muted-foreground">
-				{row.spanCount ?? "-"}
+				{row.spanCount === null ? EMPTY_VALUE : formatNumber(row.spanCount)}
+			</TableCell>
+			<TableCell>
+				<TraceStatusBadge hasError={row.hasError} httpStatusCode={httpStatusCode} />
 			</TableCell>
 			<TableCell
 				className="text-right text-xs whitespace-nowrap text-muted-foreground"

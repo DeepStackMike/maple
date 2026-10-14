@@ -1,5 +1,5 @@
-import * as Command from "effect/unstable/cli/Command"
-import * as Flag from "effect/unstable/cli/Flag"
+import * as Command from "effect/cli/Command"
+import * as Flag from "effect/cli/Flag"
 import { services, diagnose, serviceMap, topOps } from "./commands/services"
 import { traces, trace, slowTraces } from "./commands/traces"
 import { errors, error } from "./commands/errors"
@@ -14,6 +14,7 @@ import { schema } from "./commands/schema"
 import { archive } from "./commands/archive"
 import { deleteCommand } from "./commands/delete"
 import { update } from "./commands/update"
+import { changelog } from "./commands/changelog"
 import { OutputFormatSetting } from "./lib/output"
 
 // One CLI, two backends. Local mode runs the query-engine helpers against the
@@ -55,6 +56,7 @@ export const cli = Command.make("maple").pipe(
 		archive,
 		// Self-update
 		update,
+		changelog,
 		// Services
 		services,
 		diagnose,

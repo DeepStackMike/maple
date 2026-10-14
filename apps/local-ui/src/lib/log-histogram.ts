@@ -9,7 +9,7 @@
 // that has ever silently dropped its last bar.
 
 import { getSeverityColor } from "@maple/ui/lib/severity"
-import { parseClickHouseDateTime } from "./time"
+import { parseClickHouseDateTime, type WarehouseTime } from "./time"
 
 /**
  * Severity for a log that carries none.
@@ -91,7 +91,8 @@ export function severityColorMap(names: Iterable<string>): Record<string, string
 
 /** One `(bucket, severity)` cell as the timeseries query returns it. */
 export interface LogSeriesRow {
-	readonly bucket: string
+	/** Decoded as `DateTime.Utc` by the query engine; a warehouse string in fixtures. */
+	readonly bucket: WarehouseTime
 	readonly groupName: string
 	readonly count: number
 }

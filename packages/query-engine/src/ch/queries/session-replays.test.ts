@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest"
-import { compileUnsafe, compileUnionUnsafe } from "@maple-dev/effect-clickhouse"
+import { DateTime, Effect } from "effect"
+import { compile, compileUnsafe, compileUnionUnsafe } from "@maple-dev/effect-orm/clickhouse"
 import {
 	getSessionReplayQuery,
 	sessionReplaysFacetsQuery,
@@ -12,10 +13,15 @@ import {
 	sessionSpansQuery,
 	sessionEnvironmentsQuery,
 } from "./session-replays"
+import { OrgId } from "@maple/domain"
 
-const baseParams = { orgId: "org_1" }
-const sessionParams = { orgId: "org_1", sessionId: "sess_1" }
+const baseParams = { orgId: OrgId.make("org_1") }
+const sessionParams = { orgId: OrgId.make("org_1"), sessionId: "sess_1" }
 const WINDOW = { startTime: "2026-06-24 04:00:00", endTime: "2026-06-25 06:00:00" }
+const UTC_WINDOW = {
+	startTime: DateTime.makeUnsafe("2026-06-24T04:00:00Z"),
+	endTime: DateTime.makeUnsafe("2026-06-25T06:00:00Z"),
+}
 
 // sessionTraceSummariesQuery
 //
@@ -29,8 +35,12 @@ describe("sessionTraceSummariesQuery", () => {
 		const { sql } = compileUnsafe(q, baseParams)
 		expect(sql).toContain("FROM trace_detail_spans")
 		expect(sql).toContain("AS rootSpanName")
-		expect(sql).toContain("anyIf(SpanKind, ParentSpanId = '') AS rootSpanKind")
-		expect(sql).toContain("anyIf(toJSONString(SpanAttributes), ParentSpanId = '') AS rootSpanAttributes")
+		expect(sql).toContain(
+			"anyIf(trace_detail_spans.SpanKind, trace_detail_spans.ParentSpanId = '') AS rootSpanKind",
+		)
+		expect(sql).toContain(
+			"anyIf(toJSONString(trace_detail_spans.SpanAttributes), trace_detail_spans.ParentSpanId = '') AS rootSpanAttributes",
+		)
 		expect(sql).toContain("GROUP BY traceId")
 		expect(sql).toContain("FORMAT JSON")
 	})
@@ -45,7 +55,11 @@ describe("sessionTraceSummariesQuery", () => {
 	// The table is PARTITION BY toDate(Timestamp); the session window prunes the
 	// daily partitions an unbounded TraceId-IN scan would otherwise touch.
 	it("adds the session time window as a partition-pruning predicate when provided", () => {
-		const q = sessionTraceSummariesQuery({ traceIds: ["t1"], ...WINDOW })
+		const q = sessionTraceSummariesQuery({
+			traceIds: ["t1"],
+			startTime: DateTime.makeUnsafe("2026-06-24T04:00:00Z"),
+			endTime: DateTime.makeUnsafe("2026-06-25T06:00:00Z"),
+		})
 		const { sql } = compileUnsafe(q, baseParams)
 		expect(sql).toContain("Timestamp >= '2026-06-24 04:00:00'")
 		expect(sql).toContain("Timestamp <= '2026-06-25 06:00:00'")
@@ -61,7 +75,7 @@ describe("sessionTraceSummariesQuery", () => {
 
 describe("sessionReplayEventsQuery", () => {
 	it("adds the session time window as a partition-pruning predicate when provided", () => {
-		const q = sessionReplayEventsQuery(WINDOW)
+		const q = sessionReplayEventsQuery(UTC_WINDOW)
 		const { sql } = compileUnsafe(q, sessionParams)
 		expect(sql).toContain("FROM session_replay_events")
 		expect(sql).toContain("Timestamp >= '2026-06-24 04:00:00'")
@@ -75,7 +89,7 @@ describe("sessionReplayEventsQuery", () => {
 	})
 
 	it("bounds the read to a chunk range so a session is fetched in slices", () => {
-		const q = sessionReplayEventsQuery({ ...WINDOW, fromChunkSeq: 16, toChunkSeq: 31, limit: 40 })
+		const q = sessionReplayEventsQuery({ ...UTC_WINDOW, fromChunkSeq: 16, toChunkSeq: 31, limit: 40 })
 		const { sql } = compileUnsafe(q, sessionParams)
 		expect(sql).toContain("ChunkSeq >= 16")
 		expect(sql).toContain("ChunkSeq <= 31")
@@ -83,7 +97,7 @@ describe("sessionReplayEventsQuery", () => {
 	})
 
 	it("omits the chunk range when absent, so existing callers keep their SQL", () => {
-		const { sql } = compileUnsafe(sessionReplayEventsQuery(WINDOW), sessionParams)
+		const { sql } = compileUnsafe(sessionReplayEventsQuery(UTC_WINDOW), sessionParams)
 		expect(sql).not.toContain("ChunkSeq >=")
 		expect(sql).not.toContain("ChunkSeq <=")
 		expect(sql).not.toContain("LIMIT")
@@ -102,7 +116,7 @@ describe("sessionReplayEventsQuery", () => {
 
 describe("sessionReplayChunkIndexQuery", () => {
 	it("never reads the payload column — that is the whole point of the index", () => {
-		const { sql } = compileUnsafe(sessionReplayChunkIndexQuery(WINDOW), sessionParams)
+		const { sql } = compileUnsafe(sessionReplayChunkIndexQuery(UTC_WINDOW), sessionParams)
 		expect(sql).toContain("FROM session_replay_events")
 		expect(sql).not.toContain("Events")
 		expect(sql).toContain("AS byteSize")
@@ -114,14 +128,14 @@ describe("sessionReplayChunkIndexQuery", () => {
 		// cluster lacks fails every read with schema drift (and every insert), so
 		// adding one would have broken all replay until a migration landed. The
 		// ingest timestamp positions a chunk closely enough to pick it.
-		const { sql } = compileUnsafe(sessionReplayChunkIndexQuery(WINDOW), sessionParams)
+		const { sql } = compileUnsafe(sessionReplayChunkIndexQuery(UTC_WINDOW), sessionParams)
 		expect(sql).toContain("Timestamp AS timestamp")
 		expect(sql).toContain("DurationMs AS durationMs")
 		expect(sql).not.toContain("FirstEventMs")
 	})
 
 	it("orders by chunk sequence and scopes to org + session", () => {
-		const { sql } = compileUnsafe(sessionReplayChunkIndexQuery(WINDOW), sessionParams)
+		const { sql } = compileUnsafe(sessionReplayChunkIndexQuery(UTC_WINDOW), sessionParams)
 		expect(sql).toContain("OrgId = 'org_1'")
 		expect(sql).toContain("SessionId = 'sess_1'")
 		expect(sql).toContain("ORDER BY chunkSeq ASC")
@@ -195,11 +209,11 @@ describe("sessionReplaysListQuery visitorId filter", () => {
 // the fast path and all three subquery-wrapping ones — or the badge silently
 // disappears whenever a filter is applied.
 describe("sessionReplaysListQuery recording marker", () => {
-	const MARKER = "ResourceAttributes['maple.session.recorded']"
+	const MARKER = "session_replays.ResourceAttributes['maple.session.recorded']"
 
 	it("projects the marker on the unfiltered fast path", () => {
 		const { sql } = compileUnsafe(sessionReplaysListQuery({}), { ...baseParams, ...WINDOW })
-		expect(sql).toContain(`argMax(${MARKER}, Version) AS recorded`)
+		expect(sql).toContain(`argMax(${MARKER}, session_replays.Version) AS recorded`)
 		// Read out of the row's own resource map — never a join that would undo
 		// this query's partition pruning.
 		expect(sql).not.toContain("session_replay_events")
@@ -208,7 +222,9 @@ describe("sessionReplaysListQuery recording marker", () => {
 	it("carries the marker through the duration, active-time, and event branches", () => {
 		for (const opts of [{ durationMinMs: 1_000 }, { activeTimeMinMs: 1_000 }, { eventType: "error" }]) {
 			const { sql } = compileUnsafe(sessionReplaysListQuery(opts), { ...baseParams, ...WINDOW })
-			expect(sql, JSON.stringify(opts)).toContain(`argMax(${MARKER}, Version) AS recorded`)
+			expect(sql, JSON.stringify(opts)).toContain(
+				`argMax(${MARKER}, session_replays.Version) AS recorded`,
+			)
 			expect(sql, JSON.stringify(opts)).toContain("recorded")
 		}
 	})
@@ -296,7 +312,7 @@ describe("getSessionReplayQuery", () => {
 	// session_replays is PARTITION BY toDate(StartTime); StartTime is version-
 	// invariant so the window is safe alongside the ORDER BY Version DESC dedup.
 	it("adds the session time window on StartTime when provided", () => {
-		const q = getSessionReplayQuery(WINDOW)
+		const q = getSessionReplayQuery(UTC_WINDOW)
 		const { sql } = compileUnsafe(q, sessionParams)
 		expect(sql).toContain("StartTime >= '2026-06-24 04:00:00'")
 		expect(sql).toContain("StartTime <= '2026-06-25 06:00:00'")
@@ -352,7 +368,7 @@ describe("sessionReplaysListQuery session-time filters", () => {
 		expect(sql).toContain("coalesce(a.activeTimeMs, 0) >= 10000")
 		expect(sql).toContain("coalesce(a.activeTimeMs, 0) <= 60000")
 		// The activity aggregate scopes session_events to the same org + window.
-		expect(sql).toContain("sumIf(gapMs, (gapMs > 0 AND gapMs <= 15000))")
+		expect(sql).toContain("sumIf(g.gapMs, (g.gapMs > 0 AND g.gapMs <= 15000))")
 	})
 
 	it("keeps zero-activity (no-event) sessions under a max-only or zero bound", () => {
@@ -457,17 +473,17 @@ describe("sessionReplaysFacetsQuery duration distribution", () => {
 	it("buckets session length into half-octaves from 1s", () => {
 		const { sql } = compileUnionUnsafe(sessionReplaysFacetsQuery({}), { ...baseParams, ...WINDOW })
 		expect(sql).toContain(
-			"toString(toUInt64(round(pow(2, floor(log2(greatest(DurationMs, 1000) / 1000) * 2) / 2) * 1000))) AS name",
+			"toString(toUInt64(round(pow(2, floor(log2(greatest(session_replays.DurationMs, 1000) / 1000) * 2) / 2) * 1000))) AS name",
 		)
 		expect(sql).toContain("'durationBucket' AS facetType")
 		// uniq, not count: un-merged duplicate Version=2 rows must not inflate a bucket.
-		expect(sql).toContain("uniq(SessionId) AS count")
+		expect(sql).toContain("uniq(session_replays.SessionId) AS count")
 	})
 
 	it("emits p50 and p95 over the same population as the buckets", () => {
 		const { sql } = compileUnionUnsafe(sessionReplaysFacetsQuery({}), { ...baseParams, ...WINDOW })
-		expect(sql).toContain("quantile(0.5)(assumeNotNull(DurationMs))")
-		expect(sql).toContain("quantile(0.95)(assumeNotNull(DurationMs))")
+		expect(sql).toContain("quantile(0.5)(assumeNotNull(session_replays.DurationMs))")
+		expect(sql).toContain("quantile(0.95)(assumeNotNull(session_replays.DurationMs))")
 		expect(sql.match(/'durationStat' AS facetType/g)).toHaveLength(2)
 	})
 
@@ -478,10 +494,10 @@ describe("sessionReplaysFacetsQuery duration distribution", () => {
 	it("casts percentiles to the union's integer count type, nan-safe", () => {
 		const { sql } = compileUnionUnsafe(sessionReplaysFacetsQuery({}), { ...baseParams, ...WINDOW })
 		expect(sql).toContain(
-			"toUInt64(ifNull(ifNotFinite(round(quantile(0.5)(assumeNotNull(DurationMs))), 0), 0)) AS count",
+			"toUInt64(ifNull(ifNotFinite(round(quantile(0.5)(assumeNotNull(session_replays.DurationMs))), 0), 0)) AS count",
 		)
 		expect(sql).toContain(
-			"toUInt64(ifNull(ifNotFinite(round(quantile(0.95)(assumeNotNull(DurationMs))), 0), 0)) AS count",
+			"toUInt64(ifNull(ifNotFinite(round(quantile(0.95)(assumeNotNull(session_replays.DurationMs))), 0), 0)) AS count",
 		)
 	})
 
@@ -523,7 +539,9 @@ describe("sessionResourceAttributeBreakdownQuery", () => {
 	it("finalizes the key per session before counting sessions", () => {
 		const q = sessionResourceAttributeBreakdownQuery({ key: "geo.locality.name" })
 		const { sql } = compileUnsafe(q, { ...baseParams, ...WINDOW })
-		expect(sql).toContain("argMax(ResourceAttributes['geo.locality.name'], Version) AS value")
+		expect(sql).toContain(
+			"argMax(session_replays.ResourceAttributes['geo.locality.name'], session_replays.Version) AS value",
+		)
 		expect(sql).toContain("GROUP BY sessionId")
 		// count() over the finalized rows — one row per session, so no uniq() and
 		// no way for an un-merged v1/v2 pair to weight a value twice.
@@ -544,7 +562,7 @@ describe("sessionResourceAttributeBreakdownQuery", () => {
 	it("excludes sessions whose finalized value is empty", () => {
 		const q = sessionResourceAttributeBreakdownQuery({ key: "geo.locality.name" })
 		const { sql } = compileUnsafe(q, { ...baseParams, ...WINDOW })
-		expect(sql).toContain("WHERE value != ''")
+		expect(sql).toContain("WHERE sessions.value != ''")
 	})
 
 	it("prefixes the qualifier key when one is given, keeping the bare value without it", () => {
@@ -553,8 +571,12 @@ describe("sessionResourceAttributeBreakdownQuery", () => {
 			qualifierKey: "geo.country.iso_code",
 		})
 		const { sql } = compileUnsafe(q, { ...baseParams, ...WINDOW })
-		expect(sql).toContain("argMax(ResourceAttributes['geo.country.iso_code'], Version) AS qualifier")
-		expect(sql).toContain("if(qualifier != '', concat(qualifier, '-', value), value) AS name")
+		expect(sql).toContain(
+			"argMax(session_replays.ResourceAttributes['geo.country.iso_code'], session_replays.Version) AS qualifier",
+		)
+		expect(sql).toContain(
+			"if(sessions.qualifier != '', concat(sessions.qualifier, '-', sessions.value), sessions.value) AS name",
+		)
 	})
 
 	it("reads only the requested key when no qualifier is given", () => {
@@ -606,10 +628,10 @@ describe("sessionSpansQuery", () => {
 	it("coalesces both spellings of the http method and url", () => {
 		const { sql } = compileUnsafe(sessionSpansQuery(), sessionParams)
 		expect(sql).toContain(
-			"coalesce(nullIf(SpanAttributes['http.request.method'], ''), SpanAttributes['http.method']) AS httpMethod",
+			"coalesce(nullIf(trace_detail_spans.SpanAttributes['http.request.method'], ''), trace_detail_spans.SpanAttributes['http.method']) AS httpMethod",
 		)
 		expect(sql).toContain(
-			"coalesce(nullIf(SpanAttributes['url.full'], ''), SpanAttributes['http.url']) AS httpUrl",
+			"coalesce(nullIf(trace_detail_spans.SpanAttributes['url.full'], ''), trace_detail_spans.SpanAttributes['http.url']) AS httpUrl",
 		)
 	})
 
@@ -617,7 +639,7 @@ describe("sessionSpansQuery", () => {
 	// nearest ~256ns, and the catalog sweep rejects an unwrapped 64-bit integer.
 	it("returns the span start as a toString-wrapped nanosecond epoch", () => {
 		const { sql } = compileUnsafe(sessionSpansQuery(), sessionParams)
-		expect(sql).toContain("toString(toUnixTimestamp64Nano(Timestamp)) AS startTimeNs")
+		expect(sql).toContain("toString(toUnixTimestamp64Nano(trace_detail_spans.Timestamp)) AS startTimeNs")
 	})
 
 	it("orders by start time, tie-broken by span id so the page order is stable", () => {
@@ -628,7 +650,7 @@ describe("sessionSpansQuery", () => {
 	// There is no index on a map key, so the predicate is a scan either way;
 	// the bounds are what keep it to the session's own daily partitions.
 	it("adds the session window as a partition-pruning predicate when provided", () => {
-		const { sql } = compileUnsafe(sessionSpansQuery(WINDOW), sessionParams)
+		const { sql } = compileUnsafe(sessionSpansQuery(UTC_WINDOW), sessionParams)
 		expect(sql).toContain("Timestamp >= '2026-06-24 04:00:00'")
 		expect(sql).toContain("Timestamp <= '2026-06-25 06:00:00'")
 	})
@@ -654,7 +676,7 @@ describe("sessionSpansQuery", () => {
 
 describe("environment scope", () => {
 	const ENV_PREDICATE =
-		"coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'"
+		"coalesce(nullIf(coalesce(nullIf(session_replays.ResourceAttributes['deployment.environment.name'], ''), session_replays.ResourceAttributes['deployment.environment']), ''), 'unknown') = 'production'"
 
 	it("filters the list pre-aggregation, beside the other version-invariant columns", () => {
 		const { sql } = compileUnsafe(sessionReplaysListQuery({ environment: "production" }), {
@@ -703,8 +725,8 @@ describe("sessionEnvironmentsQuery", () => {
 		const { sql } = compileUnsafe(sessionEnvironmentsQuery(), { ...baseParams, ...WINDOW })
 		expect(sql).toContain("FROM session_replays")
 		expect(sql).toContain(
-			"coalesce(nullIf(coalesce(nullIf(ResourceAttributes['deployment.environment.name'], ''), " +
-				"ResourceAttributes['deployment.environment']), ''), 'unknown') AS environment",
+			"coalesce(nullIf(coalesce(nullIf(session_replays.ResourceAttributes['deployment.environment.name'], ''), " +
+				"session_replays.ResourceAttributes['deployment.environment']), ''), 'unknown') AS environment",
 		)
 		expect(sql).toContain("GROUP BY environment")
 		expect(sql).toContain("ORDER BY environment ASC")
@@ -741,7 +763,9 @@ describe("sessionReplaysListQuery live-ness columns", () => {
 
 	it("finalizes it through argMax like every other ReplacingMergeTree column", () => {
 		const { sql } = compileUnsafe(sessionReplaysListQuery({}), { ...baseParams, ...WINDOW })
-		expect(sql).toContain("argMax(LastActivityAt, Version) AS lastActivityAt")
+		expect(sql).toContain(
+			"argMax(session_replays.LastActivityAt, session_replays.Version) AS lastActivityAt",
+		)
 	})
 })
 
@@ -749,7 +773,7 @@ describe("sessionReplaysListQuery keyset cursor", () => {
 	it("walks (StartTime, SessionId) so a tie can't swallow a page boundary", () => {
 		const { sql } = compileUnsafe(
 			sessionReplaysListQuery({
-				cursor: { startTime: "2026-09-01 12:00:00", sessionId: "sess_9" },
+				cursor: { startTime: DateTime.makeUnsafe("2026-09-01T12:00:00Z"), sessionId: "sess_9" },
 			}),
 			{ ...baseParams, ...WINDOW },
 		)
@@ -762,7 +786,7 @@ describe("sessionReplaysListQuery keyset cursor", () => {
 
 	it("falls back to the bare timestamp comparison without a session id", () => {
 		const { sql } = compileUnsafe(
-			sessionReplaysListQuery({ cursor: { startTime: "2026-09-01 12:00:00" } }),
+			sessionReplaysListQuery({ cursor: { startTime: DateTime.makeUnsafe("2026-09-01T12:00:00Z") } }),
 			{ ...baseParams, ...WINDOW },
 		)
 		expect(sql).toContain("StartTime < '2026-09-01 12:00:00'")
@@ -772,7 +796,7 @@ describe("sessionReplaysListQuery keyset cursor", () => {
 	it("filters before the GROUP BY, not after it", () => {
 		const { sql } = compileUnsafe(
 			sessionReplaysListQuery({
-				cursor: { startTime: "2026-09-01 12:00:00", sessionId: "sess_9" },
+				cursor: { startTime: DateTime.makeUnsafe("2026-09-01T12:00:00Z"), sessionId: "sess_9" },
 			}),
 			{ ...baseParams, ...WINDOW },
 		)
@@ -791,7 +815,7 @@ describe("sessionReplaysFacetsQuery header counts", () => {
 		const { sql } = compileUnionUnsafe(sessionReplaysFacetsQuery({}), { ...baseParams, ...WINDOW })
 		// Same shape as the analytics live badge: coalesce to StartTime so a
 		// session whose only row is the v1 start row is judged on when it began.
-		expect(sql).toContain("coalesce(LastActivityAt, StartTime)")
+		expect(sql).toContain("coalesce(session_replays.LastActivityAt, session_replays.StartTime)")
 		expect(sql).toContain("INTERVAL 300 SECOND")
 		expect(sql).toContain("Status = 'active'")
 	})
@@ -817,7 +841,8 @@ describe("sessionReplaysFacetsQuery header counts", () => {
 // from product_events (time-sorted, PagePath pre-parsed) rather than session_events.
 
 describe("page visited filter", () => {
-	const PAGE_SUBQUERY = "SessionId IN (SELECT SessionId AS SessionId FROM product_events"
+	const PAGE_SUBQUERY =
+		"session_replays.SessionId IN (SELECT product_events.SessionId AS SessionId FROM product_events"
 	const flat = (sql: string) => sql.replace(/\s+/g, " ")
 
 	it("narrows every list branch to sessions that navigated to the exact path", () => {
@@ -848,7 +873,7 @@ describe("page visited filter", () => {
 		expect(sql).toContain("PagePath AS name")
 		expect(sql).toContain("PagePath != ''")
 		expect(sql).toMatch(
-			/SessionId IN \(SELECT SessionId AS SessionId FROM session_replays WHERE .*BrowserName = 'Chrome'\)/,
+			/product_events\.SessionId IN \(SELECT session_replays\.SessionId AS SessionId FROM session_replays WHERE .*BrowserName = 'Chrome'\)/,
 		)
 	})
 
@@ -873,7 +898,7 @@ describe("session tags", () => {
 		const { sql } = compileUnsafe(sessionReplaysListQuery({}), params)
 		expect(sql).toContain("'bot', ")
 		expect(sql).toContain("'engaged') AS quality")
-		expect(sql).toContain("argMax(VisitorIsNew, Version) AS visitorIsNew")
+		expect(sql).toContain("argMax(session_replays.VisitorIsNew, session_replays.Version) AS visitorIsNew")
 	})
 
 	it("ranks bot first, then bounce, idle, glance, and falls back to engaged", () => {
@@ -886,15 +911,15 @@ describe("session tags", () => {
 	it("falls back to last activity when a session never sent its ended row", () => {
 		const { sql } = compileUnsafe(sessionReplaysListQuery({}), params)
 		expect(sql).toContain(
-			"coalesce(argMax(DurationMs, Version), dateDiff('millisecond', argMax(StartTime, Version), coalesce(argMax(LastActivityAt, Version), argMax(StartTime, Version)))) < 5000",
+			"coalesce(argMax(session_replays.DurationMs, session_replays.Version), dateDiff('millisecond', argMax(session_replays.StartTime, session_replays.Version), coalesce(argMax(session_replays.LastActivityAt, session_replays.Version), argMax(session_replays.StartTime, session_replays.Version)))) < 5000",
 		)
 	})
 
 	it("requires every requested tag through one semi-join over the same window", () => {
 		const { sql } = compileUnsafe(sessionReplaysListQuery({ tags: ["engaged", "signed_in"] }), params)
 		expect(sql).toContain("SessionId IN (SELECT")
-		expect(sql).toContain("WHERE quality = 'engaged'")
-		expect(sql).toContain("AND signedIn = 1")
+		expect(sql).toContain("WHERE t.quality = 'engaged'")
+		expect(sql).toContain("AND t.signedIn = 1")
 		expect(sql.match(/FROM session_replays/g)).toHaveLength(2)
 	})
 
@@ -908,7 +933,7 @@ describe("session tags", () => {
 			sessionReplaysListQuery({ tags: ["new_visitor"], durationMinMs: 1000 }),
 			params,
 		)
-		expect(sql).toContain("WHERE newVisitor = 1")
+		expect(sql).toContain("WHERE t.newVisitor = 1")
 		expect(sql).toContain("durationMs >= 1000")
 	})
 
@@ -916,7 +941,7 @@ describe("session tags", () => {
 		const sql = flat(compileUnionUnsafe(sessionReplaysFacetsQuery({}), params).sql)
 		const tagBranch = sql.split("UNION ALL").find((branch) => branch.includes("'tag' AS facetType"))
 		expect(tagBranch).toContain(
-			"arrayJoin(arrayFilter(tag -> tag != '', [quality, if(signedIn = 1, 'signed_in', ''), if(newVisitor = 1, 'new_visitor', '')])) AS name",
+			"arrayJoin(arrayFilter(tag -> tag != '', [t.quality, if(t.signedIn = 1, 'signed_in', ''), if(t.newVisitor = 1, 'new_visitor', '')])) AS name",
 		)
 	})
 
@@ -924,9 +949,9 @@ describe("session tags", () => {
 		const sql = flat(compileUnionUnsafe(sessionReplaysFacetsQuery({ tags: ["engaged"] }), params).sql)
 		const branches = sql.split("UNION ALL")
 		const tagBranch = branches.find((branch) => branch.includes("'tag' AS facetType"))
-		expect(tagBranch).not.toContain("WHERE quality = 'engaged'")
+		expect(tagBranch).not.toContain("WHERE t.quality = 'engaged'")
 		// Every other branch, including the hand-written error one, is narrowed by it.
-		const narrowed = branches.filter((branch) => branch.includes("WHERE quality = 'engaged'"))
+		const narrowed = branches.filter((branch) => branch.includes("WHERE t.quality = 'engaged'"))
 		expect(narrowed.length).toBe(branches.length - 1)
 	})
 
@@ -936,11 +961,97 @@ describe("session tags", () => {
 		)
 		const tagBranch = sql.split("UNION ALL").find((branch) => branch.includes("'tag' AS facetType"))
 		// A tier is counted under the selected traits only: ticking a tier replaces the tier.
-		expect(tagBranch).toContain("if((quality != '' AND signedIn = 1), quality, '')")
+		expect(tagBranch).toContain("if((t.quality != '' AND t.signedIn = 1), t.quality, '')")
 		// A trait is counted under the selected tier and the other selected traits.
-		expect(tagBranch).toContain("if((signedIn = 1 AND quality = 'bot'), 'signed_in', '')")
+		expect(tagBranch).toContain("if((t.signedIn = 1 AND t.quality = 'bot'), 'signed_in', '')")
 		expect(tagBranch).toContain(
-			"if(((newVisitor = 1 AND quality = 'bot') AND signedIn = 1), 'new_visitor', '')",
+			"if(((t.newVisitor = 1 AND t.quality = 'bot') AND t.signedIn = 1), 'new_visitor', '')",
 		)
 	})
+})
+
+// Rows reach callers through `decodeRows`. A query whose row schema is not
+// derived passes rows through untouched, and its timestamps would stay strings
+// behind a `DateTime.Utc` type.
+describe("session replay rows decode timestamps to DateTime.Utc", () => {
+	const listRow = {
+		sessionId: "sess_1",
+		startTime: "2026-06-24 04:00:00.123000000",
+		endTime: null,
+		durationMs: null,
+		status: "active",
+		lastActivityAt: "2026-06-24 04:05:00.000000000",
+		userId: "",
+		userName: "",
+		userEmail: "",
+		groupId: "",
+		groupName: "",
+		visitorId: "v",
+		utmSource: "",
+		entryPath: "/",
+		urlInitial: "https://x.dev/",
+		browserName: "Chrome",
+		osName: "macOS",
+		deviceType: "desktop",
+		country: "DE",
+		serviceName: "web",
+		pageViews: 1,
+		clickCount: 0,
+		errorCount: 0,
+		traceCount: "0",
+		recorded: "true",
+		quality: "bounce",
+		visitorIsNew: 1,
+	}
+
+	for (const [name, opts] of [
+		["fast path", {}],
+		["duration-filtered", { durationMinMs: 1 }],
+		["active-time-filtered", { activeTimeMinMs: 1 }],
+	] as const) {
+		it.effect(`sessionReplaysListQuery (${name})`, () =>
+			Effect.gen(function* () {
+				const compiled = yield* compile(sessionReplaysListQuery(opts), { ...baseParams, ...WINDOW })
+				expect(compiled.rowSchemaSource).toBe("derived")
+				const [row] = yield* compiled.decodeRows([listRow])
+				expect(DateTime.formatIso(row!.startTime)).toBe("2026-06-24T04:00:00.123Z")
+				expect(row!.endTime).toBeNull()
+				expect(row!.lastActivityAt && DateTime.formatIso(row!.lastActivityAt)).toBe(
+					"2026-06-24T04:05:00.000Z",
+				)
+			}),
+		)
+	}
+
+	it.effect("sessionReplayChunkIndexQuery", () =>
+		Effect.gen(function* () {
+			const compiled = yield* compile(sessionReplayChunkIndexQuery(), sessionParams)
+			expect(compiled.rowSchemaSource).toBe("derived")
+			const [row] = yield* compiled.decodeRows([
+				{
+					chunkSeq: 0,
+					timestamp: "2026-06-24 04:00:01.500000000",
+					durationMs: 1000,
+					eventCount: 3,
+					byteSize: 100,
+					isCheckpoint: 1,
+				},
+			])
+			expect(DateTime.formatIso(row!.timestamp)).toBe("2026-06-24T04:00:01.500Z")
+		}),
+	)
+
+	it.effect("sessionsForTraceQuery", () =>
+		Effect.gen(function* () {
+			const compiled = yield* compile(sessionsForTraceQuery({ traceId: "t1" }), {
+				...baseParams,
+				...WINDOW,
+			})
+			expect(compiled.rowSchemaSource).toBe("derived")
+			const [row] = yield* compiled.decodeRows([
+				{ sessionId: "sess_1", startTime: "2026-06-24 04:00:00.000000000", durationMs: null },
+			])
+			expect(DateTime.toEpochMillis(row!.startTime)).toBe(Date.UTC(2026, 5, 24, 4))
+		}),
+	)
 })

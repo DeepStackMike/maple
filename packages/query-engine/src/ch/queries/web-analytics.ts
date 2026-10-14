@@ -8,10 +8,11 @@
 // use `uniq[If](SessionId)`. Page views come from append-only navigation events.
 // WHERE clauses use only columns written identically to both session versions.
 
-import * as CH from "@maple-dev/effect-clickhouse/expr"
-import { param, from, inSubquery, unionAll, compileFnCall } from "@maple-dev/effect-clickhouse"
-import type { ColumnAccessor, CHQuery, CHUnionQuery } from "@maple-dev/effect-clickhouse"
-import { SessionReplays, SessionEvents, ProductEvents } from "../tables"
+import type { DateTime } from "effect"
+import * as CH from "@maple-dev/effect-orm/expr"
+import { param, from, inSubquery, unionAll, compileFnCall } from "@maple-dev/effect-orm/clickhouse"
+import type { ColumnAccessor, CHQuery, CHUnionQuery } from "@maple-dev/effect-orm/clickhouse"
+import { SessionReplays, SessionEvents, ProductEvents, orgIdParam, utcSecondsParam } from "../tables"
 import { isBotCond } from "../user-agent"
 import { resourceEnvLabel, servicesIn } from "./environment"
 import type { FacetOutput } from "./query-helpers"
@@ -191,9 +192,9 @@ function eventConditionsRaw(
 	only?: "host" | "pagePath",
 ): Array<CH.Condition | undefined> {
 	return [
-		$.OrgId.eq(param.string("orgId")),
-		$.Timestamp.gte(param.dateTimeString("startTime")),
-		$.Timestamp.lte(param.dateTimeString("endTime")),
+		$.OrgId.eq(orgIdParam),
+		$.Timestamp.gte(param.dateTime("startTime")),
+		$.Timestamp.lte(param.dateTime("endTime")),
 		$.Type.eq(kind),
 		only === "pagePath" ? undefined : CH.when(filters.host, (v: string) => CH.domain_($.Url).eq(v)),
 		only === "host" ? undefined : CH.when(filters.pagePath, (v: string) => CH.path_($.Url).eq(v)),
@@ -226,9 +227,9 @@ function eventConditionsRollup(
 	only?: "host" | "pagePath",
 ): Array<CH.Condition | undefined> {
 	return [
-		$.OrgId.eq(param.string("orgId")),
-		$.Timestamp.gte(param.dateTimeString("startTime")),
-		$.Timestamp.lte(param.dateTimeString("endTime")),
+		$.OrgId.eq(orgIdParam),
+		$.Timestamp.gte(param.dateTime("startTime")),
+		$.Timestamp.lte(param.dateTime("endTime")),
 		$.Kind.eq(kind),
 		only === "pagePath" ? undefined : CH.when(filters.host, (v: string) => $.Host.eq(v)),
 		only === "host" ? undefined : CH.when(filters.pagePath, (v: string) => $.PagePath.eq(v)),
@@ -366,9 +367,9 @@ export function replaysWhere(
 			: undefined
 
 	return [
-		$.OrgId.eq(param.string("orgId")),
-		$.StartTime.gte(param.dateTimeString("startTime")),
-		$.StartTime.lte(param.dateTimeString("endTime")),
+		$.OrgId.eq(orgIdParam),
+		$.StartTime.gte(param.dateTime("startTime")),
+		$.StartTime.lte(param.dateTime("endTime")),
 		navigationFilter,
 		exclude === "referrerHost"
 			? undefined
@@ -611,7 +612,7 @@ export function webAnalyticsLiveQuery(
 		.where(($) => [
 			...replaysWhere($, opts),
 			CH.coalesce($.LastActivityAt, $.StartTime).gte(
-				CH.intervalSub(CH.toDateTime(param.dateTimeString("endTime")), windowSeconds),
+				CH.intervalSub(CH.toDateTime(utcSecondsParam("endTime")), windowSeconds),
 			),
 		])
 		.format("JSON")
@@ -624,7 +625,7 @@ export interface WebAnalyticsTimeseriesOpts extends WebAnalyticsFilters {
 }
 
 export interface WebAnalyticsTimeseriesOutput {
-	readonly bucket: string
+	readonly bucket: DateTime.Utc
 	readonly visitors: number
 	readonly sessions: number
 	readonly newSessions: number
@@ -688,7 +689,7 @@ export interface WebAnalyticsPageviewsTimeseriesOpts extends WebAnalyticsFilters
 }
 
 export interface WebAnalyticsPageviewsTimeseriesOutput {
-	readonly bucket: string
+	readonly bucket: DateTime.Utc
 	readonly pageViews: number
 	readonly sessions: number
 }

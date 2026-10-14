@@ -1,10 +1,11 @@
+import { OrgId } from "@maple/domain"
 import { describe, expect, it } from "@effect/vitest"
-import { compileUnsafe } from "@maple-dev/effect-clickhouse"
+import { compileUnsafe } from "@maple-dev/effect-orm/clickhouse"
 import { DEPLOYMENT_ENV_SQL } from "@maple/domain/tinybird/semconv-renames"
 import { serviceCatalogVersionsQuery } from "./service-catalog-versions"
 
 const baseParams = {
-	orgId: "org_1",
+	orgId: OrgId.make("org_1"),
 	startTime: "2024-01-01 00:00:00",
 	endTime: "2024-01-02 00:00:00",
 }
@@ -16,8 +17,8 @@ describe("serviceCatalogVersionsQuery", () => {
 	it("scopes by org and the whole window", () => {
 		const { sql } = compile()
 		expect(sql).toContain("OrgId = 'org_1'")
-		expect(sql).toContain("Timestamp >= toDateTime('2024-01-01 00:00:00')")
-		expect(sql).toContain("Timestamp < toDateTime('2024-01-02 00:00:00')")
+		expect(sql).toContain("traces.Timestamp >= '2024-01-01 00:00:00'")
+		expect(sql).toContain("traces.Timestamp < '2024-01-02 00:00:00'")
 	})
 
 	it("derives a single-tenant scope from its own predicate", () => {
@@ -39,7 +40,10 @@ describe("serviceCatalogVersionsQuery", () => {
 		// Byte-identical to what `service_overview_spans_mv` writes into
 		// `DeploymentEnv`, so a version row and an overview row agree on which
 		// environment they describe.
-		expect(compile().sql).toContain(DEPLOYMENT_ENV_SQL)
+		// The builder qualifies source columns; the shared write-side fragment does not.
+		expect(compile().sql).toContain(
+			DEPLOYMENT_ENV_SQL.replace(/(?<![\w.])ResourceAttributes\b/g, "traces.ResourceAttributes"),
+		)
 	})
 
 	it("drops unversioned spans before the GROUP BY", () => {
@@ -60,10 +64,10 @@ describe("serviceCatalogVersionsQuery", () => {
 		expect(compile().sql).toContain("ORDER BY lastSeen DESC, spanCount DESC")
 	})
 
-	it("returns the boundary timestamps as text", () => {
+	it("returns the boundary timestamps as the bare aggregates, decoded as DateTime.Utc", () => {
 		const { sql } = compile()
-		expect(sql).toContain("toString(min(Timestamp)) AS firstSeen")
-		expect(sql).toContain("toString(max(Timestamp)) AS lastSeen")
+		expect(sql).toContain("min(traces.Timestamp) AS firstSeen")
+		expect(sql).toContain("max(traces.Timestamp) AS lastSeen")
 	})
 
 	it("scopes to one service when asked, and to the fleet otherwise", () => {

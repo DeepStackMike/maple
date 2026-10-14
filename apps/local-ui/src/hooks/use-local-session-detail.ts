@@ -1,18 +1,20 @@
 import { skipToken, useQuery } from "@tanstack/react-query"
 import { CH } from "@maple/query-engine"
-import { Option } from "effect"
+import { DateTime, Option } from "effect"
 import type {
-	SessionReplayDetailOutput,
 	SessionSpanOutput,
 	SessionTraceSummaryOutput,
 	SessionTranscriptOutput,
 } from "@maple/query-engine/ch"
 import { executeLocalCompiledFirstRow, executeLocalCompiledQuery } from "@/lib/query"
 import { LOCAL_ORG_ID } from "../lib/constants"
+import { parseClickHouseDateTime } from "../lib/time"
 
 /** Finalized metadata for one session (latest ReplacingMergeTree version). */
 export function useLocalSessionDetail(sessionId: string | undefined) {
-	return useQuery<SessionReplayDetailOutput | null>({
+	// Row type inferred from the query: the exported output interface leaves out the
+	// identity and heartbeat columns (userName, userEmail, lastActivityAt) the page needs.
+	return useQuery({
 		queryKey: ["local", "session", sessionId],
 		queryFn: sessionId
 			? async ({ signal }) => {
@@ -80,7 +82,10 @@ export function useLocalSessionSpans(
 		enabled: !!sessionId && !!window,
 		queryFn: async ({ signal }) => {
 			const compiled = CH.compile(
-				CH.sessionSpansQuery({ startTime: window!.startTime, endTime: window!.endTime }),
+				CH.sessionSpansQuery({
+					startTime: DateTime.makeUnsafe(parseClickHouseDateTime(window!.startTime) ?? 0),
+					endTime: DateTime.makeUnsafe(parseClickHouseDateTime(window!.endTime) ?? 0),
+				}),
 				{ orgId: LOCAL_ORG_ID, sessionId: sessionId! },
 			)
 			return executeLocalCompiledQuery(compiled, signal)

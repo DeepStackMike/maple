@@ -1,10 +1,10 @@
 import { skipToken, useQuery } from "@tanstack/react-query"
 import { CH } from "@maple/query-engine"
-import { Option } from "effect"
+import { DateTime, Option } from "effect"
 import { boundsKey, executeLocalCompiledFirstRow, executeLocalCompiledQuery, localParams } from "@/lib/query"
 import type { TimeBounds } from "../lib/time"
 import { groupSparkPoints, type SparkPoint } from "../lib/error-spark"
-import type { ErrorSlice, VersionTraffic } from "../lib/error-versions"
+import type { ErrorSlice, VersionRow, VersionTraffic } from "../lib/error-versions"
 import {
 	matchesNothing,
 	projectKey,
@@ -111,6 +111,21 @@ function groupByFingerprint<T extends { readonly fingerprintHash: string }>(
 }
 
 /**
+ * A row's first/last-seen as ISO strings, the shape `lib/error-versions` orders
+ * on: one format compares chronologically as text, and its second-precision
+ * comparisons read the ISO form as readily as the warehouse one.
+ */
+function isoSeen<T extends { readonly firstSeen: DateTime.Utc; readonly lastSeen: DateTime.Utc }>(
+	row: T,
+): Omit<T, "firstSeen" | "lastSeen"> & { readonly firstSeen: string; readonly lastSeen: string } {
+	return {
+		...row,
+		firstSeen: DateTime.formatIso(row.firstSeen),
+		lastSeen: DateTime.formatIso(row.lastSeen),
+	}
+}
+
+/**
  * Per-build occurrence split for every fingerprint on the page, in one query,
  * across all services and environments merged. The Compare-versions table uses
  * it for the count no (service, environment) slice accounts for, so the table
@@ -136,18 +151,17 @@ export function useLocalErrorVersions(
 		queryFn: scopedQueryFn(
 			scope,
 			fingerprintHashes.length > 0 &&
-				(async ({ signal }): Promise<Map<string, Array<CH.ErrorVersionsOutput>>> => {
+				(async ({ signal }): Promise<Map<string, Array<VersionRow>>> => {
 					const shared = versionFilters(filters, scope.services)
 					if (matchesNothing(shared.services)) return new Map()
-					return groupByFingerprint(
-						await executeLocalCompiledQuery(
-							CH.compile(
-								CH.errorVersionsQuery({ ...shared, fingerprintHashes }),
-								localParams(bounds),
-							),
-							signal,
+					const rows = await executeLocalCompiledQuery(
+						CH.compile(
+							CH.errorVersionsQuery({ ...shared, fingerprintHashes }),
+							localParams(bounds),
 						),
+						signal,
 					)
+					return groupByFingerprint(rows.map(isoSeen))
 				}),
 		),
 	})
@@ -189,8 +203,8 @@ export function useLocalVersionTraffic(filters: ErrorsFilters, bounds: TimeBound
 					environment: row.environment || UNKNOWN_ENVIRONMENT,
 					version: row.version,
 					spanCount: Number(row.spanCount),
-					firstSeen: row.firstSeen,
-					lastSeen: row.lastSeen,
+					firstSeen: DateTime.formatIso(row.firstSeen),
+					lastSeen: DateTime.formatIso(row.lastSeen),
 				}))
 				.filter(
 					(row) =>
@@ -233,15 +247,14 @@ export function useLocalErrorSlices(
 				(async ({ signal }): Promise<Map<string, Array<ErrorSlice>>> => {
 					const shared = versionFilters(filters, scope.services)
 					if (matchesNothing(shared.services)) return new Map()
-					return groupByFingerprint(
-						await executeLocalCompiledQuery(
-							CH.compile(
-								CH.errorVersionSlicesQuery({ ...shared, fingerprintHashes }),
-								localParams(bounds),
-							),
-							signal,
+					const rows = await executeLocalCompiledQuery(
+						CH.compile(
+							CH.errorVersionSlicesQuery({ ...shared, fingerprintHashes }),
+							localParams(bounds),
 						),
+						signal,
 					)
+					return groupByFingerprint(rows.map(isoSeen))
 				}),
 		),
 	})
@@ -286,7 +299,9 @@ export function useLocalErrorsSpark(
 						),
 						signal,
 					)
-					return groupSparkPoints(rows)
+					return groupSparkPoints(
+						rows.map((row) => ({ ...row, bucket: DateTime.formatIso(row.bucket) })),
+					)
 				}),
 		),
 	})
@@ -342,7 +357,7 @@ export function useLocalErrorsFacets(filters: ErrorsFilters, bounds: TimeBounds,
 					? []
 					: rows
 							.filter((r) => r.facetType === facetType)
-							.map((r) => ({ name: r.name, count: Number(r.count) }))
+							.map((r) => ({ name: r.name, count: r.count }))
 			return {
 				services: [...withinProject(pick("service"), project)],
 				environments: pick("environment"),

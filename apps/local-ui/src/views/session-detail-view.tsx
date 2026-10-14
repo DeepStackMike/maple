@@ -12,6 +12,11 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { Button } from "@maple/ui/components/ui/button"
+import { Badge } from "@maple/ui/components/ui/badge"
+import { TruncatedText } from "@maple/ui/components/ui/truncated-text"
+import { ServiceDot } from "@maple/ui/components/service-dot"
+import { initialsFrom } from "@maple/ui/lib/initials"
+import { shortId } from "@maple/ui/lib/ids"
 import { Spinner } from "@maple/ui/components/ui/spinner"
 import { CopyableBadge } from "@maple/ui/components/ui/copyable-badge"
 import { Tabs, TabsList, TabsTrigger } from "@maple/ui/components/ui/tabs"
@@ -28,12 +33,8 @@ import {
 	SparkleIcon,
 } from "@maple/ui/components/icons"
 import { cn } from "@maple/ui/lib/utils"
-import { formatDuration } from "@maple/ui/lib/format"
-import type {
-	SessionReplayDetailOutput,
-	SessionSpanOutput,
-	SessionTranscriptOutput,
-} from "@maple/query-engine/ch"
+import { countLabel, formatDuration } from "@maple/ui/lib/format"
+import type { SessionSpanOutput, SessionTranscriptOutput } from "@maple/query-engine/ch"
 import {
 	useLocalSessionDetail,
 	useLocalSessionSpans,
@@ -42,17 +43,18 @@ import {
 } from "../hooks/use-local-session-detail"
 import { parseAttributes } from "@maple/ui/lib/span-tree"
 import { formatLocation, type FormattedLocation } from "../lib/geo"
-import { formatLocalDateTime, formatRelativeTime, formatUtcTitle, toClickHouseDateTime } from "../lib/time"
 import {
-	formatSessionDuration,
-	gradientFor,
-	hostFromUrl,
-	isMobileDevice,
-	isSessionLive,
-	sessionDurationMs,
-} from "@maple/ui/lib/replay-format"
+	formatLocalDateTime,
+	formatRelativeTime,
+	formatUtcTitle,
+	toClickHouseDateTime,
+	type WarehouseTime,
+} from "../lib/time"
+import { formatSessionDuration } from "@maple/ui/lib/replay-format"
+import { gradientFor, hostFromUrl, isMobileDevice } from "@maple/ui/lib/replay"
 import { useLiveClock } from "../hooks/use-live-clock"
 import { ErrorState } from "../components/view-states"
+import { isLocalSessionLive, localSessionDurationMs } from "../lib/session-liveness"
 import { RefreshButton } from "../components/toolbar"
 import {
 	MarkerDot,
@@ -92,6 +94,9 @@ interface SessionDetailViewProps {
 	backLabel: string
 	onBack: () => void
 }
+
+/** The session row as the detail query decodes it (identity and heartbeat columns included). */
+type SessionDetail = NonNullable<ReturnType<typeof useLocalSessionDetail>["data"]>
 
 /** How far before an error the player lands, so the lead-up is visible. */
 const ERROR_LEAD_MS = 3000
@@ -136,7 +141,7 @@ export function SessionDetailView({ sessionId, backLabel, onBack }: SessionDetai
 	// never runs, leaving the row "active" for good. The clock only ticks while
 	// the row still claims to be active, so the badge expires on its own.
 	const nowMs = useLiveClock({ enabled: session?.status === "active" })
-	const isActive = session ? isSessionLive(session, nowMs) : false
+	const isActive = session ? isLocalSessionLive(session, nowMs) : false
 	const hasError = (session?.errorCount ?? 0) > 0
 
 	// Transcript → player. The recording's clock starts at its first rrweb event,
@@ -221,12 +226,12 @@ export function SessionDetailView({ sessionId, backLabel, onBack }: SessionDetai
 		<div className="flex h-full flex-col">
 			<div className="flex shrink-0 items-center gap-3 border-b px-4 py-2">
 				<Button variant="ghost" size="sm" onClick={onBack} className="gap-1.5">
-					<ArrowLeftIcon size={14} />
+					<ArrowLeftIcon />
 					{backLabel}
 				</Button>
-				<span className="truncate font-mono text-xs text-muted-foreground" title={sessionId}>
+				<TruncatedText mono className="text-xs text-muted-foreground">
 					{sessionId}
-				</span>
+				</TruncatedText>
 				<RefreshButton className="ml-auto" since={detail.dataUpdatedAt} />
 			</div>
 
@@ -251,7 +256,7 @@ export function SessionDetailView({ sessionId, backLabel, onBack }: SessionDetai
 								<div
 									className={`grid size-12 shrink-0 place-items-center rounded-full bg-gradient-to-br ${gradientFor(sessionId)} text-base font-semibold text-white shadow-sm`}
 								>
-									{(identity[0] ?? "?").toUpperCase()}
+									{initialsFrom(identity)}
 								</div>
 								<div className="min-w-0 flex-1">
 									<div className="flex flex-wrap items-center gap-2">
@@ -277,7 +282,7 @@ export function SessionDetailView({ sessionId, backLabel, onBack }: SessionDetai
 											label="session ID"
 											className="font-mono text-[11px]"
 										>
-											{sessionId.slice(0, 8)}
+											{shortId(sessionId, "session", { length: 8 })}
 										</CopyableBadge>
 									</div>
 								</div>
@@ -287,7 +292,9 @@ export function SessionDetailView({ sessionId, backLabel, onBack }: SessionDetai
 								<Stat
 									label="Duration"
 									value={
-										isActive ? "Live" : formatSessionDuration(sessionDurationMs(session))
+										isActive
+											? "Live"
+											: formatSessionDuration(localSessionDurationMs(session))
 									}
 								/>
 								<Stat label="Active" value={statDuration(activity.activeMs)} />
@@ -351,7 +358,7 @@ export function SessionDetailView({ sessionId, backLabel, onBack }: SessionDetai
 															className={cn(
 																"size-1.5 shrink-0 rounded-full",
 																trace.hasError
-																	? "bg-destructive"
+																	? "bg-severity-error"
 																	: "bg-muted-foreground/40",
 															)}
 														/>
@@ -359,15 +366,25 @@ export function SessionDetailView({ sessionId, backLabel, onBack }: SessionDetai
 															<span className="flex min-w-0 items-baseline gap-1.5">
 																<span className="truncate text-sm">
 																	{trace.rootSpanName ||
-																		trace.traceId.slice(0, 12)}
+																		shortId(trace.traceId, "trace", {
+																			length: 12,
+																		})}
 																</span>
 																{recoveredTraceIds.has(trace.traceId) ? (
 																	<MatchedHint />
 																) : null}
 															</span>
-															<span className="block truncate text-xs text-muted-foreground">
-																{trace.rootServiceName || "unknown"} ·{" "}
-																{trace.spanCount} spans
+															<span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+																{trace.rootServiceName ? (
+																	<ServiceDot
+																		serviceName={trace.rootServiceName}
+																		size="sm"
+																	/>
+																) : null}
+																<span className="truncate">
+																	{trace.rootServiceName || "unknown"} ·{" "}
+																	{countLabel(trace.spanCount, "span")}
+																</span>
 															</span>
 														</span>
 														<span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
@@ -410,7 +427,7 @@ export function SessionDetailView({ sessionId, backLabel, onBack }: SessionDetai
 
 interface EventPanelProps {
 	events: ReadonlyArray<SessionTranscriptOutput>
-	startTime: string
+	startTime: WarehouseTime
 	isPending: boolean
 	isError: boolean
 	error: unknown
@@ -545,7 +562,7 @@ function EventRow({
 }: {
 	event: SessionTranscriptOutput
 	index: number
-	startTime: string
+	startTime: WarehouseTime
 	onJump?: (event: SessionTranscriptOutput) => void
 	/** The playhead is inside this row. */
 	current: boolean
@@ -778,7 +795,7 @@ function CustomEventBody({ event }: { event: SessionTranscriptOutput }) {
 
 // The user card
 
-function UserCard({ session }: { session: SessionReplayDetailOutput }) {
+function UserCard({ session }: { session: SessionDetail }) {
 	const traits = useMemo(() => Object.entries(parseAttributes(session.userTraits)), [session.userTraits])
 	const group = session.groupName || session.groupId
 	return (
@@ -880,7 +897,7 @@ function statDuration(ms: number | null): string {
 }
 
 /** The name at the top of the page: whoever `identify()` named, else the session id. */
-function displayName(session: SessionReplayDetailOutput, sessionId: string): string {
+function displayName(session: SessionDetail, sessionId: string): string {
 	return session.userName || session.userEmail || session.userId || sessionId
 }
 
@@ -897,9 +914,9 @@ function StatusBadge({ active }: { active: boolean }) {
 		)
 	}
 	return (
-		<span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
+		<Badge variant="muted" pill>
 			Ended
-		</span>
+		</Badge>
 	)
 }
 
@@ -949,7 +966,7 @@ function Meta({
  * (the list card, the Countries breakdown, the facet) groups by, so a detail
  * page disagreeing with it would be the bug.
  */
-function sessionLocation(session: SessionReplayDetailOutput): FormattedLocation | undefined {
+function sessionLocation(session: SessionDetail): FormattedLocation | undefined {
 	const attributes = parseAttributes(session.resourceAttributes)
 	return formatLocation({
 		country: session.country || attributes["geo.country.iso_code"],

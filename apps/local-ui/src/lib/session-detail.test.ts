@@ -22,25 +22,39 @@ import {
 	urlAt,
 	urlPath,
 } from "./session-detail"
+import type { WarehouseTime } from "./time"
 
-const event = (overrides: Partial<SessionTranscriptOutput> = {}): SessionTranscriptOutput => ({
-	timestamp: "2026-01-01 00:00:00",
-	seq: 1,
-	type: "click",
-	url: "",
-	traceId: "",
-	level: "",
-	message: "",
-	targetSelector: "",
-	targetText: "",
-	netMethod: "",
-	netUrl: "",
-	netStatus: 0,
-	netDurationMs: 0,
-	errorStack: "",
-	attributes: "",
-	...overrides,
-})
+// The helpers under test take timestamps as `WarehouseTime` (a decoded
+// `DateTime.Utc` or the warehouse string) and must tolerate strings, including
+// empty and malformed ones. The row types say `DateTime.Utc`, so the fixtures
+// are built loose and cast once here.
+type LooseEvent = Omit<SessionTranscriptOutput, "timestamp"> & { readonly timestamp: WarehouseTime }
+type LooseSpan = Omit<SessionSpanOutput, "startTime"> & { readonly startTime: WarehouseTime }
+// SAFETY: identical rows except the timestamp, which the helpers under test
+// read only through `WarehouseTime`-accepting parsers.
+const asEvent = (row: LooseEvent) => row as SessionTranscriptOutput
+// SAFETY: as above, for the span's start time.
+const asSpan = (row: LooseSpan) => row as SessionSpanOutput
+
+const event = (overrides: Partial<LooseEvent> = {}): SessionTranscriptOutput =>
+	asEvent({
+		timestamp: "2026-01-01 00:00:00",
+		seq: 1,
+		type: "click",
+		url: "",
+		traceId: "",
+		level: "",
+		message: "",
+		targetSelector: "",
+		targetText: "",
+		netMethod: "",
+		netUrl: "",
+		netStatus: 0,
+		netDurationMs: 0,
+		errorStack: "",
+		attributes: "",
+		...overrides,
+	})
 
 /** `mm:ss` into the session, as a chDB datetime string. */
 const at = (seconds: number): string => {
@@ -238,33 +252,34 @@ describe("parseChTime / offsetLabel", () => {
 // method + URL + time — which is what these functions do.
 
 /** A span of the session, as `sessionSpansQuery` returns it. */
-const span = (overrides: Partial<SessionSpanOutput> = {}): SessionSpanOutput => ({
-	traceId: "trace-a",
-	spanId: "span-a",
-	name: "GET /api/orders",
-	kind: "SPAN_KIND_CLIENT",
-	serviceName: "web",
-	startTime: "2026-01-01 00:00:00.000000000",
-	// `at(0)` in nanoseconds — the string form the query returns.
-	startTimeNs: String(Date.parse("2026-01-01T00:00:00Z")) + "000000",
-	durationMs: 12,
-	statusCode: "Ok",
-	httpMethod: "GET",
-	httpUrl: "https://shop.example/api/orders",
-	httpRoute: "/api/orders",
-	serverAddress: "shop.example",
-	...overrides,
-})
+const span = (overrides: Partial<LooseSpan> = {}): SessionSpanOutput =>
+	asSpan({
+		traceId: "trace-a",
+		spanId: "span-a",
+		name: "GET /api/orders",
+		kind: "SPAN_KIND_CLIENT",
+		serviceName: "web",
+		startTime: "2026-01-01 00:00:00.000000000",
+		// `at(0)` in nanoseconds — the string form the query returns.
+		startTimeNs: String(Date.parse("2026-01-01T00:00:00Z")) + "000000",
+		durationMs: 12,
+		statusCode: "Ok",
+		httpMethod: "GET",
+		httpUrl: "https://shop.example/api/orders",
+		httpRoute: "/api/orders",
+		serverAddress: "shop.example",
+		...overrides,
+	})
 
 /** A span starting `seconds` into the session. */
-const spanAt = (seconds: number, overrides: Partial<SessionSpanOutput> = {}): SessionSpanOutput =>
+const spanAt = (seconds: number, overrides: Partial<LooseSpan> = {}): SessionSpanOutput =>
 	span({
 		startTime: at(seconds),
 		startTimeNs: String(Date.parse("2026-01-01T00:00:00Z") + seconds * 1000) + "000000",
 		...overrides,
 	})
 
-const request = (seconds: number, overrides: Partial<SessionTranscriptOutput> = {}) =>
+const request = (seconds: number, overrides: Partial<LooseEvent> = {}) =>
 	event({
 		type: "network",
 		timestamp: at(seconds),

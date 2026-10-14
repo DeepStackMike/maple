@@ -103,6 +103,7 @@ The server exposes the tools below. Read-only tools are marked **read**; the res
 | `list_alert_incidents`    | read   | Triggered alert incidents, open and resolved, with the last observed value               |
 | `get_incident_timeline`   | read   | Trigger, notification and resolution times for one rule's incidents, or all rules'       |
 | `list_alert_checks`       | read   | A rule's recent evaluations with observed value, threshold and sample count              |
+| `preview_alert_rule`      | read   | Replay a saved or draft rule over past data: each window's verdict and skip reason       |
 | `create_alert_rule`       | write  | Create an alert rule from a template or from signal type, comparator and threshold       |
 | `update_alert_rule`       | write  | Change the fields you pass on an alert rule                                              |
 | `delete_alert_rule`       | write  | Delete an alert rule and its incident history. Requires `confirm=true`                   |
@@ -135,12 +136,13 @@ The server exposes the tools below. Read-only tools are marked **read**; the res
 
 ### Agent sessions
 
-| Tool                       | Access | What it does                                                                        |
-| -------------------------- | ------ | ----------------------------------------------------------------------------------- |
-| `list_agent_sessions`      | read   | AI agent sessions with agent, models, LLM and tool calls, failures, tokens and cost |
-| `get_agent_session`        | read   | One agent session: verdict, checks, findings, timing, turns, tokens and cost        |
-| `get_agent_tools_overview` | read   | Calls, failures and latency per agent tool, compared with the previous window       |
-| `get_agent_tool_error`     | read   | One agent tool failure group with affected sessions and sample calls                |
+| Tool                           | Access | What it does                                                                         |
+| ------------------------------ | ------ | ------------------------------------------------------------------------------------ |
+| `list_agent_sessions`          | read   | AI agent sessions with agent, models, LLM and tool calls, failures, tokens and cost  |
+| `get_agent_session`            | read   | One agent session: verdict, checks, findings, timing, turns, tokens and cost         |
+| `get_agent_session_transcript` | read   | One agent session step by step: prompts, replies, tool calls and results, sub-agents |
+| `get_agent_tools_overview`     | read   | Calls, failures and latency per agent tool, compared with the previous window        |
+| `get_agent_tool_error`         | read   | One agent tool failure group with affected sessions and sample calls                 |
 
 ### Setup and source code
 
@@ -156,8 +158,8 @@ The source-code tools only return results for repositories the organization's Gi
 
 ### Feedback
 
-| Tool              | Access | What it does                                                                                            |
-| ----------------- | ------ | ------------------------------------------------------------------------------------------------------- |
+| Tool                  | Access | What it does                                                                                            |
+| --------------------- | ------ | ------------------------------------------------------------------------------------------------------- |
 | `send_maple_feedback` | write  | Tell the Maple team about a bug, a missing capability or a misleading doc: its kind, the agent, and why |
 
 The same feedback can be sent over the REST API with `POST /v2/agent_feedback`.

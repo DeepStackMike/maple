@@ -3,6 +3,7 @@ import { ServiceDot } from "@maple/ui/components/service-dot"
 import { Badge } from "@maple/ui/components/ui/badge"
 import { Sparkline } from "@maple/ui/components/ui/gradient-chart"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@maple/ui/components/ui/table"
+import { TableSkeleton } from "@maple/ui/components/ui/table-skeleton"
 import { formatErrorRate } from "@maple/ui/lib/format"
 import { cn } from "@maple/ui/lib/utils"
 import { FilterSection, SearchableFilterSection } from "@maple/ui/components/filters/filter-section"
@@ -38,7 +39,7 @@ import {
 	ToolbarStat,
 	ToolbarStats,
 } from "../components/toolbar"
-import { ErrorState, ListSkeleton } from "../components/view-states"
+import { ErrorState } from "../components/view-states"
 
 export function ServicesListView() {
 	const [query, setParams] = useQueryParams()
@@ -130,7 +131,17 @@ export function ServicesListView() {
 	return (
 		<PageShell sidebar={sidebar} toolbar={toolbar} activeFilterCount={activeFilterCount}>
 			{list.isPending ? (
-				<ListSkeleton rows={8} />
+				<div className="p-4">
+					<TableSkeleton
+						rows={8}
+						columns={[
+							{ header: "Service", skeleton: "w-40" },
+							...["P50", "P95", "P99", "Error Rate", "Throughput", "Last deploy"].map(
+								(header) => ({ header, skeleton: "w-12" }),
+							),
+						]}
+					/>
+				</div>
 			) : list.isError ? (
 				<ErrorState label="services" error={list.error} onRetry={() => list.refetch()} />
 			) : rows.length === 0 ? (

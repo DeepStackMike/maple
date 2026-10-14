@@ -11,7 +11,7 @@ import {
 	TimeRangeSelect as SharedTimeRangeSelect,
 } from "@maple/ui/components/toolbar"
 import { Popover, PopoverPopup } from "@maple/ui/components/ui/popover"
-import { CUSTOM_RANGE_OPTION, formatAbsoluteRange, parseCustomRange, TIME_RANGES } from "../lib/time"
+import { CUSTOM_RANGE_OPTION, DEFAULT_RANGE, formatAbsoluteRange, parseCustomRange, TIME_RANGES } from "../lib/time"
 import { CustomRangePanel } from "./custom-range-popover"
 import { cn } from "@maple/ui/lib/utils"
 import { useNewDataSince } from "../hooks/use-local-server-status"
@@ -59,15 +59,19 @@ export function RefreshButton({
 }
 
 const RANGE_LABELS: Record<string, string> = {
+	"5m": "Last 5 minutes",
+	"15m": "Last 15 minutes",
+	"30m": "Last 30 minutes",
 	"1h": "Last 1 hour",
 	"6h": "Last 6 hours",
+	"12h": "Last 12 hours",
 	"24h": "Last 24 hours",
 	"7d": "Last 7 days",
 	"30d": "Last 30 days",
 } satisfies Record<string, string>
 
 /** What an unreadable range key resolves to — the same fallback `resolveRange` uses. */
-const FALLBACK_RANGE_KEY = TIME_RANGES[0].key
+const FALLBACK_RANGE_KEY = DEFAULT_RANGE
 
 const RANGE_OPTIONS = TIME_RANGES.map((range) => ({
 	key: range.key,

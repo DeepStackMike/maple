@@ -1,9 +1,19 @@
-import { useInfiniteQuery, useQuery, type QueryKey } from "@tanstack/react-query"
+import { skipToken, useInfiniteQuery, useQuery, type QueryKey } from "@tanstack/react-query"
 import { CH, computeBucketSecondsForRange } from "@maple/query-engine"
 import type { FilterOption } from "@maple/ui/components/filters/filter-section"
 import { boundsKey, executeLocalCompiledQuery, localParams, noCursor } from "@/lib/query"
 import { compareSeverity, normalizeLog, type LocalLog } from "../lib/log-shape"
 import { parseClickHouseDateTime, type TimeBounds } from "../lib/time"
+import { logAttributeQueryFilters } from "../lib/log-attribute-filters"
+import {
+	CONTEXT_SIZE,
+	contextKey,
+	contextWindows,
+	logKeyBounds,
+	matchesLogKey,
+	type InstanceAttribute,
+	type LogKey,
+} from "../lib/log-context"
 import { buildLogHistogram, EMPTY_LOG_HISTOGRAM, type LogHistogram } from "../lib/log-histogram"
 import {
 	matchesNothing,
@@ -41,6 +51,12 @@ export interface LogFilters {
 	environment?: string
 	/** Substring match on the log body. */
 	search?: string
+	/**
+	 * Attribute filters in their URL spelling (`[!]log:<key>=<value>` /
+	 * `[!]res:<key>=<value>`, see `lib/log-attribute-filters.ts`). Applied to the
+	 * list, the histogram and every facet alike.
+	 */
+	attrs?: ReadonlyArray<string>
 }
 
 /**
@@ -58,7 +74,13 @@ export function logsQueryOptions(filters: LogFilters, project: ProjectScope["ser
 		severity: filters.severity,
 		environments: filters.environment ? [filters.environment] : undefined,
 		search: filters.search,
+		...logAttributeQueryFilters(filters.attrs),
 	}
+}
+
+/** The attribute filters' part of a facet's query key: order-free, so a reordered URL hits the cache. */
+export function attrsKey(attrs: ReadonlyArray<string> | undefined): string | null {
+	return attrs && attrs.length > 0 ? [...attrs].sort().join("\n") : null
 }
 
 type LogCursor = NonNullable<CH.LogsListOpts["cursorIdentity"]>
@@ -171,6 +193,7 @@ export function useLocalLogSeverities(filters: LogFilters, bounds: TimeBounds, s
 			filters.service ?? null,
 			filters.environment ?? null,
 			filters.search ?? null,
+			attrsKey(filters.attrs),
 			projectKey(scope),
 			boundsKey(bounds),
 		],
@@ -190,7 +213,7 @@ export function useLocalLogSeverities(filters: LogFilters, bounds: TimeBounds, s
 			const rows = await executeLocalCompiledQuery(compiled, signal)
 			return rows
 				.filter((row) => row.name)
-				.map((row) => ({ name: row.name, count: Number(row.count) }))
+				.map((row) => ({ name: row.name, count: row.count }))
 				.sort((a, b) => compareSeverity(a.name, b.name))
 		}),
 	})
@@ -222,6 +245,7 @@ export function useLocalLogEnvironments(filters: LogFilters, bounds: TimeBounds,
 			filters.service ?? null,
 			filters.severity ?? null,
 			filters.search ?? null,
+			attrsKey(filters.attrs),
 			projectKey(scope),
 			boundsKey(bounds),
 		],
@@ -242,5 +266,83 @@ export function useLocalLogEnvironments(filters: LogFilters, bounds: TimeBounds,
 			const rows = await executeLocalCompiledQuery(compiled, signal)
 			return rows.filter((row) => row.name).map((row) => ({ name: row.name, count: Number(row.count) }))
 		}),
+	})
+}
+
+/**
+ * One log by its permalink key: the drawer's subject when the row is not in
+ * the loaded list (a pasted link, a neighbour picked from the context panel).
+ * Reads exactly the key's instant for its service and trace, then picks the
+ * record by identity, so two rows sharing a timestamp never swap.
+ */
+export function useLocalLogByKey(key: LogKey | null) {
+	return useQuery<LocalLog | null>({
+		queryKey: ["local", "logs", "by-key", key],
+		staleTime: Number.POSITIVE_INFINITY,
+		queryFn: key
+			? async ({ signal }) => {
+					const bounds = logKeyBounds(key)
+					if (!bounds) return null
+					const compiled = CH.compile(
+						CH.logsListQuery({
+							limit: 50,
+							serviceNames: [key.serviceName],
+							traceId: key.traceId || undefined,
+							spanId: key.spanId || undefined,
+						}),
+						localParams(bounds),
+					)
+					const rows = await executeLocalCompiledQuery(compiled, signal)
+					return rows.map(normalizeLog).find((log) => matchesLogKey(log, key)) ?? null
+				}
+			: skipToken,
+	})
+}
+
+/** The logs either side of one log: newest-first before it, oldest-first after it. */
+export interface LocalLogContext {
+	readonly before: ReadonlyArray<LocalLog>
+	readonly after: ReadonlyArray<LocalLog>
+}
+
+/**
+ * Surrounding logs for the drawer's Context tab: up to {@link CONTEXT_SIZE}
+ * from the same service each side, narrowed to one instance (a resource
+ * attribute) when asked, within an hour of the log. Not page-filtered: context
+ * is about what the service was doing, not what the stream is showing.
+ */
+export function useLocalLogContext(log: LocalLog, instance: InstanceAttribute | undefined) {
+	return useQuery<LocalLogContext | null>({
+		queryKey: [
+			"local",
+			"logs",
+			"context",
+			contextKey(log),
+			instance?.key ?? null,
+			instance?.value ?? null,
+		],
+		staleTime: 60_000,
+		queryFn: async ({ signal }) => {
+			const windows = contextWindows(log.timestamp)
+			if (!windows) return null
+			const shared = {
+				// One extra per side: the selected log itself comes back and is dropped.
+				limit: CONTEXT_SIZE + 1,
+				serviceNames: [log.serviceName],
+				resourceAttributeFilters: instance
+					? [{ key: instance.key, value: instance.value, mode: "equals" as const }]
+					: undefined,
+			}
+			// One after the other: chDB serves one query at a time anyway.
+			const before = await executeLocalCompiledQuery(
+				CH.compile(CH.logsListQuery({ ...shared, order: "desc" }), localParams(windows.before)),
+				signal,
+			)
+			const after = await executeLocalCompiledQuery(
+				CH.compile(CH.logsListQuery({ ...shared, order: "asc" }), localParams(windows.after)),
+				signal,
+			)
+			return { before: before.map(normalizeLog), after: after.map(normalizeLog) }
+		},
 	})
 }

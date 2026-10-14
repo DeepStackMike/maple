@@ -4,37 +4,57 @@
 // sub-component family local mode doesn't have. The shareable pieces (AttributesSection,
 // SeverityBadge, severity/format libs) already come from @maple/ui.
 
-import { useMemo, useState } from "react"
+import { useMemo, useState, type CSSProperties } from "react"
 import { Sheet, SheetContent, SheetTitle } from "@maple/ui/components/ui/sheet"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@maple/ui/components/ui/tabs"
 import { ScrollArea } from "@maple/ui/components/ui/scroll-area"
 import { Badge } from "@maple/ui/components/ui/badge"
 import { Button } from "@maple/ui/components/ui/button"
-import { SeverityBadge } from "@maple/ui/components/logs/severity-badge"
+import { KeyValue, KeyValueList } from "@maple/ui/components/ui/key-value"
+import { shortId } from "@maple/ui/lib/ids"
+import { SeverityBadge, severityLabel } from "@maple/ui/components/logs/severity-badge"
+import { stripAnsi } from "@maple/ui/components/logs/strip-ansi"
+import { ServiceDot } from "@maple/ui/components/service-dot"
+import { SEVERITY_COLORS } from "@maple/ui/lib/severity"
 import {
 	CircleInfoIcon,
 	ChevronDownIcon,
 	ChevronUpIcon,
 	ClockIcon,
 	CodeIcon,
+	LayersIcon,
+	LinkIcon,
 	PulseIcon,
 	XmarkIcon,
 } from "@maple/ui/components/icons"
-import { CopyableValue, AttributesSection, ResourceAttributesSection } from "@maple/ui/components/attributes"
+import {
+	AttributesProvider,
+	CopyableValue,
+	AttributesSection,
+	ResourceAttributesSection,
+	type AttributesConfig,
+} from "@maple/ui/components/attributes"
 import { CopyButton } from "@maple/ui/components/ui/copy-button"
 import { cn } from "@maple/ui/lib/utils"
 import { logKey, type LocalLog } from "../lib/log-shape"
 import { hrefFor } from "../lib/router"
 import { formatLocalDateTime, formatUtcTitle } from "../lib/time"
-import { ErrorSection } from "@maple/ui/components/error-section"
+import { LogErrorBanner } from "@maple/ui/components/logs/log-error-banner"
 import { SearchInput } from "@maple/ui/components/ui/search-input"
 import { CodeBlock } from "./code-block"
 import { collectCodeAttributes, detectLanguage } from "../lib/code-block"
+import type { LogAttributeFilter, LogAttributeSource } from "../lib/log-attribute-filters"
+import { logPermalink } from "../lib/log-context"
+import { LogContextPanel } from "./log-context-panel"
 
 interface LogDetailSheetProps {
 	log: LocalLog | null
 	open: boolean
 	onOpenChange: (open: boolean) => void
+	/** Gives every attribute row Filter / Exclude actions. Omit for read-only. */
+	onAttributeFilter?: (filter: LogAttributeFilter) => void
+	/** Opens a neighbour from the Context tab. Omit and the tab is hidden. */
+	onSelectLog?: (log: LocalLog) => void
 }
 
 /**
@@ -43,11 +63,17 @@ interface LogDetailSheetProps {
  * ERROR/FATAL, and Attributes / Trace / Raw tabs. The list row already carries
  * the full (decoded) attribute maps, so no extra fetch is needed.
  */
-export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps) {
+export function LogDetailSheet({
+	log,
+	open,
+	onOpenChange,
+	onAttributeFilter,
+	onSelectLog,
+}: LogDetailSheetProps) {
 	if (!log) return null
 
-	const sev = log.severityText.toUpperCase()
-	const showErrorBanner = sev === "ERROR" || sev === "FATAL"
+	const sev = severityLabel(log.severityText, log.severityNumber).toUpperCase()
+	const showErrorBanner = sev === "ERROR" || sev === "FATAL" || sev === "CRITICAL"
 	// Identity used to remount the attributes panel (resets its search) per log.
 	const identity = logKey(log)
 	const traceHref = log.traceId
@@ -72,6 +98,11 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
 						<TabsTrigger value="attributes">
 							<CircleInfoIcon size={14} /> Attributes
 						</TabsTrigger>
+						{onSelectLog && (
+							<TabsTrigger value="context">
+								<LayersIcon size={14} /> Context
+							</TabsTrigger>
+						)}
 						{traceHref && (
 							<TabsTrigger value="trace">
 								<PulseIcon size={14} /> Trace
@@ -85,10 +116,22 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
 					<TabsContent value="attributes" className="mt-0 min-h-0 flex-1">
 						<ScrollArea className="h-full">
 							<div className="p-3">
-								<LogAttributesPanel key={identity} log={log} />
+								<LogAttributesPanel
+									key={identity}
+									log={log}
+									onAttributeFilter={onAttributeFilter}
+								/>
 							</div>
 						</ScrollArea>
 					</TabsContent>
+
+					{onSelectLog && (
+						<TabsContent value="context" className="mt-0 min-h-0 flex-1">
+							<div className="h-full p-3">
+								<LogContextPanel key={identity} log={log} onLogSelect={onSelectLog} />
+							</div>
+						</TabsContent>
+					)}
 
 					{traceHref && (
 						<TabsContent value="trace" className="mt-0 min-h-0 flex-1">
@@ -117,22 +160,23 @@ export function LogDetailSheet({ log, open, onOpenChange }: LogDetailSheetProps)
 	)
 }
 
-const HERO_TONE: Record<string, string> = {
-	TRACE: "bg-severity-trace/5 border-severity-trace/20",
-	DEBUG: "bg-severity-debug/5 border-severity-debug/20",
-	INFO: "bg-severity-info/5 border-severity-info/20",
-	WARN: "bg-severity-warn/5 border-severity-warn/20",
-	WARNING: "bg-severity-warn/5 border-severity-warn/20",
-	ERROR: "bg-severity-error/5 border-severity-error/20",
-	FATAL: "bg-severity-fatal/5 border-severity-fatal/20",
-} satisfies Record<string, string>
+/** A faint wash of the severity colour behind the hero; unknown levels keep the plain border. */
+function heroToneStyle(severity: string): CSSProperties | undefined {
+	const color = SEVERITY_COLORS[severity.toUpperCase()]
+	if (color === undefined) return undefined
+	return {
+		backgroundColor: `color-mix(in oklch, ${color} 5%, transparent)`,
+		borderColor: `color-mix(in oklch, ${color} 20%, transparent)`,
+	}
+}
 
 const BODY_LINE_THRESHOLD = 280
 
 function LogHeroHeader({ log, onClose }: { log: LocalLog; onClose: () => void }) {
 	const [expanded, setExpanded] = useState(false)
-	const tone = HERO_TONE[log.severityText.toUpperCase()] ?? "border-border"
-	const body = log.body ?? ""
+	const severity = severityLabel(log.severityText, log.severityNumber)
+	// ANSI color codes are stripped for display only; copy and Raw keep the original.
+	const body = useMemo(() => stripAnsi(log.body ?? ""), [log.body])
 
 	// A log body is a sentence far more often than it is a document. Only one
 	// that detects as *something* — a JSON envelope, a statement, a markup
@@ -144,10 +188,11 @@ function LogHeroHeader({ log, onClose }: { log: LocalLog; onClose: () => void })
 	const isLong = body.length > BODY_LINE_THRESHOLD || body.includes("\n")
 
 	return (
-		<div className={cn("shrink-0 border-b px-4 py-3", tone)}>
+		<div className="shrink-0 border-b px-4 py-3" style={heroToneStyle(severity)}>
 			<div className="flex items-center gap-2">
-				<SeverityBadge severity={log.severityText} />
-				<Badge variant="outline" className="font-mono text-[10px]">
+				<SeverityBadge severity={log.severityText} severityNumber={log.severityNumber} />
+				<Badge variant="outline" size="xs" mono>
+					<ServiceDot serviceName={log.serviceName} size="sm" />
 					<CopyableValue value={log.serviceName}>{log.serviceName}</CopyableValue>
 				</Badge>
 				<Button
@@ -157,7 +202,7 @@ function LogHeroHeader({ log, onClose }: { log: LocalLog; onClose: () => void })
 					aria-label="Close log details"
 					onClick={onClose}
 				>
-					<XmarkIcon size={16} />
+					<XmarkIcon />
 				</Button>
 			</div>
 
@@ -172,7 +217,8 @@ function LogHeroHeader({ log, onClose }: { log: LocalLog; onClose: () => void })
 					/>
 				) : (
 					<>
-						<CopyableValue value={body}>
+						{/* ANSI codes are stripped for display; the copy is the body as sent. */}
+						<CopyableValue value={log.body ?? ""}>
 							<p
 								className={cn(
 									"font-mono text-sm leading-relaxed whitespace-pre-wrap break-words",
@@ -225,42 +271,49 @@ function LogMetaStrip({
 					title={`View trace ${log.traceId}`}
 				>
 					<PulseIcon size={10} />
-					trace:{log.traceId.slice(0, 8)}
+					trace:{shortId(log.traceId, "trace")}
 				</a>
 			)}
 
 			{log.spanId && (
 				<span className="shrink-0 font-mono text-[11px] text-muted-foreground">
-					<CopyableValue value={log.spanId}>span:{log.spanId.slice(0, 8)}</CopyableValue>
+					<CopyableValue value={log.spanId}>span:{shortId(log.spanId, "span")}</CopyableValue>
 				</span>
 			)}
 
 			<div className="ml-auto flex shrink-0 items-center gap-0.5">
+				<CopyButton
+					value={() => logPermalink(log)}
+					label="Link to log"
+					idleIcon={LinkIcon}
+					iconSize={13}
+					tooltip
+				/>
 				<CopyButton value={() => buildLogJsonPayload(log)} label="Log JSON" iconSize={13} tooltip />
 			</div>
 		</div>
 	)
 }
 
-function getErrorMessage(log: LocalLog): string {
-	return log.logAttributes["exception.message"] ?? log.logAttributes["error.message"] ?? log.body ?? ""
+type FilterByAttribute = NonNullable<AttributesConfig["onFilterByAttribute"]>
+
+/** The table's row-level filter callback, bound to the map the section shows. */
+function sectionFilter(
+	source: LogAttributeSource,
+	onAttributeFilter: ((filter: LogAttributeFilter) => void) | undefined,
+): FilterByAttribute | undefined {
+	if (!onAttributeFilter) return undefined
+	return ({ attrKey, value, action }) =>
+		onAttributeFilter({ source, key: attrKey, value, negated: action === "exclude" })
 }
 
-function LogErrorBanner({ log }: { log: LocalLog }) {
-	const message = getErrorMessage(log)
-	if (!message) return null
-
-	return (
-		<ErrorSection
-			message={message}
-			title={log.severityText.toUpperCase() === "FATAL" ? "Fatal" : "Error"}
-			badge={log.logAttributes["exception.type"] ?? log.logAttributes["error.type"]}
-			prompt={{ serviceName: log.serviceName, attributes: log.logAttributes }}
-		/>
-	)
-}
-
-function LogAttributesPanel({ log }: { log: LocalLog }) {
+function LogAttributesPanel({
+	log,
+	onAttributeFilter,
+}: {
+	log: LocalLog
+	onAttributeFilter?: (filter: LogAttributeFilter) => void
+}) {
 	const [attrSearch, setAttrSearch] = useState("")
 
 	const hasAttributes =
@@ -311,17 +364,21 @@ function LogAttributesPanel({ log }: { log: LocalLog }) {
 				</div>
 			)}
 
-			<AttributesSection
-				attributes={tableAttributes}
-				title="Log Attributes"
-				searchQuery={attrSearch}
-				groupByNamespace
-			/>
-			<ResourceAttributesSection
-				attributes={log.resourceAttributes}
-				searchQuery={attrSearch}
-				groupByNamespace
-			/>
+			<AttributesProvider onFilterByAttribute={sectionFilter("log", onAttributeFilter)}>
+				<AttributesSection
+					attributes={tableAttributes}
+					title="Log attributes"
+					searchQuery={attrSearch}
+					groupByNamespace
+				/>
+			</AttributesProvider>
+			<AttributesProvider onFilterByAttribute={sectionFilter("resource", onAttributeFilter)}>
+				<ResourceAttributesSection
+					attributes={log.resourceAttributes}
+					searchQuery={attrSearch}
+					groupByNamespace
+				/>
+			</AttributesProvider>
 		</div>
 	)
 }
@@ -337,29 +394,23 @@ function LogTracePanel({
 }) {
 	return (
 		<div className="space-y-3">
-			<div className="rounded-md border p-2 text-xs space-y-1">
-				<div className="flex justify-between gap-3">
-					<span className="text-muted-foreground">Trace ID</span>
-					<span className="truncate font-mono">
-						<CopyableValue value={log.traceId}>{log.traceId}</CopyableValue>
-					</span>
-				</div>
+			<KeyValueList className="gap-1 rounded-md border p-2">
+				<KeyValue label="Trace ID" mono>
+					<CopyableValue value={log.traceId}>{log.traceId}</CopyableValue>
+				</KeyValue>
 				{log.spanId && (
-					<div className="flex justify-between gap-3">
-						<span className="text-muted-foreground">Span ID</span>
-						<span className="truncate font-mono">
-							<CopyableValue value={log.spanId}>{log.spanId}</CopyableValue>
-						</span>
-					</div>
+					<KeyValue label="Span ID" mono>
+						<CopyableValue value={log.spanId}>{log.spanId}</CopyableValue>
+					</KeyValue>
 				)}
-			</div>
+			</KeyValueList>
 			<Button
 				variant="outline"
 				size="sm"
 				className="w-full gap-1.5"
 				render={<a href={traceHref} onClick={onOpenTrace} />}
 			>
-				<PulseIcon size={14} />
+				<PulseIcon />
 				Open trace
 			</Button>
 		</div>

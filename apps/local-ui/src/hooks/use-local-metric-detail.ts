@@ -1,3 +1,4 @@
+import { DateTime } from "effect"
 import { keepPreviousData, skipToken, useQuery } from "@tanstack/react-query"
 import { HARD_SERIES_LIMIT } from "@maple/ui/components/plot"
 import { CH } from "@maple/query-engine"
@@ -82,11 +83,19 @@ export const DEFAULT_EXPLORER_OPTIONS: MetricExplorerOptions = {
  * fetches and pivots every series only for the chart to drop all but 60.
  * `groupBy` is passed through because the cap only applies to a real group-by.
  */
+/**
+ * The explorer's URL filters as the query engine's attribute predicates. The
+ * explorer only offers equality, so every one is `equals`; a blank key (a row
+ * the user has not filled in yet) filters nothing.
+ */
+const equalityFilters = (filters: ReadonlyArray<MetricFilter>) =>
+	filters.filter((f) => f.key !== "").map((f) => ({ key: f.key, value: f.value, mode: "equals" as const }))
+
 const seriesOptionsFor = (options: MetricExplorerOptions) => ({
 	groupByAttributeKey: options.groupBy === GROUP_BY_SERVICE ? undefined : options.groupBy,
 	groupBy: [options.groupBy],
 	seriesLimit: Math.min(options.seriesLimit, HARD_SERIES_LIMIT),
-	attributeFilters: options.filters,
+	attributeFilters: equalityFilters(options.filters),
 })
 
 export const compileMetricRateTimeseriesQuery = (
@@ -214,9 +223,9 @@ export function useLocalMetricTimeseries(
 						)
 						return mergeSeriesPoints(
 							rows.map((r) => ({
-								bucket: r.bucket,
+								bucket: DateTime.formatIso(r.bucket),
 								series: r.groupName,
-								value: Number(r.rateValue),
+								value: r.rateValue,
 								count: Number(r.dataPointCount),
 							})),
 							true,
@@ -231,9 +240,9 @@ export function useLocalMetricTimeseries(
 					)
 					return mergeSeriesPoints(
 						rows.map((r) => ({
-							bucket: r.bucket,
+							bucket: DateTime.formatIso(r.bucket),
 							series: r.groupName,
-							value: Number(r.avgValue),
+							value: r.avgValue,
 							count: Number(r.dataPointCount),
 						})),
 						false,
@@ -289,7 +298,7 @@ export function useLocalMetricBreakdown(
 								metricType,
 								groupByAttributeKey:
 									options.groupBy === GROUP_BY_SERVICE ? undefined : options.groupBy,
-								attributeFilters: options.filters,
+								attributeFilters: equalityFilters(options.filters),
 								limit: options.seriesLimit,
 								...filter,
 							}),
@@ -299,9 +308,9 @@ export function useLocalMetricBreakdown(
 					)
 					return rows.map((r) => ({
 						name: r.name,
-						avgValue: Number(r.avgValue),
-						sumValue: Number(r.sumValue),
-						count: Number(r.count),
+						avgValue: r.avgValue,
+						sumValue: r.sumValue,
+						count: r.count,
 					}))
 				}),
 		),

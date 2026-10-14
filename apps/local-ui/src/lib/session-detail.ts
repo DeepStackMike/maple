@@ -8,12 +8,21 @@
 import { parseAttributes } from "@maple/ui/lib/span-tree"
 import { normalizeSpanKind } from "@maple/ui/lib/span-kind"
 import type { SessionSpanOutput, SessionTranscriptOutput } from "@maple/query-engine/ch"
+import { DateTime } from "effect"
+import { parseClickHouseDateTime, type WarehouseTime } from "./time"
 
-/** Parse a chDB UTC datetime string (`'YYYY-MM-DD HH:MM:SS'`) to epoch ms; `NaN` when unparseable. */
-export function parseChTime(value: string | null | undefined): number {
-	if (!value) return NaN
-	return Date.parse(`${value.replace(" ", "T")}Z`)
+/**
+ * A warehouse timestamp to epoch ms; `NaN` when unparseable. Accepts the decoded
+ * `DateTime.Utc` the queries return and the chDB UTC string
+ * (`'YYYY-MM-DD HH:MM:SS'`) older callers and tests still pass.
+ */
+export function parseChTime(value: WarehouseTime): number {
+	return parseClickHouseDateTime(value) ?? NaN
 }
+
+/** A stable string form of a warehouse timestamp, for keys and ids. */
+const timeKey = (value: WarehouseTime): string =>
+	!value ? "" : DateTime.isDateTime(value) ? DateTime.formatIso(value) : value
 
 // Active / idle
 
@@ -187,7 +196,7 @@ export function urlAt(navigations: ReadonlyArray<UrlAtOffset>, playheadMs: numbe
 // Labels
 
 /** `+120ms` / `+3.4s` from the session's start — the transcript's own clock. */
-export function offsetLabel(startTime: string, timestamp: string): string {
+export function offsetLabel(startTime: WarehouseTime, timestamp: WarehouseTime): string {
 	const start = parseChTime(startTime)
 	const at = parseChTime(timestamp)
 	if (Number.isNaN(start) || Number.isNaN(at)) return ""
@@ -219,7 +228,8 @@ export function customProperties(event: SessionTranscriptOutput): ReadonlyArray<
  * built on. `Seq` alone would do for a single session, but the timestamp costs
  * nothing and makes the id readable in the DOM.
  */
-export const transcriptRowId = (event: SessionTranscriptOutput): string => `${event.seq}-${event.timestamp}`
+export const transcriptRowId = (event: SessionTranscriptOutput): string =>
+	`${event.seq}-${timeKey(event.timestamp)}`
 
 /**
  * How far BEFORE a transcript row a span may start and still be the same
@@ -532,8 +542,8 @@ export interface SessionSpanWindow {
  */
 export function sessionSpanWindow(
 	session: {
-		readonly startTime: string
-		readonly endTime: string | null
+		readonly startTime: WarehouseTime
+		readonly endTime: WarehouseTime
 		readonly durationMs: number | null
 	},
 	nowMs: number = Date.now(),

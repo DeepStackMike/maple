@@ -5,6 +5,7 @@
 // is arithmetic with two traps in it — bucket sizing and the holes — so it
 // lives here where a test can hold it.
 
+import { parseWarehouseDateTime } from "@maple/query-engine"
 import { resolveRangeWindow } from "./time"
 
 /** One `(bucket, count)` group, as `CH.ErrorsSparkOutput` gives it. */
@@ -109,12 +110,10 @@ export function denseCounts(points: ReadonlyArray<SparkPoint>, window: SparkWind
 }
 
 /**
- * Parse a chDB UTC datetime (`'YYYY-MM-DD HH:MM:SS'`, no zone marker) to
- * epoch-ms. Local's `parseClickHouseDateTime` is the same parse; it is repeated
- * here rather than imported so this module stays a pure function of its inputs
- * and can be tested without the time module's presets moving under it.
+ * Parse a bucket to epoch-ms: ISO with a `Z` (what the hook hands over), or a
+ * chDB UTC datetime (`'YYYY-MM-DD HH:MM:SS'`, no zone marker) read as UTC.
  */
 function parseBucket(bucket: string): number | null {
-	const ms = Date.parse(`${bucket.replace(" ", "T")}Z`)
+	const ms = parseWarehouseDateTime(bucket)
 	return Number.isNaN(ms) || ms <= 0 ? null : ms
 }

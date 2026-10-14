@@ -1140,5 +1140,88 @@ export const LOCAL_STORE_STEPS: ReadonlyArray<StepSpec> = [
 			},
 		],
 	},
+	{
+		id: "local-0026-to-0027-alert-checks-skip-reason",
+		from: 26,
+		to: 27,
+		description: "Add SkipReason to alert_checks",
+		clonedBefore: "any DDL runs",
+		beforeBootstrap: [addColumns("alert_checks", [["SkipReason", "LowCardinality(String) DEFAULT ''"]])],
+		plan: [["widen-alert-checks", "Add SkipReason to alert_checks so skipped checks record why"]],
+		verifies: "Verify the v27 physical schema and the retained raw telemetry counts",
+		dispositions: [
+			{
+				name: "alert_checks",
+				classification: "authoritative",
+				disposition: "preserve-exact",
+				guarantee:
+					"Existing check rows are kept as written with an empty SkipReason; only checks recorded after the migration carry one.",
+			},
+		],
+	},
+	{
+		id: "local-0027-to-0028-service-overview-spans-span-kind",
+		from: 27,
+		to: 28,
+		description:
+			"Add SpanKind and IsRoot to service_overview_spans and recreate service_overview_spans_mv to fill them",
+		clonedBefore: "any DDL runs",
+		beforeBootstrap: [
+			addColumns("service_overview_spans", [
+				["SpanKind", "LowCardinality(String) DEFAULT ''"],
+				["IsRoot", "UInt8 DEFAULT 0"],
+			]),
+			dropViews("service_overview_spans_mv"),
+		],
+		plan: [
+			[
+				"widen-service-overview-spans",
+				"Add SpanKind and IsRoot to service_overview_spans and rebuild service_overview_spans_mv to fill them",
+			],
+		],
+		verifies: "Verify the v28 physical schema and the retained raw telemetry counts",
+		dispositions: [
+			TRACES_UNDER_REPLACED_VIEWS,
+			{
+				name: "service_overview_spans",
+				classification: "derived",
+				disposition: "rebuild-within-retention-horizon",
+				guarantee:
+					"Existing rows are preserved untouched with an empty SpanKind and a zero IsRoot; the rebuilt view fills both for spans materialized after the migration and the gap closes as the 30-day retention window rolls.",
+				preservationInterval: "source retention horizon",
+				sourceRetentionDays: 30,
+				targetRetentionDays: 30,
+			},
+		],
+	},
+	{
+		id: "local-0028-to-0029-external-edges-legacy-db-system",
+		from: 28,
+		to: 29,
+		description:
+			"Recreate service_external_edges_hourly_mv so spans with only the legacy db.system are excluded like db.system.name spans",
+		clonedBefore: "any DDL runs",
+		beforeBootstrap: [dropViews("service_external_edges_hourly_mv")],
+		plan: [
+			[
+				"rebuild-external-edges-view",
+				"Rebuild service_external_edges_hourly_mv to exclude spans that set only the legacy db.system",
+			],
+		],
+		verifies: "Verify the v29 physical schema and the retained raw telemetry counts",
+		dispositions: [
+			TRACES_UNDER_REPLACED_VIEWS,
+			{
+				name: "service_external_edges_hourly",
+				classification: "derived",
+				disposition: "rebuild-within-retention-horizon",
+				guarantee:
+					"Existing rows are preserved untouched, including legacy db.system spans counted as external targets; the rebuilt view excludes them from hours materialized after the migration, and the old rows age out with the table's TTL.",
+				preservationInterval: "from the migration forward",
+				sourceRetentionDays: 30,
+				targetRetentionDays: 365,
+			},
+		],
+	},
 	// local-schema:bump appends the next step above this line.
 ]

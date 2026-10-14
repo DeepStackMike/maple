@@ -125,7 +125,7 @@ function StackCopy({ value, nested }: { value: string; nested?: boolean }) {
 			className="shrink-0 p-0.5"
 			onClick={() => void copy(value)}
 		>
-			<CopyIndicator status={status} size={12} />
+			<CopyIndicator status={status} iconSize={12} />
 		</StackAction>
 	)
 }

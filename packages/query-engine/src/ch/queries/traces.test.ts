@@ -1,5 +1,6 @@
+import { DateTime } from "effect"
 import { describe, expect, it } from "vitest"
-import { compileUnsafe } from "@maple-dev/effect-clickhouse"
+import { compileUnsafe } from "@maple-dev/effect-orm/clickhouse"
 import {
 	slowTracesQuery,
 	spanSearchQuery,
@@ -7,13 +8,16 @@ import {
 	traceServicesByTraceIdsQuery,
 	traceSpanStatsByTraceIdsQuery,
 	traceSummariesQuery,
+	tracesBreakdownQuery,
 	tracesListQuery,
 	tracesRootListQuery,
+	tracesTimeseriesQuery,
 } from "./traces"
 import { canUseTracesAggregatesMv } from "./query-helpers"
+import { OrgId } from "@maple/domain"
 
 const baseParams = {
-	orgId: "org_1",
+	orgId: OrgId.make("org_1"),
 	startTime: "2024-01-01 00:00:00",
 	endTime: "2024-01-02 00:00:00",
 	bucketSeconds: 3600,
@@ -28,7 +32,9 @@ describe("traceSummariesQuery", () => {
 		// Once, on trace_list_mv's own `HttpRoute` column — the raw `traces` branch
 		// would spell the route `SpanAttributes['http.route']`.
 		expect(sql.match(/SpanName ILIKE/g)).toHaveLength(1)
-		expect(sql).toContain("NOT ((SpanName ILIKE '%/health%' OR HttpRoute ILIKE '%/health%'))")
+		expect(sql).toContain(
+			"NOT ((trace_list_mv.SpanName ILIKE '%/health%' OR trace_list_mv.HttpRoute ILIKE '%/health%'))",
+		)
 		expect(sql).not.toContain("SpanAttributes['http.route'] ILIKE")
 	})
 
@@ -38,7 +44,7 @@ describe("traceSummariesQuery", () => {
 				serviceName: "api",
 				hasError: true,
 				limit: 21,
-				cursor: { timestamp: "2024-01-01 12:00:00", traceId: "trace123" },
+				cursor: { timestamp: DateTime.makeUnsafe("2024-01-01T12:00:00Z"), traceId: "trace123" },
 			}),
 			baseParams,
 		)
@@ -46,7 +52,7 @@ describe("traceSummariesQuery", () => {
 		expect(sql.match(/OrgId = 'org_1'/g)).toHaveLength(2)
 		expect(sql.match(/Timestamp >= '2024-01-01 00:00:00'/g)).toHaveLength(2)
 		expect(sql.match(/Timestamp <= '2024-01-02 00:00:00'/g)).toHaveLength(2)
-		expect(sql).toMatch(/TraceId IN \(SELECT\s+TraceId AS traceId/)
+		expect(sql).toMatch(/TraceId IN \(SELECT\s+traces\.TraceId AS traceId/)
 		expect(sql).toContain("FROM traces")
 		expect(sql).toContain("ServiceName = 'api'")
 		expect(sql).toContain("StatusCode = 'Error'")
@@ -62,7 +68,7 @@ describe("traceSummariesQuery", () => {
 			traceSummariesQuery({ serviceName: "api", spanScope: "root" }),
 			baseParams,
 		)
-		expect(sql).toMatch(/TraceId IN \(SELECT\s+TraceId AS traceId/)
+		expect(sql).toMatch(/TraceId IN \(SELECT\s+traces\.TraceId AS traceId/)
 		expect(sql).toContain("SpanKind IN ('Server', 'Consumer')")
 	})
 
@@ -71,7 +77,7 @@ describe("traceSummariesQuery", () => {
 			traceSummariesQuery({ spanName: "checkout", matchModes: { spanName: "contains" } }),
 			baseParams,
 		)
-		expect(sql).toContain("positionCaseInsensitive(SpanName, 'checkout') > 0")
+		expect(sql).toContain("positionCaseInsensitive(traces.SpanName, 'checkout') > 0")
 		expect(sql).not.toContain("SpanName = 'checkout'")
 	})
 
@@ -158,9 +164,9 @@ describe("tracesListQuery", () => {
 	})
 
 	it("applies cursor pagination", () => {
-		const q = tracesListQuery({ cursor: "2024-01-01T12:00:00" })
+		const q = tracesListQuery({ cursor: DateTime.makeUnsafe("2024-01-01T12:00:00.250Z") })
 		const { sql } = compileUnsafe(q, baseParams)
-		expect(sql).toContain("Timestamp < '2024-01-01T12:00:00'")
+		expect(sql).toContain("Timestamp < '2024-01-01 12:00:00.250'")
 	})
 
 	it("applies custom limit", () => {
@@ -244,10 +250,10 @@ describe("tracesListQuery", () => {
 	})
 
 	it("includes the cursor in the cutoff subquery so pagination narrows the cheap scan too", () => {
-		const q = tracesListQuery({ cursor: "2024-01-01T12:00:00" })
+		const q = tracesListQuery({ cursor: DateTime.makeUnsafe("2024-01-01T12:00:00Z") })
 		const { sql } = compileUnsafe(q, baseParams)
 		// Cursor predicate applies in both stages.
-		expect(sql.match(/Timestamp < '2024-01-01T12:00:00'/g)).toHaveLength(2)
+		expect(sql.match(/Timestamp < '2024-01-01 12:00:00'/g)).toHaveLength(2)
 	})
 })
 
@@ -265,8 +271,10 @@ describe("traceServicesByTraceIdsQuery", () => {
 		expect(sql).toContain("TraceId IN ('trace-a', 'trace-b')")
 		expect(sql).toContain("Timestamp >= '2024-01-01 00:00:00'")
 		expect(sql).toContain("Timestamp <= '2024-01-02 00:00:00'")
-		expect(sql).toContain("groupUniqArray(ServiceName)")
-		expect(sql).toContain("argMin(ServiceName, (if(ParentSpanId = '', 0, 1), Timestamp))")
+		expect(sql).toContain("groupUniqArray(service_map_spans.ServiceName)")
+		expect(sql).toContain(
+			"argMin(service_map_spans.ServiceName, (if(ParentSpanId = '', 0, 1), Timestamp))",
+		)
 		expect(sql).toContain("GROUP BY traceId")
 		expect(sql).toContain("LIMIT 2")
 	})
@@ -311,13 +319,13 @@ describe("tracesRootListQuery", () => {
 	it("applies rootOnly filter (SpanKind in Server/Consumer OR ParentSpanId='')", () => {
 		const q = tracesRootListQuery({})
 		const { sql } = compileUnsafe(q, baseParams)
-		expect(sql).toContain("SpanKind IN ('Server', 'Consumer') OR ParentSpanId = ''")
+		expect(sql).toContain("traces.SpanKind IN ('Server', 'Consumer') OR traces.ParentSpanId = ''")
 	})
 
 	it("applies cursor pagination", () => {
-		const q = tracesRootListQuery({ cursor: "2024-01-01T12:00:00" })
+		const q = tracesRootListQuery({ cursor: DateTime.makeUnsafe("2024-01-01T12:00:00.250Z") })
 		const { sql } = compileUnsafe(q, baseParams)
-		expect(sql).toContain("Timestamp < '2024-01-01T12:00:00'")
+		expect(sql).toContain("Timestamp < '2024-01-01 12:00:00.250'")
 	})
 
 	it("applies offset", () => {
@@ -347,7 +355,7 @@ describe("tracesRootListQuery", () => {
 
 		// The rootOnly predicate still applies inside the cheap scan so
 		// the cutoff matches the same population as the outer query.
-		expect(inner).toContain("SpanKind IN ('Server', 'Consumer') OR ParentSpanId = ''")
+		expect(inner).toContain("traces.SpanKind IN ('Server', 'Consumer') OR traces.ParentSpanId = ''")
 
 		// Outer query gates on the cutoff.
 		expect(sql).toContain("Timestamp >= (SELECT min(ts) FROM (")
@@ -419,18 +427,18 @@ describe("traceListQuery", () => {
 		// One second holding five traces whose TraceId order (stage 1's tiebreak
 		// on the second-granular MV) runs opposite to their ns start order.
 		const roots = [
-			{ traceId: "t5", startTime: "2024-01-01 12:00:00.100000000" },
-			{ traceId: "t4", startTime: "2024-01-01 12:00:00.200000000" },
-			{ traceId: "t3", startTime: "2024-01-01 12:00:00.300000000" },
-			{ traceId: "t2", startTime: "2024-01-01 12:00:00.400000000" },
-			{ traceId: "t1", startTime: "2024-01-01 12:00:00.500000000" },
-			{ traceId: "t0", startTime: "2024-01-01 11:59:59.000000000" },
+			{ traceId: "t5", startTime: DateTime.makeUnsafe("2024-01-01T12:00:00.100Z") },
+			{ traceId: "t4", startTime: DateTime.makeUnsafe("2024-01-01T12:00:00.200Z") },
+			{ traceId: "t3", startTime: DateTime.makeUnsafe("2024-01-01T12:00:00.300Z") },
+			{ traceId: "t2", startTime: DateTime.makeUnsafe("2024-01-01T12:00:00.400Z") },
+			{ traceId: "t1", startTime: DateTime.makeUnsafe("2024-01-01T12:00:00.500Z") },
+			{ traceId: "t0", startTime: DateTime.makeUnsafe("2024-01-01T11:59:59.000Z") },
 		]
 		type Root = (typeof roots)[number]
-		type Cursor = { timestamp: string; traceId: string }
-		const second = (ts: string) => ts.slice(0, 19)
-		const desc = (key: (r: Root) => string) => (a: Root, b: Root) =>
-			key(b).localeCompare(key(a)) || b.traceId.localeCompare(a.traceId)
+		type Cursor = { timestamp: DateTime.Utc; traceId: string }
+		const second = (ts: DateTime.Utc) => Math.floor(DateTime.toEpochMillis(ts) / 1000) * 1000
+		const desc = (key: (r: Root) => number) => (a: Root, b: Root) =>
+			key(b) - key(a) || b.traceId.localeCompare(a.traceId)
 
 		/** Evaluates one page the way ClickHouse would, reading stage 2's order off the SQL. */
 		const page = (cursor: Cursor | undefined): Root[] => {
@@ -449,7 +457,7 @@ describe("traceListQuery", () => {
 				.slice(0, 2)
 			const stage2Key = outerOrder.startsWith("ORDER BY startSecond")
 				? (r: Root) => second(r.startTime)
-				: (r: Root) => r.startTime
+				: (r: Root) => DateTime.toEpochMillis(r.startTime)
 			return stage1.sort(desc(stage2Key))
 		}
 
@@ -510,18 +518,21 @@ describe("traceListQuery", () => {
 		expect(inner).toContain("HttpStatusCode IN ('500', '502')")
 	})
 
-	it("truncates the ns cursor to the MV's second-granularity Timestamp", () => {
+	it("truncates the cursor to the MV's second-granularity Timestamp", () => {
 		const inner = pageSubquery(
 			compileUnsafe(
 				traceListQuery({
-					cursor: { timestamp: "2024-01-01 12:00:00.123456789", traceId: "trace123" },
+					cursor: {
+						timestamp: DateTime.makeUnsafe("2024-01-01T12:00:00.123Z"),
+						traceId: "trace123",
+					},
 				}),
 				baseParams,
 			).sql,
 		)
 
 		expect(inner).toContain("Timestamp < '2024-01-01 12:00:00'")
-		expect(inner).not.toContain("12:00:00.123456789")
+		expect(inner).not.toContain("12:00:00.123")
 		expect(inner).toContain("TraceId < 'trace123'")
 	})
 
@@ -579,21 +590,23 @@ describe("traceListQuery", () => {
 		const { sql } = compileUnsafe(traceListQuery({}), baseParams)
 
 		expect(sql).toContain(
-			"intDiv(max(toUnixTimestamp64Nano(Timestamp) + toInt64(Duration)) - min(toUnixTimestamp64Nano(Timestamp)), 1000) AS durationMicros",
+			"intDiv(max(toUnixTimestamp64Nano(trace_detail_spans.Timestamp) + toInt64(trace_detail_spans.Duration)) - min(toUnixTimestamp64Nano(trace_detail_spans.Timestamp)), 1000) AS durationMicros",
 		)
 	})
 
 	it("picks root-span fields with a root-first tuple ordering", () => {
 		const { sql } = compileUnsafe(traceListQuery({}), baseParams)
 
-		expect(sql).toContain("argMin(SpanName, (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanName")
+		expect(sql).toContain(
+			"argMin(trace_detail_spans.SpanName, (if(ParentSpanId = '', 0, 1), Timestamp)) AS rootSpanName",
+		)
 		expect(sql).toContain("AS rootSpanKind")
 		expect(sql).toContain("AS rootSpanStatusCode")
 		expect(sql).toContain("AS rootSpanAttributes")
 		// hasError stays root-scoped — same population the errorsOnly filter and
 		// the sidebar's trace_list_mv error count describe.
 		expect(sql).toContain(
-			"if(argMin(StatusCode, (if(ParentSpanId = '', 0, 1), Timestamp)) = 'Error', 1, 0) AS hasError",
+			"if(argMin(trace_detail_spans.StatusCode, (if(ParentSpanId = '', 0, 1), Timestamp)) = 'Error', 1, 0) AS hasError",
 		)
 	})
 
@@ -609,20 +622,22 @@ describe("traceListQuery", () => {
 		const { sql } = compileUnsafe(traceListQuery({}), baseParams)
 
 		expect(sql).toContain(
-			"arrayDistinct(arrayPushFront(arraySort(groupUniqArray(ServiceName)), argMin(ServiceName, (if(ParentSpanId = '', 0, 1), Timestamp)))) AS services",
+			"arrayDistinct(arrayPushFront(arraySort(groupUniqArray(trace_detail_spans.ServiceName)), argMin(trace_detail_spans.ServiceName, (if(ParentSpanId = '', 0, 1), Timestamp)))) AS services",
 		)
 	})
 
 	it("breaks cursor ties on TraceId so same-timestamp traces are not skipped", () => {
 		const inner = pageSubquery(
 			compileUnsafe(
-				traceListQuery({ cursor: { timestamp: "2024-01-01 12:00:00", traceId: "trace123" } }),
+				traceListQuery({
+					cursor: { timestamp: DateTime.makeUnsafe("2024-01-01T12:00:00Z"), traceId: "trace123" },
+				}),
 				baseParams,
 			).sql,
 		)
 
 		expect(inner).toContain(
-			"(Timestamp < '2024-01-01 12:00:00' OR (Timestamp = '2024-01-01 12:00:00' AND TraceId < 'trace123'))",
+			"(trace_list_mv.Timestamp < '2024-01-01 12:00:00' OR (trace_list_mv.Timestamp = '2024-01-01 12:00:00' AND trace_list_mv.TraceId < 'trace123'))",
 		)
 	})
 
@@ -672,7 +687,7 @@ describe("slowTracesQuery", () => {
 
 		expect(sql).toContain("FROM trace_list_mv")
 		expect(sql).toContain("ServiceName = 'api'")
-		expect(sql).toContain("coalesce(nullIf(DeploymentEnv, ''), 'unknown') = 'prod'")
+		expect(sql).toContain("coalesce(nullIf(trace_list_mv.DeploymentEnv, ''), 'unknown') = 'prod'")
 		expect(sql).toContain("ORDER BY durationMs DESC")
 		expect(sql).toContain("LIMIT 5")
 		expect(sql).not.toContain("ParentSpanId")
@@ -735,5 +750,47 @@ describe("commit-sha exclusion", () => {
 		expect(
 			canUseTracesAggregatesMv({ rootOnly: true, excludedCommitShas: ["abc"] }, undefined, 3600),
 		).toBe(false)
+	})
+})
+
+describe("resource-attribute group-by", () => {
+	it("breaks traces down by a ResourceAttributes key", () => {
+		const { sql } = compileUnsafe(
+			tracesBreakdownQuery({
+				metric: "count",
+				groupBy: "attribute",
+				groupByResourceAttributeKey: "deployment.environment",
+			}),
+			baseParams,
+		)
+		expect(sql).toContain("ResourceAttributes['deployment.environment'] AS name")
+		expect(sql).not.toContain("ServiceName AS name")
+	})
+
+	it("groups a timeseries by a ResourceAttributes key", () => {
+		const { sql } = compileUnsafe(
+			tracesTimeseriesQuery({
+				metric: "count",
+				needsSampling: false,
+				groupBy: ["attribute"],
+				groupByResourceAttributeKey: "k8s.pod.name",
+			}),
+			baseParams,
+		)
+		expect(sql).toContain("ResourceAttributes['k8s.pod.name']")
+	})
+
+	it("root list carries deployment environment and service.version", () => {
+		const { sql } = compileUnsafe(tracesRootListQuery({}), baseParams)
+		expect(sql).toContain("AS rootDeploymentEnv")
+		expect(sql).toContain("ResourceAttributes['service.version'] AS rootServiceVersion")
+	})
+
+	it("span search filters by deployment environment", () => {
+		const { sql } = compileUnsafe(
+			spanSearchQuery({ spanName: "x", environments: ["production"] }),
+			baseParams,
+		)
+		expect(sql).toContain("'production'")
 	})
 })

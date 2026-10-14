@@ -20,10 +20,11 @@
 // `service_overview_spans` is built from, so a version row and an overview row
 // describe the same requests.
 
-import { from, param } from "@maple-dev/effect-clickhouse"
-import * as CH from "@maple-dev/effect-clickhouse/expr"
+import type { DateTime } from "effect"
+import { from, param } from "@maple-dev/effect-orm/clickhouse"
+import * as CH from "@maple-dev/effect-orm/expr"
 import { deploymentEnvExpr } from "@maple/domain/tinybird/semconv-renames"
-import { Traces } from "../tables"
+import { Traces, orgIdParam } from "../tables"
 
 export interface ServiceCatalogVersionsOpts {
 	/** Restrict to one service; omit for the whole fleet. */
@@ -37,8 +38,8 @@ export interface ServiceCatalogVersionsOutput {
 	readonly version: string
 	readonly spanCount: number
 	/** Earliest span carrying this version inside the window — "deployed at", clamped. */
-	readonly firstSeen: string
-	readonly lastSeen: string
+	readonly firstSeen: DateTime.Utc
+	readonly lastSeen: DateTime.Utc
 }
 
 /**
@@ -64,15 +65,13 @@ export function serviceCatalogVersionsQuery(opts: ServiceCatalogVersionsOpts = {
 			environment: deploymentEnvExpr($.ResourceAttributes),
 			version: $.ResourceAttributes.get("service.version"),
 			spanCount: CH.count(),
-			// `toString` rather than the bare aggregate: `Timestamp` is DateTime64
-			// and the row is decoded as text on both wire formats.
-			firstSeen: CH.toString_(CH.min_($.Timestamp)),
-			lastSeen: CH.toString_(CH.max_($.Timestamp)),
+			firstSeen: CH.min_($.Timestamp),
+			lastSeen: CH.max_($.Timestamp),
 		}))
 		.where(($) => [
-			$.OrgId.eq(param.string("orgId")),
-			$.Timestamp.gte(CH.toDateTime(param.dateTimeString("startTime"))),
-			$.Timestamp.lt(CH.toDateTime(param.dateTimeString("endTime"))),
+			$.OrgId.eq(orgIdParam),
+			$.Timestamp.gte(param.dateTime("startTime")),
+			$.Timestamp.lt(param.dateTime("endTime")),
 			// The entry-point population `service_overview_spans` projects, so the
 			// version beside a row's metrics was measured over the same spans.
 			$.IsEntryPoint.eq(1),
