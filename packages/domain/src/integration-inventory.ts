@@ -2,6 +2,8 @@
 // fills `IntegrationInventoryInputs` (narrow column projections, epoch ms), then
 // `buildIntegrationInventory` derives every status, same shape as `./setup-audit`.
 
+import { redactUrlSecrets } from "./url-redaction"
+
 export const INTEGRATION_PROVIDERS = [
 	"github",
 	"cloudflare",
@@ -205,8 +207,26 @@ const summarizeResources = (resources: ReadonlyArray<IntegrationResource>): stri
 	return `${ofWorst.length} of ${resources.length} ${worst}, e.g. ${example.kind} ${example.name}${detail ? `: ${detail}` : ""}`
 }
 
+/** "4 h", "25 min", "3 days": how long a resource has gone without a successful update. */
+export const formatAge = (ms: number): string => {
+	const minutes = Math.round(ms / 60_000)
+	if (minutes < 90) return `${minutes} min`
+	const hours = Math.round(minutes / 60)
+	return hours < 48 ? `${hours} h` : `${Math.round(hours / 24)} days`
+}
+
+/** A stale resource says how old its data is; that is the whole finding. */
+const withAge = (resource: IntegrationResource, now: number): IntegrationResource =>
+	resource.status === "stale" && resource.lastSuccessAt !== null
+		? {
+				...resource,
+				note: `no successful update for ${formatAge(now - resource.lastSuccessAt)}${resource.note ? ` (${resource.note})` : ""}`,
+			}
+		: resource
+
 const entry = (
 	provider: IntegrationProvider,
+	now: number,
 	fields: {
 		readonly account: string | null
 		readonly connectedAt: number | null
@@ -216,12 +236,13 @@ const entry = (
 		readonly feeds?: ReadonlyArray<string>
 	},
 ): IntegrationEntry => {
-	const resourceStatus = worstStatus(fields.resources.map((r) => r.status))
+	const resources = fields.resources.map((r) => withAge(r, now))
+	const resourceStatus = worstStatus(resources.map((r) => r.status))
 	const status = worstStatus([fields.own?.status ?? "healthy", resourceStatus])
 	const problem =
 		fields.own && STATUS_RANK[fields.own.status] <= STATUS_RANK[resourceStatus]
 			? fields.own.problem
-			: summarizeResources(fields.resources)
+			: summarizeResources(resources)
 	return {
 		provider,
 		status,
@@ -229,7 +250,7 @@ const entry = (
 		connectedAt: fields.connectedAt,
 		problem: status === "healthy" ? null : problem,
 		feeds: fields.feeds ?? INTEGRATION_FEEDS[provider],
-		resources: [...fields.resources].sort(
+		resources: [...resources].sort(
 			(a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || a.name.localeCompare(b.name),
 		),
 	}
@@ -246,7 +267,7 @@ const revokedProblem = (label: string) => ({
 	problem: `${label} revoked Maple's access; reconnect it in Settings → Integrations.`,
 })
 
-const github = (inputs: IntegrationInventoryInputs): IntegrationEntry | null => {
+const github = (inputs: IntegrationInventoryInputs, now: number): IntegrationEntry | null => {
 	const installations = inputs.vcsInstallations.filter((i) => i.provider === "github")
 	if (installations.length === 0) return null
 	const active = installations.filter((i) => i.status === "active")
@@ -266,7 +287,7 @@ const github = (inputs: IntegrationInventoryInputs): IntegrationEntry | null => 
 			}
 		})
 	const ciTraces = active.some((i) => i.ciTracesEnabled)
-	return entry("github", {
+	return entry("github", now, {
 		account: installations.map((i) => i.accountLogin).join(", "),
 		connectedAt: Math.min(...installations.map((i) => i.createdAt)),
 		own:
@@ -317,7 +338,7 @@ const cloudflare = (inputs: IntegrationInventoryInputs, now: number): Integratio
 		lastError: null,
 		note: `${config.originScheme}://${config.originHost ?? "(private origin)"}/${config.originDatabase}`,
 	}))
-	return entry("cloudflare", {
+	return entry("cloudflare", now, {
 		account: oauth?.externalAccountName ?? oauth?.externalUserEmail ?? null,
 		connectedAt: oauth?.createdAt ?? null,
 		own: isRevoked(oauth) ? revokedProblem("Cloudflare") : undefined,
@@ -352,7 +373,7 @@ const railway = (inputs: IntegrationInventoryInputs, now: number): IntegrationEn
 						problem: `Discovery failing: ${connection.lastError ?? "unknown error"}`,
 					}
 				: undefined
-	return entry("railway", {
+	return entry("railway", now, {
 		account: connection.workspaceNames,
 		connectedAt: connection.createdAt,
 		own,
@@ -365,7 +386,7 @@ const planetscale = (inputs: IntegrationInventoryInputs, now: number): Integrati
 	const connection = inputs.planetscaleConnection
 	if (!oauth && connection === null) return null
 	if (connection === null) {
-		return entry("planetscale", {
+		return entry("planetscale", now, {
 			account: oauth?.externalAccountName ?? oauth?.externalUserEmail ?? null,
 			connectedAt: oauth?.createdAt ?? null,
 			own: isRevoked(oauth)
@@ -412,18 +433,30 @@ const planetscale = (inputs: IntegrationInventoryInputs, now: number): Integrati
 			: missing.length > 0
 				? {
 						status: "failing" as const,
-						problem: `The grant lacks ${missing.join(", ")}; reconnect with those permissions.`,
+						problem: `The grant lacks ${missing
+							.map((permission) => `${permission} (${permissionFeed(permission)})`)
+							.join(", ")}; reconnect PlanetScale in Settings → Integrations with it granted.`,
 					}
 				: connection.lastInventoryAt === null
 					? { status: "pending" as const, problem: "The first database inventory has not run yet." }
 					: undefined
-	return entry("planetscale", {
+	return entry("planetscale", now, {
 		account: connection.psOrganization,
 		connectedAt: connection.createdAt,
 		own,
 		resources: [...databases, ...scrape],
 	})
 }
+
+/** What each permission probed at org-binding time feeds, so a missing one names its effect. */
+const PLANETSCALE_PERMISSION_FEEDS = [
+	["readMetricsEndpoints", "database metrics"],
+	["readDatabases", "the database inventory and deploy requests"],
+	["readOrganization", "the organization lookup"],
+] as const
+
+const permissionFeed = (permission: string) =>
+	PLANETSCALE_PERMISSION_FEEDS.find(([key]) => key === permission)?.[1] ?? "unknown use"
 
 const scrapeResource = (
 	target: IntegrationInventoryInputs["scrapeTargets"][number],
@@ -446,21 +479,23 @@ const scrapeResource = (
 		status,
 		lastSuccessAt: target.lastScrapeAt,
 		lastError: target.lastScrapeError,
-		note: target.serviceName ? `${target.url} → service ${target.serviceName}` : target.url,
+		note: target.serviceName
+			? `${redactUrlSecrets(target.url)} → service ${target.serviceName}`
+			: redactUrlSecrets(target.url),
 	}
 }
 
 const prometheus = (inputs: IntegrationInventoryInputs, now: number): IntegrationEntry | null => {
 	const targets = inputs.scrapeTargets.filter((t) => t.managedBy === null)
 	if (targets.length === 0) return null
-	return entry("prometheus", {
+	return entry("prometheus", now, {
 		account: null,
 		connectedAt: null,
 		resources: targets.map((t) => scrapeResource(t, now, "scrape target")),
 	})
 }
 
-const chat = (inputs: IntegrationInventoryInputs): IntegrationEntry | null => {
+const chat = (inputs: IntegrationInventoryInputs, now: number): IntegrationEntry | null => {
 	const hazel = oauthFor(inputs, "hazel")
 	if (!hazel && inputs.chatWorkspaces.length === 0) return null
 	const workspaces = inputs.chatWorkspaces.map((w): IntegrationResource => ({
@@ -487,7 +522,7 @@ const chat = (inputs: IntegrationInventoryInputs): IntegrationEntry | null => {
 		...inputs.chatWorkspaces.map((w) => w.createdAt),
 		...(hazel ? [hazel.createdAt] : []),
 	]
-	return entry("chat", {
+	return entry("chat", now, {
 		account: null,
 		connectedAt: Math.min(...connectedAt),
 		resources: [...workspaces, ...hazelResource],
@@ -499,12 +534,12 @@ export const buildIntegrationInventory = (
 	now: number,
 ): IntegrationInventory => {
 	const integrations = [
-		github(inputs),
+		github(inputs, now),
 		cloudflare(inputs, now),
 		railway(inputs, now),
 		planetscale(inputs, now),
 		prometheus(inputs, now),
-		chat(inputs),
+		chat(inputs, now),
 	].filter((e): e is IntegrationEntry => e !== null)
 	const connected = new Set(integrations.map((e) => e.provider))
 	return {
