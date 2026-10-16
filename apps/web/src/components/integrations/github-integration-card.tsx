@@ -618,7 +618,7 @@ function ConnectedView({
 	)
 }
 
-/** The org-wide opt-out for GitHub Actions runs as traces. On by default; admins can turn it off. */
+/** The org-wide opt-out for GitHub Actions runs as traces and job logs. On by default; admins can turn it off. */
 function CiTracesSetting({ enabled: serverEnabled }: { enabled: boolean }) {
 	const isAdmin = useIsOrgAdmin()
 	const setCiTraces = useAtomSet(MapleInternalAtomClient.mutation("integrations", "githubSetCiTraces"), {
@@ -639,8 +639,8 @@ function CiTracesSetting({ enabled: serverEnabled }: { enabled: boolean }) {
 			reactivityKeys: ["githubIntegrationStatus"],
 		})
 		const ok = toastExit(result, {
-			success: next ? "GitHub Actions runs will show up as traces" : "CI traces turned off",
-			error: "Failed to change CI traces.",
+			success: next ? "GitHub Actions runs will show up as traces and logs" : "CI traces and logs turned off",
+			error: "Failed to change CI traces and logs.",
 		})
 		if (!ok) setEnabled(!next)
 	})
@@ -649,12 +649,13 @@ function CiTracesSetting({ enabled: serverEnabled }: { enabled: boolean }) {
 		<SettingRow
 			framed
 			className="bg-card px-4 py-3"
-			label="CI traces"
+			label="CI traces and logs"
 			description={
 				<>
 					Each finished GitHub Actions run becomes a trace under the{" "}
 					<span className="font-mono text-foreground">github-actions</span> service, with a span per
-					job and step. Counts toward your usage.
+					job and step. Each job's log lines become logs on the step that wrote them, up to 5 MB per
+					job. Counts toward your usage.
 				</>
 			}
 			control={
