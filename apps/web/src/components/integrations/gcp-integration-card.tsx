@@ -1,4 +1,4 @@
-import { Fragment, useState } from "react"
+import { useState } from "react"
 import type React from "react"
 import { Link } from "@tanstack/react-router"
 import { Exit, Option } from "effect"
@@ -8,7 +8,6 @@ import { Badge } from "@maple/ui/components/ui/badge"
 import { Button } from "@maple/ui/components/ui/button"
 import { ConfirmDialog } from "@maple/ui/components/ui/confirm-dialog"
 import { DropdownMenuItem, DropdownMenuSeparator } from "@maple/ui/components/ui/dropdown-menu"
-import { InlineCode } from "@maple/ui/components/ui/inline-code"
 import { Panel } from "@maple/ui/components/ui/panel"
 import { RowActionsMenu } from "@maple/ui/components/ui/row-actions-menu"
 import { Skeleton } from "@maple/ui/components/ui/skeleton"
@@ -66,6 +65,7 @@ import {
 	gcpWorstState,
 	type GcpCapability,
 } from "./gcp-connector-state"
+import { GcpUsageBand } from "./gcp-usage-cards"
 import { GCP_ACCENT, HEALTH_TONE, gcpStatusQuery } from "./integration-catalog"
 import {
 	IntegrationEmpty,
@@ -103,28 +103,29 @@ function Linked({ text }: { text: string }) {
 
 /**
  * A failure in the API's own words, laid out to be scanned: its first sentence as the headline,
- * what to do under it, and what Google answered as code.
+ * what to do under it, one sentence a line, and what Google answered as fine print.
  */
 export function GcpMessage({ text }: { text: string }) {
 	const { headline, body, answer } = gcpMessageParts(text)
 	return (
-		<div role="note" className="flex flex-col gap-1.5 [overflow-wrap:anywhere]">
-			<p className="font-semibold text-pretty text-foreground">
+		<div className="flex flex-col gap-1 [overflow-wrap:anywhere]">
+			<p className="font-medium text-pretty text-foreground">
 				<Linked text={headline} />
 			</p>
-			{body.length === 0 ? null : (
+			{body.length === 0 ? null : body.length === 1 ? (
 				<p className="text-pretty text-muted-foreground">
-					{body.map((sentence, index) => (
-						<Fragment key={index}>
-							{index === 0 ? null : " "}
-							<Linked text={sentence} />
-						</Fragment>
-					))}
+					<Linked text={body[0]} />
 				</p>
+			) : (
+				<ul className="list-disc pl-4 text-pretty text-muted-foreground">
+					{body.map((sentence) => (
+						<li key={sentence}>
+							<Linked text={sentence} />
+						</li>
+					))}
+				</ul>
 			)}
-			{answer === null ? null : (
-				<InlineCode className="block rounded-md px-2.5 py-1.5">{answer}</InlineCode>
-			)}
+			{answer === null ? null : <p className="text-2xs text-muted-foreground/80">{answer}</p>}
 		</div>
 	)
 }
@@ -211,7 +212,7 @@ function connectionIssues({
 		issues.push({
 			key: "metrics-failing",
 			tone: "crit",
-			title: "Key metrics can't be read",
+			title: "Metrics can't be read",
 			body: <GcpMessage text={metrics.error} />,
 			action: rerun("metrics"),
 		})
@@ -257,7 +258,7 @@ function connectionIssues({
 		issues.push({
 			key: "metrics-incomplete",
 			tone: "warn",
-			title: "Key metrics are incomplete",
+			title: "Metrics are incomplete",
 			body: <GcpMessage text={metrics.error} />,
 			action: rerun("metrics"),
 		})
@@ -402,6 +403,10 @@ const logsSearch = (connector: V2GcpConnector) => ({
 	],
 })
 
+/** The infrastructure page, narrowed to the project when the connection is one. */
+const infraSearch = (connector: V2GcpConnector) =>
+	connector.scope_type === "project" ? { project: connector.scope_id } : {}
+
 /** One capability in an expanded card: its name, its state, and where its data shows up once it does. */
 function Signal({
 	name,
@@ -490,7 +495,7 @@ export function GcpConnection({
 		metrics.kind === "receiving" && metrics.projectCount !== null
 			? countLabel(metrics.projectCount, "project")
 			: null
-	const collects = [connector.logs_enabled ? "Logs" : null, connector.metrics_enabled ? "key metrics" : null]
+	const collects = [connector.logs_enabled ? "Logs" : null, connector.metrics_enabled ? "metrics" : null]
 		.filter((part) => part !== null)
 		.join(" and ")
 
@@ -515,6 +520,9 @@ export function GcpConnection({
 		<RowActionsMenu label={`Actions for ${label}`}>
 			{isAdmin ? <DropdownMenuItem onClick={() => onConfigure("choose")}>Configure</DropdownMenuItem> : null}
 			<DropdownMenuItem render={<Link to="/logs" search={logsSearch(connector)} />}>View logs</DropdownMenuItem>
+			<DropdownMenuItem render={<Link to="/infra/gcp" search={infraSearch(connector)} />}>
+				View infrastructure
+			</DropdownMenuItem>
 			{isAdmin ? (
 				<>
 					<DropdownMenuSeparator />
@@ -580,8 +588,16 @@ export function GcpConnection({
 							}
 						/>
 						<Signal
-							name="Key metrics"
+							name="Metrics"
 							signal={signalText("metrics", log, metrics)}
+							link={
+								lastRead === null ? undefined : (
+									<Link to="/infra/gcp" search={infraSearch(connector)} className={SIGNAL_LINK}>
+										View infrastructure
+										<ArrowRightIcon size={11} />
+									</Link>
+								)
+							}
 						/>
 					</div>
 				</>
@@ -681,6 +697,7 @@ export function GcpIntegrationCard() {
 	useIntervalRefresh(refreshStatus, {
 		intervalMs: settling ? GCP_SETTLING_REFRESH_MS : STEADY_REFRESH_MS,
 		enabled: connectors.length > 0,
+		catchUp: true,
 	})
 
 	if (Result.isInitial(statusResult)) {
@@ -802,11 +819,12 @@ export function GcpIntegrationCard() {
 			GCP_STATE_ORDER.indexOf(gcpConnectionState(b, nowMs)),
 	)
 
-	// Sans for words, mono for ids, times and commands.
 	return (
-		<div className="flex flex-col gap-4 font-display">
+		<div className="flex flex-col gap-4">
 			{cleanup}
-			<section className="flex min-w-0 flex-col gap-3">
+			<GcpUsageBand connectors={connectors} />
+			{/* Sans for words; ids, times and commands set their own mono. */}
+			<section className="flex min-w-0 flex-col gap-3 font-display">
 				<SectionHeading
 					title="Connections"
 					count={connectors.length > 1 ? connectors.length : undefined}

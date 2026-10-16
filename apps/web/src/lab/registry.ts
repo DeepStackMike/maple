@@ -53,6 +53,14 @@ export const LAB_ENTRIES: ReadonlyArray<LabEntry> = [
 		session: "none",
 	},
 	{
+		path: "/lab/gcp",
+		title: "Google Cloud log filter",
+		description:
+			"The Google Cloud configuration's Log filter for a new connection and an existing sink, with what each choice asks the setup script for.",
+		kind: "lab",
+		session: "none",
+	},
+	{
 		path: "/lab/gcp-connect",
 		title: "Google Cloud connect",
 		description:
@@ -65,6 +73,22 @@ export const LAB_ENTRIES: ReadonlyArray<LabEntry> = [
 		title: "Google Cloud connections",
 		description:
 			"A Google Cloud connection in each state, healthy to failing, over fixture connectors, no API needed.",
+		kind: "lab",
+		session: "none",
+	},
+	{
+		path: "/lab/gcp-infra",
+		title: "Google Cloud infrastructure",
+		description:
+			"The Google Cloud list (services, Pub/Sub, Cloud SQL) over fixtures that reproduce the Paper artboards: three projects, problems first.",
+		kind: "lab",
+		session: "none",
+	},
+	{
+		path: "/lab/gcp-workload",
+		title: "Google Cloud workload",
+		description:
+			"The Google Cloud workload page, whole, over fixture series: a Cloud Run 5xx burst at peak instances and a Cloud SQL instance.",
 		kind: "lab",
 		session: "none",
 	},

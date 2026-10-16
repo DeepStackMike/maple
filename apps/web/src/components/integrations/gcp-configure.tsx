@@ -2,8 +2,8 @@ import { Fragment, useId, useState } from "react"
 import type React from "react"
 import { Exit, Option } from "effect"
 import type { V2GcpConnector } from "@maple/domain/http/v2"
-import type { GcpLogFilter, GcpScopeType } from "@maple/domain/primitives"
-import { Alert, AlertDescription } from "@maple/ui/components/ui/alert"
+import type { GcpLogRuntime, GcpScopeType } from "@maple/domain/primitives"
+import { Alert, AlertDescription, AlertTitle } from "@maple/ui/components/ui/alert"
 import { Button } from "@maple/ui/components/ui/button"
 import { Checkbox } from "@maple/ui/components/ui/checkbox"
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "@maple/ui/components/ui/collapsible"
@@ -22,7 +22,7 @@ import { Eyebrow } from "@maple/ui/components/ui/eyebrow"
 import { Field, FieldDescription, FieldError, FieldLabel } from "@maple/ui/components/ui/field"
 import { InlineCode } from "@maple/ui/components/ui/inline-code"
 import { Input } from "@maple/ui/components/ui/input"
-import { Radio, RadioGroup } from "@maple/ui/components/ui/radio-group"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@maple/ui/components/ui/select"
 import { Skeleton } from "@maple/ui/components/ui/skeleton"
 import { Spinner } from "@maple/ui/components/ui/spinner"
 import { StatusDot } from "@maple/ui/components/ui/status-dot"
@@ -52,13 +52,13 @@ import { MapleApiV2AtomClient } from "@/lib/services/common/v2-atom-client"
 import {
 	GCP_LOG_STATUS,
 	GCP_METRICS_STATUS,
+	GCP_LOG_RUNTIMES,
 	GCP_SCOPE_NAMES,
 	cloudShellUrl,
 	gcpCollectLock,
 	gcpCreateRequest,
 	gcpDraftEffect,
 	gcpLogFilterChoice,
-	gcpLogFilters,
 	gcpLogState,
 	gcpMetricsState,
 	gcpOverlapNote,
@@ -74,6 +74,7 @@ import {
 	type GcpConnectorDraft,
 	type GcpDraftEffect,
 	type GcpFlags,
+	type GcpLogFilterDraft,
 } from "./gcp-connector-state"
 import { gcpStatusQuery } from "./integration-catalog"
 
@@ -131,12 +132,10 @@ const CAPABILITIES = {
 		description: "Request, audit and managed-service logs, through a Log Router sink and Pub/Sub.",
 		run: { on: "Log sink and Pub/Sub topic", off: "Removes the log sink" },
 		effects: {
-			"starts-after-script": "Starts once the script has run in Google Cloud.",
-			"resumes-now":
-				"Maple stores these logs again as soon as you save. Google Cloud still forwards them.",
-			"stops-now":
-				"Maple stops storing these logs within about a minute of saving. Google Cloud keeps forwarding them until the script has run.",
-			"removed-by-script": "Off in Maple. Google Cloud keeps forwarding until the script has run.",
+			"starts-after-script": "Starts once the script has run",
+			"resumes-now": "Stored again as soon as you save",
+			"stops-now": "Maple stops storing them when you save",
+			"removed-by-script": "Still forwarded by Google Cloud until the script has run",
 		},
 		now: {
 			"stops-now": "Stops storing this connection's logs within about a minute.",
@@ -154,13 +153,10 @@ const CAPABILITIES = {
 			"Cloud Run, GKE, Compute Engine, Cloud SQL, Pub/Sub, Load Balancing and Cloud Functions. Read-only, every 5 minutes.",
 		run: { on: "Read-only service account", off: "Removes the service account" },
 		effects: {
-			"starts-after-script": "Starts once the script has run in Google Cloud.",
-			"resumes-now":
-				"Maple reads metrics again from the next 5-minute read. Its service account is still there.",
-			"stops-now":
-				"Maple stops reading from the next 5-minute read. Its service account stays in Google Cloud until the script has run.",
-			"removed-by-script":
-				"Off in Maple. Its service account stays in Google Cloud until the script has run.",
+			"starts-after-script": "Starts once the script has run",
+			"resumes-now": "Read again from the next 5-minute read",
+			"stops-now": "Maple stops reading when you save",
+			"removed-by-script": "Its service account stays in Google Cloud until the script has run",
 		},
 		now: {
 			"stops-now": "Stops reading this connection's metrics and resources from the next 5-minute read.",
@@ -186,34 +182,10 @@ const CAPABILITIES = {
 }
 const CAPABILITY_IDS: ReadonlyArray<GcpCapability> = ["logs", "metrics"]
 
-/** The log filters' names, short in the closed disclosure and the run summary, and what each does. */
-const FILTER_TEXT = {
-	default: {
-		short: "Recommended",
-		title: "Recommended",
-		description:
-			"Request, audit and managed-service logs. Leaves out GKE container logs and health-check noise.",
-	},
-	include_gke_container_logs: {
-		short: "With GKE container logs",
-		title: "Include GKE container logs",
-		description: "Everything Recommended forwards, plus GKE container logs.",
-	},
-	keep: {
-		short: "Current filter",
-		title: "Keep the current filter",
-		description: "The filter the log sink has now. Maple doesn't store it.",
-	},
-} as const satisfies {
-	readonly [Filter in GcpLogFilter]: {
-		readonly short: string
-		readonly title: string
-		readonly description: string
-	}
-}
-
 /** The page's one link style, the other integrations' (Railway's token link). */
 export const GCP_LINK = "underline underline-offset-2 hover:no-underline"
+/** The name over a group of controls. */
+const LABEL = "text-xs font-medium text-muted-foreground"
 /** Small print: one size, one colour, short lines. */
 const SMALL = "text-xs/5 text-pretty text-muted-foreground"
 /** A section's or a step's name. On a phone it grows with the controls. */
@@ -438,10 +410,14 @@ function Step({
  * A connector's scripts. A bare query on purpose: `retainedQueryV2` keeps results past unmount,
  * and both scripts embed the connector's secret, so they live only while they are on screen.
  */
-function useGcpScripts(connector: V2GcpConnector, logFilter: GcpLogFilter) {
+function useGcpScripts(
+	connector: V2GcpConnector,
+	/** The runtimes whose application output the sink forwards; undefined keeps the sink's filter. */
+	applicationLogs: ReadonlyArray<GcpLogRuntime> | undefined,
+) {
 	const query = MapleApiV2AtomClient.query("gcpIntegration", "setupScripts", {
 		params: { id: connector.id },
-		payload: { log_filter: logFilter },
+		payload: applicationLogs === undefined ? {} : { application_logs: applicationLogs },
 		reactivityKeys: SCRIPT_REACTIVITY_KEYS,
 	})
 	const result = useAtomValue(query)
@@ -466,11 +442,14 @@ export interface ScriptFailure {
 	readonly retrying: boolean
 }
 
-/** The log filter the script is asked for, and whether including GKE container logs was confirmed. */
-interface FilterState {
-	readonly chosen: GcpLogFilter | null
-	readonly acknowledged: boolean
-}
+/** The log filter the script is asked for. */
+type FilterState = GcpLogFilterDraft
+
+/** What an existing sink's filter can be left as or replaced with. */
+const FILTER_MODES = [
+	{ value: "keep", label: "Keep current filter", hint: "Leaves the sink as it is" },
+	{ value: "set", label: "Replace filter", hint: "Sets the filter below" },
+] as const
 
 const STEPS = ["Scope", "Data", "Run setup"] as const
 /** The step the flow is on. */
@@ -627,10 +606,15 @@ function CollectFields({
 	)
 }
 
-/**
- * The filter the script gives the log sink, closed on its current choice. Including GKE container
- * logs asks to be confirmed, and stays open until it is.
- */
+/** The log filter's choice in a few words: the closed disclosure and the run summary. */
+const filterShort = (choice: ReturnType<typeof gcpLogFilterChoice>) =>
+	choice.keep
+		? "Current filter"
+		: choice.runtimes.length === 0
+			? "Platform logs"
+			: `Platform logs + ${runtimeLabels(choice.runtimes)}`
+
+/** The log filter under Logs, closed on its current choice. */
 function LogFilter({
 	sinkExists,
 	filter,
@@ -640,95 +624,243 @@ function LogFilter({
 	sinkExists: boolean
 	filter: FilterState
 	onFilter: (filter: FilterState) => void
-	/** The console page that shows an existing sink's filter. */
 	logRouter?: string
 }) {
-	const checkboxId = useId()
 	const [open, setOpen] = useState(false)
-	const filters = gcpLogFilters(sinkExists)
-	const choice = gcpLogFilterChoice(filter.chosen, filter.acknowledged, sinkExists)
 	return (
 		<Collapsible
-			open={open || choice.unacknowledged}
+			open={open}
 			onOpenChange={setOpen}
 			className="rounded-md border border-border/60 bg-muted/32"
 		>
 			<CollapsibleTrigger className="group flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-xs/5 outline-none focus-visible:ring-2 focus-visible:ring-ring/40">
 				<span className="text-foreground">Log filter</span>
-				<span className="truncate text-muted-foreground">{FILTER_TEXT[choice.selected].short}</span>
+				<span className="truncate text-muted-foreground">
+					{filterShort(gcpLogFilterChoice(filter, sinkExists))}
+				</span>
 				<ChevronDownIcon
 					size={12}
 					className="ml-auto shrink-0 text-muted-foreground transition-transform group-data-panel-open:rotate-180"
 					aria-hidden
 				/>
 			</CollapsibleTrigger>
-			<CollapsiblePanel className="flex flex-col gap-3 border-t border-border/60 p-3">
-				<RadioGroup
-					aria-label="Log filter"
-					value={choice.selected}
-					onValueChange={(value) => {
-						const next = filters.find((option) => option.value === value)
-						if (next !== undefined) onFilter({ chosen: next.value, acknowledged: false })
-					}}
-				>
-					{filters.map(({ value }) => (
-						<label key={value} className="flex items-start gap-2.5">
-							<Radio value={value} className="mt-0.5" />
-							<span className="flex flex-col">
-								<span className="text-xs/5 text-foreground">{FILTER_TEXT[value].title}</span>
-								<span className={SMALL}>
-									{FILTER_TEXT[value].description}
-									{value === "keep" && logRouter !== undefined ? (
-										<>
-											{" "}
-											<GcpExternalLink href={logRouter}>Log Router</GcpExternalLink>
-										</>
-									) : null}
-								</span>
-							</span>
-						</label>
-					))}
-				</RadioGroup>
-				{choice.selected !== "include_gke_container_logs" ? null : (
-					<div
-						role="group"
-						aria-label="GKE container logs"
-						className="flex flex-col gap-2 rounded-md border border-severity-warn/32 bg-severity-warn/6 p-3 text-xs/5"
-					>
-						<p className="flex items-start gap-2 text-pretty text-foreground">
-							<AlertWarningIcon
-								size={12}
-								className="mt-1 shrink-0 text-severity-warn"
-								aria-hidden
-							/>
-							<span>
-								Workloads instrumented with OpenTelemetry already send these logs to Maple,
-								linked to their traces. Including them stores each line twice.{" "}
-								<GcpExternalLink href={OTEL_DOCS}>
-									Google Cloud with OpenTelemetry
-								</GcpExternalLink>
-							</span>
-						</p>
-						<label htmlFor={checkboxId} className="flex items-center gap-2 pl-5 text-foreground">
-							<Checkbox
-								id={checkboxId}
-								checked={filter.acknowledged}
-								onCheckedChange={(checked) =>
-									onFilter({ ...filter, acknowledged: checked === true })
-								}
-							/>
-							I understand these logs can be stored twice
-						</label>
-					</div>
-				)}
-				<p className={SMALL}>
-					{sinkExists && choice.selected !== "keep"
-						? "Replaces the sink's current filter when the script runs. "
-						: null}
-					<GcpExternalLink href={`${DOCS}#log-filter`}>Write your own filter</GcpExternalLink>
-				</p>
+			<CollapsiblePanel className="border-t border-border/60 p-3">
+				<GcpLogFilterField
+					sinkExists={sinkExists}
+					filter={filter}
+					onFilter={onFilter}
+					logRouter={logRouter}
+					showLabel={false}
+				/>
 			</CollapsiblePanel>
 		</Collapsible>
+	)
+}
+
+/**
+ * The filter the script gives the log sink: whose application output comes with the platform logs,
+ * a tick per runtime. A sink that exists keeps its filter unless asked to replace it.
+ */
+export function GcpLogFilterField({
+	sinkExists,
+	filter,
+	onFilter,
+	logRouter,
+	showLabel = true,
+}: {
+	sinkExists: boolean
+	filter: FilterState
+	onFilter: (filter: FilterState) => void
+	/** The console page that shows an existing sink's filter. */
+	logRouter?: string
+	/** False inside a disclosure that already names the filter. */
+	showLabel?: boolean
+}) {
+	const id = useId()
+	const choice = gcpLogFilterChoice(filter, sinkExists)
+	return (
+		<Field className="items-stretch gap-2.5">
+			<div className="flex items-baseline justify-between gap-4 text-xs text-muted-foreground">
+				{showLabel ? (
+					<FieldLabel className={cn(LABEL, "sm:text-xs/4")}>Log filter</FieldLabel>
+				) : (
+					<span />
+				)}
+				{choice.keep && logRouter !== undefined ? (
+					// Maple doesn't store a sink's filter: the console shows it.
+					<GcpExternalLink href={logRouter}>Current filter in Log Router</GcpExternalLink>
+				) : (
+					<GcpExternalLink href={`${DOCS}#log-filter`}>Custom filter</GcpExternalLink>
+				)}
+			</div>
+			{sinkExists ? (
+				<Select
+					items={FILTER_MODES}
+					value={choice.keep ? "keep" : "set"}
+					onValueChange={(mode) => onFilter({ ...filter, keep: mode === "keep" })}
+				>
+					<SelectTrigger className="w-full">
+						<SelectValue>
+							{(value: (typeof FILTER_MODES)[number]["value"]) => (
+								<FilterMode mode={FILTER_MODES.find((mode) => mode.value === value)} />
+							)}
+						</SelectValue>
+					</SelectTrigger>
+					<SelectContent alignItemWithTrigger={false}>
+						{FILTER_MODES.map((mode) => (
+							<SelectItem key={mode.value} value={mode.value}>
+								<FilterMode mode={mode} />
+							</SelectItem>
+						))}
+					</SelectContent>
+				</Select>
+			) : null}
+			{choice.keep ? null : (
+				<div className="flex flex-col gap-2.5">
+					<dl className="divide-y rounded-md border">
+						<FilterSummaryRow
+							icon={<CheckIcon size={14} aria-hidden className="text-severity-info" />}
+							term="Platform logs"
+							detail="Requests, audit, deploys, crashes, scaling"
+						/>
+						<FilterSummaryRow
+							icon={<span aria-hidden>–</span>}
+							term="Application output"
+							detail={
+								choice.runtimes.length === 0
+									? "stdout and stderr, left in Google Cloud"
+									: `stdout and stderr, from ${runtimeLabels(choice.runtimes)} only`
+							}
+						/>
+					</dl>
+					<p className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-xs/5 text-pretty text-muted-foreground">
+						Send application logs with your OpenTelemetry setup, where they link to traces.
+						<GcpExternalLink href={OTEL_DOCS}>Set up OpenTelemetry</GcpExternalLink>
+					</p>
+					{choice.forwardsOutput ? (
+						<RuntimeFields
+							id={id}
+							filter={filter}
+							runtimes={choice.runtimes}
+							onFilter={onFilter}
+						/>
+					) : (
+						// The ticks are an escape hatch: a workload sending over OpenTelemetry would store each line twice.
+						<div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 pt-1">
+							<span className="text-xs/5 text-muted-foreground">
+								No way to add OpenTelemetry to a workload?
+							</span>
+							<Button
+								variant="outline"
+								size="sm"
+								onClick={() => onFilter({ ...filter, runtimes: [] })}
+							>
+								Can&apos;t forward via OpenTelemetry
+							</Button>
+						</div>
+					)}
+				</div>
+			)}
+		</Field>
+	)
+}
+
+/** One line of what the new filter forwards. */
+function FilterSummaryRow({ icon, term, detail }: { icon: React.ReactNode; term: string; detail: string }) {
+	return (
+		<div className="grid grid-cols-[1rem_1fr] items-center gap-x-3 gap-y-0.5 px-3.5 py-2.5 sm:grid-cols-[1rem_11.875rem_1fr]">
+			<span className="flex justify-center text-muted-foreground">{icon}</span>
+			<dt className="text-sm/5 font-medium">{term}</dt>
+			<dd className="col-start-2 text-xs text-pretty text-muted-foreground sm:col-start-3">{detail}</dd>
+		</div>
+	)
+}
+
+const runtimeLabels = (runtimes: ReadonlyArray<GcpLogRuntime>) =>
+	GCP_LOG_RUNTIMES.filter(({ value }) => runtimes.includes(value))
+		.map(({ label }) => label)
+		.join(", ")
+
+/** The runtimes whose application output Google Cloud forwards, once OpenTelemetry is ruled out. */
+function RuntimeFields({
+	id,
+	filter,
+	runtimes,
+	onFilter,
+}: {
+	id: string
+	filter: FilterState
+	runtimes: ReadonlyArray<GcpLogRuntime>
+	onFilter: (filter: FilterState) => void
+}) {
+	return (
+		<fieldset aria-labelledby={`${id}-forward`} className="flex flex-col gap-2.5 pt-1">
+			<div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-xs/5">
+				<span id={`${id}-forward`} className="font-medium">
+					Forward application output from Google Cloud
+				</span>
+				<Button
+					variant="link"
+					size="xs"
+					onClick={() => onFilter({ ...filter, runtimes: null })}
+					className={cn(
+						"h-auto p-0 font-normal text-xs text-muted-foreground hover:text-foreground",
+						GCP_LINK,
+					)}
+				>
+					Use OpenTelemetry instead
+				</Button>
+			</div>
+			<div className="divide-y rounded-md border">
+				{GCP_LOG_RUNTIMES.map(({ value, label, hint }) => (
+					<Field
+						key={value}
+						className="grid grid-cols-[auto_1fr] items-center gap-x-3 gap-y-0.5 px-3.5 py-2.5 sm:grid-cols-[auto_11.875rem_1fr]"
+					>
+						<Checkbox
+							id={`${id}-${value}`}
+							checked={runtimes.includes(value)}
+							onCheckedChange={(checked) =>
+								onFilter({
+									...filter,
+									runtimes:
+										checked === true
+											? [...runtimes, value]
+											: runtimes.filter((runtime) => runtime !== value),
+								})
+							}
+						/>
+						<FieldLabel htmlFor={`${id}-${value}`} className="sm:text-sm/5">
+							{label}
+						</FieldLabel>
+						<FieldDescription className="col-start-2 text-pretty sm:col-start-3">
+							{hint}
+						</FieldDescription>
+					</Field>
+				))}
+			</div>
+			{/* Maple does not know which workloads send their logs another way: the call is the admin's. */}
+			<Alert variant="warn" size="sm" role="note">
+				<AlertWarningIcon size={14} />
+				<AlertTitle>Only for workloads that don&apos;t send logs over OpenTelemetry</AlertTitle>
+				<AlertDescription className="leading-5 text-pretty">
+					Otherwise every line arrives twice, both count toward your plan, and the Google Cloud copy
+					has no trace link.{" "}
+					<GcpExternalLink href={`${OTEL_DOCS}#application-output`}>Details</GcpExternalLink>
+				</AlertDescription>
+			</Alert>
+		</fieldset>
+	)
+}
+
+/** What happens to an existing sink's filter, by name, with what that does beside it. */
+function FilterMode({ mode }: { mode: (typeof FILTER_MODES)[number] | undefined }) {
+	if (mode === undefined) return null
+	return (
+		<span className="flex min-w-0 items-baseline gap-2.5">
+			<span className="shrink-0 font-medium">{mode.label}</span>
+			<span className="truncate text-xs text-muted-foreground">{mode.hint}</span>
+		</span>
 	)
 }
 
@@ -891,8 +1023,6 @@ function NewConnection({
 	const scopeReady = aggregated
 		? isGcpResourceNumber(scopeId) && isGcpProjectId(draft.hostProjectId.trim())
 		: isGcpProjectId(scopeId)
-	const unacknowledged =
-		draft.logsEnabled && gcpLogFilterChoice(filter.chosen, filter.acknowledged, false).unacknowledged
 
 	const edit = (patch: Partial<GcpConnectorDraft>) => {
 		setDraft({ ...draft, ...patch })
@@ -922,7 +1052,7 @@ function NewConnection({
 			if (scopeReady) setStep("data")
 			return
 		}
-		if (!submitting && !unacknowledged) void submit()
+		if (!submitting) void submit()
 	}
 
 	return (
@@ -959,9 +1089,6 @@ function NewConnection({
 				</form>
 			</DialogPanel>
 			<DialogFooter>
-				{step === "data" && unacknowledged ? (
-					<FooterNote>Confirm the warning to continue.</FooterNote>
-				) : null}
 				{step === "scope" ? (
 					<DialogClose render={<Button variant="outline" />}>Cancel</DialogClose>
 				) : (
@@ -972,7 +1099,7 @@ function NewConnection({
 				<Button
 					type="submit"
 					form={formId}
-					disabled={step === "scope" ? !scopeReady : Option.isNone(request) || unacknowledged}
+					disabled={step === "scope" ? !scopeReady : Option.isNone(request)}
 					loading={submitting}
 				>
 					Continue
@@ -1008,9 +1135,6 @@ function ChooseStage({
 	})
 	const [confirming, setConfirming] = useState(false)
 	const sinkExists = connector.applied_logs_enabled === true
-	const unacknowledged =
-		draft.logs_enabled &&
-		gcpLogFilterChoice(filter.chosen, filter.acknowledged, sinkExists).unacknowledged
 	const changed = CAPABILITY_IDS.filter(
 		(capability) => draft[CAPABILITIES[capability].flag] !== connector[CAPABILITIES[capability].flag],
 	)
@@ -1079,14 +1203,11 @@ function ChooseStage({
 				/>
 			</DialogPanel>
 			<DialogFooter>
-				{unacknowledged ? (
-					<FooterNote>Confirm the warning to continue.</FooterNote>
-				) : changed.length > 0 && !scripted ? (
+				{changed.length > 0 && !scripted ? (
 					<FooterNote>Nothing to run after this: Google Cloud still has what it needs.</FooterNote>
 				) : null}
 				<DialogClose render={<Button variant="outline" disabled={saving} />}>Cancel</DialogClose>
 				<Button
-					disabled={unacknowledged}
 					loading={saving && !confirming}
 					onClick={() =>
 						changed.length === 0
@@ -1167,12 +1288,13 @@ function RunSummary({
 	onEdit,
 }: {
 	connector: V2GcpConnector
-	logFilter: GcpLogFilter
+	/** The log filter in a few words. */
+	logFilter: string
 	onEdit: () => void
 }) {
 	const capabilities = [
 		connector.logs_enabled
-			? `Logs · ${FILTER_TEXT[logFilter].short}`
+			? `Logs · ${logFilter}`
 			: connector.applied_logs_enabled === true
 				? "Logs · removed by this run"
 				: null,
@@ -1469,12 +1591,8 @@ function ApplyStage({
 	...view
 }: Omit<GcpApplyViewProps, "logFilter" | "script" | "failure"> & { filter: FilterState }) {
 	const { connector, opened, nowMs } = view
-	const choice = gcpLogFilterChoice(
-		filter.chosen,
-		filter.acknowledged,
-		connector.applied_logs_enabled === true,
-	)
-	const { scripts, failure } = useGcpScripts(connector, choice.scriptFilter)
+	const choice = gcpLogFilterChoice(filter, connector.applied_logs_enabled === true)
+	const { scripts, failure } = useGcpScripts(connector, choice.applicationLogs)
 	const refresh = useAtomRefresh(gcpStatusQuery())
 	useIntervalRefresh(refresh, {
 		intervalMs: GCP_SETTLING_REFRESH_MS,
@@ -1483,7 +1601,7 @@ function ApplyStage({
 	return (
 		<GcpApplyView
 			{...view}
-			logFilter={choice.scriptFilter}
+			logFilter={filterShort(choice)}
 			script={scripts?.setup_script ?? null}
 			failure={failure}
 		/>
@@ -1495,7 +1613,8 @@ export interface GcpApplyViewProps {
 	connector: V2GcpConnector
 	/** Created in this surface: the confirmed run reads as the connection being made. */
 	created: boolean
-	logFilter: GcpLogFilter
+	/** The log filter in a few words. */
+	logFilter: string
 	script: string | null
 	failure: ScriptFailure | null
 	nowMs: number
@@ -1687,7 +1806,7 @@ export function GcpConfigure({
 	onClose: () => void
 }) {
 	// Not saved: the script is asked for with it. Reopening the surface starts over.
-	const [filter, setFilter] = useState<FilterState>({ chosen: null, acknowledged: false })
+	const [filter, setFilter] = useState<FilterState>({ keep: null, runtimes: null })
 	// The connector the surface created, until the status read lists it.
 	const [created, setCreated] = useState<V2GcpConnector | null>(null)
 	const connector =
@@ -1763,7 +1882,7 @@ export function GcpDisconnectDialog({
 	onDisconnect: () => void
 	onClose: () => void
 }) {
-	const { scripts, failure } = useGcpScripts(connector, "keep")
+	const { scripts, failure } = useGcpScripts(connector, undefined)
 	useIntervalRefresh(useAtomRefresh(gcpStatusQuery()), {
 		intervalMs: GCP_SETTLING_REFRESH_MS,
 		enabled: true,

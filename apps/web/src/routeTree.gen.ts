@@ -59,9 +59,12 @@ import { Route as LabCloudflareRouteImport } from './routes/lab/cloudflare'
 import { Route as LabCodeReviewReposRouteImport } from './routes/lab/code-review-repos'
 import { Route as LabErrorsRouteImport } from './routes/lab/errors'
 import { Route as LabFlowRouteImport } from './routes/lab/flow'
+import { Route as LabGcpRouteImport } from './routes/lab/gcp'
 import { Route as LabGcpConnectRouteImport } from './routes/lab/gcp-connect'
 import { Route as LabGcpConnectionsRouteImport } from './routes/lab/gcp-connections'
 import { Route as LabGcpDashboardRouteImport } from './routes/lab/gcp-dashboard'
+import { Route as LabGcpInfraRouteImport } from './routes/lab/gcp-infra'
+import { Route as LabGcpWorkloadRouteImport } from './routes/lab/gcp-workload'
 import { Route as LabInfraRouteImport } from './routes/lab/infra'
 import { Route as LabLoadersRouteImport } from './routes/lab/loaders'
 import { Route as LabLogsRouteImport } from './routes/lab/logs'
@@ -98,6 +101,7 @@ import { Route as InfraCloudflareIndexRouteImport } from './routes/infra/cloudfl
 import { Route as InfraCloudflareZoneNameRouteImport } from './routes/infra/cloudflare/$zoneName'
 import { Route as InfraContainersIndexRouteImport } from './routes/infra/containers/index'
 import { Route as InfraContainersContainerNameRouteImport } from './routes/infra/containers/$containerName'
+import { Route as InfraGcpIndexRouteImport } from './routes/infra/gcp/index'
 import { Route as InfraHostsIndexRouteImport } from './routes/infra/hosts/index'
 import { Route as InfraHostsHostNameRouteImport } from './routes/infra/hosts/$hostName'
 import { Route as InfraKubernetesIndexRouteImport } from './routes/infra/kubernetes/index'
@@ -115,6 +119,7 @@ import { Route as LabBenchServiceMapRouteImport } from './routes/lab/bench/servi
 import { Route as LabBenchTanstackRouteImport } from './routes/lab/bench/tanstack'
 import { Route as DashboardsDashboardIdWidgetsWidgetIdRouteImport } from './routes/dashboards/$dashboardId_.widgets.$widgetId'
 import { Route as InfraCloudflareWorkersScriptNameRouteImport } from './routes/infra/cloudflare/workers/$scriptName'
+import { Route as InfraGcpServiceNameRouteImport } from './routes/infra/gcp/$service/$name'
 import { Route as InfraKubernetesNodesIndexRouteImport } from './routes/infra/kubernetes/nodes/index'
 import { Route as InfraKubernetesNodesNodeNameRouteImport } from './routes/infra/kubernetes/nodes/$nodeName'
 import { Route as InfraKubernetesPodsIndexRouteImport } from './routes/infra/kubernetes/pods/index'
@@ -374,6 +379,11 @@ const LabFlowRoute = LabFlowRouteImport.update({
   path: '/flow',
   getParentRoute: () => LabRouteRoute,
 } as any)
+const LabGcpRoute = LabGcpRouteImport.update({
+  id: '/gcp',
+  path: '/gcp',
+  getParentRoute: () => LabRouteRoute,
+} as any)
 const LabGcpConnectRoute = LabGcpConnectRouteImport.update({
   id: '/gcp-connect',
   path: '/gcp-connect',
@@ -387,6 +397,16 @@ const LabGcpConnectionsRoute = LabGcpConnectionsRouteImport.update({
 const LabGcpDashboardRoute = LabGcpDashboardRouteImport.update({
   id: '/gcp-dashboard',
   path: '/gcp-dashboard',
+  getParentRoute: () => LabRouteRoute,
+} as any)
+const LabGcpInfraRoute = LabGcpInfraRouteImport.update({
+  id: '/gcp-infra',
+  path: '/gcp-infra',
+  getParentRoute: () => LabRouteRoute,
+} as any)
+const LabGcpWorkloadRoute = LabGcpWorkloadRouteImport.update({
+  id: '/gcp-workload',
+  path: '/gcp-workload',
   getParentRoute: () => LabRouteRoute,
 } as any)
 const LabInfraRoute = LabInfraRouteImport.update({
@@ -573,6 +593,11 @@ const InfraContainersContainerNameRoute =
     path: '/infra/containers/$containerName',
     getParentRoute: () => rootRouteImport,
   } as any)
+const InfraGcpIndexRoute = InfraGcpIndexRouteImport.update({
+  id: '/infra/gcp/',
+  path: '/infra/gcp/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const InfraHostsIndexRoute = InfraHostsIndexRouteImport.update({
   id: '/infra/hosts/',
   path: '/infra/hosts/',
@@ -660,6 +685,11 @@ const InfraCloudflareWorkersScriptNameRoute =
     path: '/infra/cloudflare/workers/$scriptName',
     getParentRoute: () => rootRouteImport,
   } as any)
+const InfraGcpServiceNameRoute = InfraGcpServiceNameRouteImport.update({
+  id: '/infra/gcp/$service/$name',
+  path: '/infra/gcp/$service/$name',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const InfraKubernetesNodesIndexRoute =
   InfraKubernetesNodesIndexRouteImport.update({
     id: '/infra/kubernetes/nodes/',
@@ -750,9 +780,12 @@ export interface FileRoutesByFullPath {
   '/lab/code-review-repos': typeof LabCodeReviewReposRoute
   '/lab/errors': typeof LabErrorsRoute
   '/lab/flow': typeof LabFlowRoute
+  '/lab/gcp': typeof LabGcpRoute
   '/lab/gcp-connect': typeof LabGcpConnectRoute
   '/lab/gcp-connections': typeof LabGcpConnectionsRoute
   '/lab/gcp-dashboard': typeof LabGcpDashboardRoute
+  '/lab/gcp-infra': typeof LabGcpInfraRoute
+  '/lab/gcp-workload': typeof LabGcpWorkloadRoute
   '/lab/infra': typeof LabInfraRoute
   '/lab/loaders': typeof LabLoadersRoute
   '/lab/logs': typeof LabLogsRoute
@@ -810,12 +843,14 @@ export interface FileRoutesByFullPath {
   '/errors/issues/': typeof ErrorsIssuesIndexRoute
   '/infra/cloudflare/': typeof InfraCloudflareIndexRoute
   '/infra/containers/': typeof InfraContainersIndexRoute
+  '/infra/gcp/': typeof InfraGcpIndexRoute
   '/infra/hosts/': typeof InfraHostsIndexRoute
   '/infra/kubernetes/': typeof InfraKubernetesIndexRoute
   '/infra/planetscale/': typeof InfraPlanetscaleIndexRoute
   '/infra/railway/': typeof InfraRailwayIndexRoute
   '/dashboards/$dashboardId/widgets/$widgetId': typeof DashboardsDashboardIdWidgetsWidgetIdRoute
   '/infra/cloudflare/workers/$scriptName': typeof InfraCloudflareWorkersScriptNameRoute
+  '/infra/gcp/$service/$name': typeof InfraGcpServiceNameRoute
   '/infra/kubernetes/nodes/$nodeName': typeof InfraKubernetesNodesNodeNameRoute
   '/infra/kubernetes/pods/$podName': typeof InfraKubernetesPodsPodNameRoute
   '/infra/kubernetes/services/$serviceName': typeof InfraKubernetesServicesServiceNameRoute
@@ -865,9 +900,12 @@ export interface FileRoutesByTo {
   '/lab/code-review-repos': typeof LabCodeReviewReposRoute
   '/lab/errors': typeof LabErrorsRoute
   '/lab/flow': typeof LabFlowRoute
+  '/lab/gcp': typeof LabGcpRoute
   '/lab/gcp-connect': typeof LabGcpConnectRoute
   '/lab/gcp-connections': typeof LabGcpConnectionsRoute
   '/lab/gcp-dashboard': typeof LabGcpDashboardRoute
+  '/lab/gcp-infra': typeof LabGcpInfraRoute
+  '/lab/gcp-workload': typeof LabGcpWorkloadRoute
   '/lab/infra': typeof LabInfraRoute
   '/lab/loaders': typeof LabLoadersRoute
   '/lab/logs': typeof LabLogsRoute
@@ -925,12 +963,14 @@ export interface FileRoutesByTo {
   '/errors/issues': typeof ErrorsIssuesIndexRoute
   '/infra/cloudflare': typeof InfraCloudflareIndexRoute
   '/infra/containers': typeof InfraContainersIndexRoute
+  '/infra/gcp': typeof InfraGcpIndexRoute
   '/infra/hosts': typeof InfraHostsIndexRoute
   '/infra/kubernetes': typeof InfraKubernetesIndexRoute
   '/infra/planetscale': typeof InfraPlanetscaleIndexRoute
   '/infra/railway': typeof InfraRailwayIndexRoute
   '/dashboards/$dashboardId/widgets/$widgetId': typeof DashboardsDashboardIdWidgetsWidgetIdRoute
   '/infra/cloudflare/workers/$scriptName': typeof InfraCloudflareWorkersScriptNameRoute
+  '/infra/gcp/$service/$name': typeof InfraGcpServiceNameRoute
   '/infra/kubernetes/nodes/$nodeName': typeof InfraKubernetesNodesNodeNameRoute
   '/infra/kubernetes/pods/$podName': typeof InfraKubernetesPodsPodNameRoute
   '/infra/kubernetes/services/$serviceName': typeof InfraKubernetesServicesServiceNameRoute
@@ -982,9 +1022,12 @@ export interface FileRoutesById {
   '/lab/code-review-repos': typeof LabCodeReviewReposRoute
   '/lab/errors': typeof LabErrorsRoute
   '/lab/flow': typeof LabFlowRoute
+  '/lab/gcp': typeof LabGcpRoute
   '/lab/gcp-connect': typeof LabGcpConnectRoute
   '/lab/gcp-connections': typeof LabGcpConnectionsRoute
   '/lab/gcp-dashboard': typeof LabGcpDashboardRoute
+  '/lab/gcp-infra': typeof LabGcpInfraRoute
+  '/lab/gcp-workload': typeof LabGcpWorkloadRoute
   '/lab/infra': typeof LabInfraRoute
   '/lab/loaders': typeof LabLoadersRoute
   '/lab/logs': typeof LabLogsRoute
@@ -1042,12 +1085,14 @@ export interface FileRoutesById {
   '/errors/issues/': typeof ErrorsIssuesIndexRoute
   '/infra/cloudflare/': typeof InfraCloudflareIndexRoute
   '/infra/containers/': typeof InfraContainersIndexRoute
+  '/infra/gcp/': typeof InfraGcpIndexRoute
   '/infra/hosts/': typeof InfraHostsIndexRoute
   '/infra/kubernetes/': typeof InfraKubernetesIndexRoute
   '/infra/planetscale/': typeof InfraPlanetscaleIndexRoute
   '/infra/railway/': typeof InfraRailwayIndexRoute
   '/dashboards/$dashboardId_/widgets/$widgetId': typeof DashboardsDashboardIdWidgetsWidgetIdRoute
   '/infra/cloudflare/workers/$scriptName': typeof InfraCloudflareWorkersScriptNameRoute
+  '/infra/gcp/$service/$name': typeof InfraGcpServiceNameRoute
   '/infra/kubernetes/nodes/$nodeName': typeof InfraKubernetesNodesNodeNameRoute
   '/infra/kubernetes/pods/$podName': typeof InfraKubernetesPodsPodNameRoute
   '/infra/kubernetes/services/$serviceName': typeof InfraKubernetesServicesServiceNameRoute
@@ -1100,9 +1145,12 @@ export interface FileRouteTypes {
     | '/lab/code-review-repos'
     | '/lab/errors'
     | '/lab/flow'
+    | '/lab/gcp'
     | '/lab/gcp-connect'
     | '/lab/gcp-connections'
     | '/lab/gcp-dashboard'
+    | '/lab/gcp-infra'
+    | '/lab/gcp-workload'
     | '/lab/infra'
     | '/lab/loaders'
     | '/lab/logs'
@@ -1160,12 +1208,14 @@ export interface FileRouteTypes {
     | '/errors/issues/'
     | '/infra/cloudflare/'
     | '/infra/containers/'
+    | '/infra/gcp/'
     | '/infra/hosts/'
     | '/infra/kubernetes/'
     | '/infra/planetscale/'
     | '/infra/railway/'
     | '/dashboards/$dashboardId/widgets/$widgetId'
     | '/infra/cloudflare/workers/$scriptName'
+    | '/infra/gcp/$service/$name'
     | '/infra/kubernetes/nodes/$nodeName'
     | '/infra/kubernetes/pods/$podName'
     | '/infra/kubernetes/services/$serviceName'
@@ -1215,9 +1265,12 @@ export interface FileRouteTypes {
     | '/lab/code-review-repos'
     | '/lab/errors'
     | '/lab/flow'
+    | '/lab/gcp'
     | '/lab/gcp-connect'
     | '/lab/gcp-connections'
     | '/lab/gcp-dashboard'
+    | '/lab/gcp-infra'
+    | '/lab/gcp-workload'
     | '/lab/infra'
     | '/lab/loaders'
     | '/lab/logs'
@@ -1275,12 +1328,14 @@ export interface FileRouteTypes {
     | '/errors/issues'
     | '/infra/cloudflare'
     | '/infra/containers'
+    | '/infra/gcp'
     | '/infra/hosts'
     | '/infra/kubernetes'
     | '/infra/planetscale'
     | '/infra/railway'
     | '/dashboards/$dashboardId/widgets/$widgetId'
     | '/infra/cloudflare/workers/$scriptName'
+    | '/infra/gcp/$service/$name'
     | '/infra/kubernetes/nodes/$nodeName'
     | '/infra/kubernetes/pods/$podName'
     | '/infra/kubernetes/services/$serviceName'
@@ -1331,9 +1386,12 @@ export interface FileRouteTypes {
     | '/lab/code-review-repos'
     | '/lab/errors'
     | '/lab/flow'
+    | '/lab/gcp'
     | '/lab/gcp-connect'
     | '/lab/gcp-connections'
     | '/lab/gcp-dashboard'
+    | '/lab/gcp-infra'
+    | '/lab/gcp-workload'
     | '/lab/infra'
     | '/lab/loaders'
     | '/lab/logs'
@@ -1391,12 +1449,14 @@ export interface FileRouteTypes {
     | '/errors/issues/'
     | '/infra/cloudflare/'
     | '/infra/containers/'
+    | '/infra/gcp/'
     | '/infra/hosts/'
     | '/infra/kubernetes/'
     | '/infra/planetscale/'
     | '/infra/railway/'
     | '/dashboards/$dashboardId_/widgets/$widgetId'
     | '/infra/cloudflare/workers/$scriptName'
+    | '/infra/gcp/$service/$name'
     | '/infra/kubernetes/nodes/$nodeName'
     | '/infra/kubernetes/pods/$podName'
     | '/infra/kubernetes/services/$serviceName'
@@ -1473,12 +1533,14 @@ export interface RootRouteChildren {
   ErrorsIssuesIndexRoute: typeof ErrorsIssuesIndexRoute
   InfraCloudflareIndexRoute: typeof InfraCloudflareIndexRoute
   InfraContainersIndexRoute: typeof InfraContainersIndexRoute
+  InfraGcpIndexRoute: typeof InfraGcpIndexRoute
   InfraHostsIndexRoute: typeof InfraHostsIndexRoute
   InfraKubernetesIndexRoute: typeof InfraKubernetesIndexRoute
   InfraPlanetscaleIndexRoute: typeof InfraPlanetscaleIndexRoute
   InfraRailwayIndexRoute: typeof InfraRailwayIndexRoute
   DashboardsDashboardIdWidgetsWidgetIdRoute: typeof DashboardsDashboardIdWidgetsWidgetIdRoute
   InfraCloudflareWorkersScriptNameRoute: typeof InfraCloudflareWorkersScriptNameRoute
+  InfraGcpServiceNameRoute: typeof InfraGcpServiceNameRoute
   InfraKubernetesNodesNodeNameRoute: typeof InfraKubernetesNodesNodeNameRoute
   InfraKubernetesPodsPodNameRoute: typeof InfraKubernetesPodsPodNameRoute
   InfraKubernetesServicesServiceNameRoute: typeof InfraKubernetesServicesServiceNameRoute
@@ -1841,6 +1903,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LabFlowRouteImport
       parentRoute: typeof LabRouteRoute
     }
+    '/lab/gcp': {
+      id: '/lab/gcp'
+      path: '/gcp'
+      fullPath: '/lab/gcp'
+      preLoaderRoute: typeof LabGcpRouteImport
+      parentRoute: typeof LabRouteRoute
+    }
     '/lab/gcp-connect': {
       id: '/lab/gcp-connect'
       path: '/gcp-connect'
@@ -1860,6 +1929,20 @@ declare module '@tanstack/react-router' {
       path: '/gcp-dashboard'
       fullPath: '/lab/gcp-dashboard'
       preLoaderRoute: typeof LabGcpDashboardRouteImport
+      parentRoute: typeof LabRouteRoute
+    }
+    '/lab/gcp-infra': {
+      id: '/lab/gcp-infra'
+      path: '/gcp-infra'
+      fullPath: '/lab/gcp-infra'
+      preLoaderRoute: typeof LabGcpInfraRouteImport
+      parentRoute: typeof LabRouteRoute
+    }
+    '/lab/gcp-workload': {
+      id: '/lab/gcp-workload'
+      path: '/gcp-workload'
+      fullPath: '/lab/gcp-workload'
+      preLoaderRoute: typeof LabGcpWorkloadRouteImport
       parentRoute: typeof LabRouteRoute
     }
     '/lab/infra': {
@@ -2114,6 +2197,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof InfraContainersContainerNameRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/infra/gcp/': {
+      id: '/infra/gcp/'
+      path: '/infra/gcp'
+      fullPath: '/infra/gcp/'
+      preLoaderRoute: typeof InfraGcpIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/infra/hosts/': {
       id: '/infra/hosts/'
       path: '/infra/hosts'
@@ -2233,6 +2323,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof InfraCloudflareWorkersScriptNameRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/infra/gcp/$service/$name': {
+      id: '/infra/gcp/$service/$name'
+      path: '/infra/gcp/$service/$name'
+      fullPath: '/infra/gcp/$service/$name'
+      preLoaderRoute: typeof InfraGcpServiceNameRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/infra/kubernetes/nodes/': {
       id: '/infra/kubernetes/nodes/'
       path: '/infra/kubernetes/nodes'
@@ -2303,9 +2400,12 @@ interface LabRouteRouteChildren {
   LabCodeReviewReposRoute: typeof LabCodeReviewReposRoute
   LabErrorsRoute: typeof LabErrorsRoute
   LabFlowRoute: typeof LabFlowRoute
+  LabGcpRoute: typeof LabGcpRoute
   LabGcpConnectRoute: typeof LabGcpConnectRoute
   LabGcpConnectionsRoute: typeof LabGcpConnectionsRoute
   LabGcpDashboardRoute: typeof LabGcpDashboardRoute
+  LabGcpInfraRoute: typeof LabGcpInfraRoute
+  LabGcpWorkloadRoute: typeof LabGcpWorkloadRoute
   LabInfraRoute: typeof LabInfraRoute
   LabLoadersRoute: typeof LabLoadersRoute
   LabLogsRoute: typeof LabLogsRoute
@@ -2341,9 +2441,12 @@ const LabRouteRouteChildren: LabRouteRouteChildren = {
   LabCodeReviewReposRoute: LabCodeReviewReposRoute,
   LabErrorsRoute: LabErrorsRoute,
   LabFlowRoute: LabFlowRoute,
+  LabGcpRoute: LabGcpRoute,
   LabGcpConnectRoute: LabGcpConnectRoute,
   LabGcpConnectionsRoute: LabGcpConnectionsRoute,
   LabGcpDashboardRoute: LabGcpDashboardRoute,
+  LabGcpInfraRoute: LabGcpInfraRoute,
+  LabGcpWorkloadRoute: LabGcpWorkloadRoute,
   LabInfraRoute: LabInfraRoute,
   LabLoadersRoute: LabLoadersRoute,
   LabLogsRoute: LabLogsRoute,
@@ -2438,6 +2541,7 @@ const rootRouteChildren: RootRouteChildren = {
   ErrorsIssuesIndexRoute: ErrorsIssuesIndexRoute,
   InfraCloudflareIndexRoute: InfraCloudflareIndexRoute,
   InfraContainersIndexRoute: InfraContainersIndexRoute,
+  InfraGcpIndexRoute: InfraGcpIndexRoute,
   InfraHostsIndexRoute: InfraHostsIndexRoute,
   InfraKubernetesIndexRoute: InfraKubernetesIndexRoute,
   InfraPlanetscaleIndexRoute: InfraPlanetscaleIndexRoute,
@@ -2445,6 +2549,7 @@ const rootRouteChildren: RootRouteChildren = {
   DashboardsDashboardIdWidgetsWidgetIdRoute:
     DashboardsDashboardIdWidgetsWidgetIdRoute,
   InfraCloudflareWorkersScriptNameRoute: InfraCloudflareWorkersScriptNameRoute,
+  InfraGcpServiceNameRoute: InfraGcpServiceNameRoute,
   InfraKubernetesNodesNodeNameRoute: InfraKubernetesNodesNodeNameRoute,
   InfraKubernetesPodsPodNameRoute: InfraKubernetesPodsPodNameRoute,
   InfraKubernetesServicesServiceNameRoute:
