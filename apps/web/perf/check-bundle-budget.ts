@@ -100,7 +100,12 @@ const gzipBytes = chunks.reduce((total, chunk) => total + chunk.gzipBytes, 0)
 // 2026-10-15): each fit against its own base (694.2, 694.8, 694.3), but main
 // with all three measures 695.6 against 694.6 before them. No lazy-only chunk
 // leaked; the growth is contract and route-registry weight every page carries.
-const maxGzipBytes = 697 * 1024
+// 699.5 KB from the Google Cloud connectors (#1321, 2026-10-15): ~2.5 KB of
+// startup measured in CI against main's 694.6 (695.6 since #1494, #1500,
+// #1502) — the connector group's endpoints and schemas on the v2 contract
+// every page's client carries. Each Google Cloud step below keeps ~1 KB of
+// headroom, since CI measures the PR merged with main.
+const maxGzipBytes = 699.5 * 1024
 const budgetLabel = `${(maxGzipBytes / 1024).toFixed(1)} KB`
 
 // Anything lazy-only: chat, replay, and every dev-only lab surface. The
