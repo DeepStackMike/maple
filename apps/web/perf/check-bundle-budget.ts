@@ -105,8 +105,11 @@ const gzipBytes = chunks.reduce((total, chunk) => total + chunk.gzipBytes, 0)
 // #1502) — the connector group's endpoints and schemas on the v2 contract
 // every page's client carries. Each Google Cloud step below keeps ~1 KB of
 // headroom, since CI measures the PR merged with main.
-// 699.5 KB with main's 1 KB from #1494, #1500, #1502 merged up the stack.
-const maxGzipBytes = 699.5 * 1024
+// 699.5 KB from the Google Cloud integration card (#1334, 2026-10-15): ~0.9 KB
+// of startup measured in CI against #1333's 697.3 from the card and its
+// contract additions.
+// 700.5 KB with main's 1 KB from #1494, #1500, #1502 merged up the stack.
+const maxGzipBytes = 700.5 * 1024
 const budgetLabel = `${(maxGzipBytes / 1024).toFixed(1)} KB`
 
 // Anything lazy-only: chat, replay, and every dev-only lab surface. The
