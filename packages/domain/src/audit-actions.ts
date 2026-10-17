@@ -72,6 +72,8 @@ export const AuditResources = {
 	 * in-app chat, workflows, internal RPC). The tool and its parameters are in
 	 * `metadata`; a tool that also mutates a resource records that action too.
 	 */
+	/** An MCP client's OAuth grant; the client and the member who approved it are in `metadata`. */
+	mcp_connection: { prefix: PublicIdPrefixes.mcpConnection, verbs: ["revoked"] },
 	mcp_tool: { verbs: ["called"] },
 	investigation: {
 		prefix: PublicIdPrefixes.investigation,
@@ -147,6 +149,7 @@ export const AuditResourceLabels = {
 	error_issue: "Issue",
 	gcp_connector: "Google Cloud connector",
 	ingest_key: "Ingest key",
+	mcp_connection: "MCP connection",
 	mcp_tool: "MCP tool",
 	investigation: "Investigation",
 	onboarding_reward: "Onboarding reward",
@@ -218,6 +221,7 @@ export const AuditActionLabels = {
 	"gcp_connector.updated": "Updated Google Cloud connector",
 	"gcp_connector.deleted": "Removed Google Cloud connector",
 	"ingest_key.rolled": "Rolled ingest key",
+	"mcp_connection.revoked": "Revoked MCP connection",
 	"mcp_tool.called": "Called MCP tool",
 	"investigation.created": "Started investigation",
 	"investigation.restarted": "Restarted investigation",
