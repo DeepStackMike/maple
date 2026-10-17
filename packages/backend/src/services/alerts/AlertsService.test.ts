@@ -69,9 +69,10 @@ import {
 	queryFirstRow,
 	type TestDb,
 } from "@maple/backend/platform/test-pglite"
-import { Database } from "@maple/backend/platform/DatabaseLive"
+import { Database, DatabaseError } from "@maple/backend/platform/DatabaseLive"
 import { InvestigationService } from "@maple/backend/services/errors/InvestigationService"
 import { compiledQueryOf } from "@maple/query-engine/execution"
+import { makeRecordingTracer, spansNamed } from "@maple/backend/testing/recording-tracer"
 
 const trackedDbs: TestDb[] = []
 
@@ -6282,13 +6283,23 @@ describe("AlertsService scheduler pool", () => {
 			schedulerTickBudgetMs: () => tickBudgetMs,
 			schedulerEvalTimeoutMs: () => 800,
 		}
+		const { spans, tracer } = makeRecordingTracer()
 		return Effect.gen(function* () {
 			const alerts = yield* AlertsService
 			yield* createPoolRules(alerts)
 
 			const startedAt = yield* Clock.currentTimeMillis
-			const firstTick = yield* alerts.runSchedulerTick()
+			const firstTick = yield* alerts.runSchedulerTick().pipe(Effect.withTracer(tracer))
 			const wallMs = (yield* Clock.currentTimeMillis) - startedAt
+
+			// The deferred rules are counted on the tick span, where tick dashboards look.
+			assert.isAbove(firstTick.deferredCount, 0)
+			assert.deepStrictEqual(
+				spansNamed(spans, "AlertsService.runSchedulerTick").map((span) =>
+					span.attributes.get("maple.alerting.rules_deferred"),
+				),
+				[firstTick.deferredCount],
+			)
 
 			// Slack for a loaded CI runner; without the deadline the stuck rule never returns.
 			assert.isBelow(wallMs, tickBudgetMs + 2_500)
@@ -6451,4 +6462,247 @@ describe("AlertsService claim fence", () => {
 			}).pipe(Effect.provide(makeLayer(testDb, stub, overrides)))
 		},
 	)
+})
+
+describe("AlertsService post-evaluation writes", () => {
+	const GROUPS = 30
+	const EXECUTE_DELAY_MS = 100
+
+	// Every `Database.execute` waits first, like a Hyperdrive round trip at peak.
+	const slowDb = (testDb: TestDb): TestDb => ({
+		...testDb,
+		layer: Layer.effect(
+			Database,
+			Effect.gen(function* () {
+				const inner = yield* Database
+				return Database.of({
+					execute: (fn) =>
+						Effect.sleep(Duration.millis(EXECUTE_DELAY_MS)).pipe(
+							Effect.andThen(inner.execute(fn)),
+						),
+				})
+			}),
+		).pipe(Layer.provide(testDb.layer)),
+	})
+
+	it.live("writes a grouped rule's state rows in one batch, not one transaction per group", () => {
+		const testDb = createTestDb(trackedDbs)
+		const services = Arr.makeBy(GROUPS, (index) => `svc-${String(index).padStart(2, "0")}`)
+		const stub = makeWarehouseStub({
+			tracesAggregateRows: services.map((groupName) =>
+				tracesRow({ groupName, count: 200, errorRate: 0.5, estimatedSpanCount: 200 }),
+			),
+		})
+		const { spans, tracer } = makeRecordingTracer()
+
+		return Effect.gen(function* () {
+			const alerts = yield* AlertsService
+			const orgId = asOrgId("org_state_batch")
+			const userId = asUserId("user_state_batch")
+			const destination = yield* createWebhookDestination(alerts, orgId, userId)
+			const rule = yield* alerts.createRule(
+				orgId,
+				userId,
+				adminRoles,
+				new AlertRuleUpsertRequest({
+					name: "Grouped error rate",
+					severity: "warning",
+					enabled: true,
+					groupBy: ["service.name"],
+					signalType: "error_rate",
+					comparator: "gt",
+					threshold: 5,
+					windowMinutes: 5,
+					minimumSampleCount: 10,
+					destinationIds: [destination.id],
+				}),
+			)
+
+			const startedAt = yield* Clock.currentTimeMillis
+			const tick = yield* alerts.runSchedulerTick().pipe(Effect.withTracer(tracer))
+			const wallMs = (yield* Clock.currentTimeMillis) - startedAt
+
+			assert.strictEqual(tick.evaluatedCount, 1)
+			// One transaction per group would spend GROUPS * EXECUTE_DELAY_MS on writes alone.
+			assert.isBelow(wallMs, GROUPS * EXECUTE_DELAY_MS)
+			const flushes = spansNamed(spans, "AlertsService.flushRuleStates")
+			assert.deepStrictEqual(
+				flushes.map((span) => span.attributes.get("maple.alerting.state_rows")),
+				[GROUPS],
+			)
+
+			const stored = yield* Effect.promise(() =>
+				queryFirstRow<{ groups: number; healthy: number }>(
+					testDb,
+					`select count(*)::int as "groups",
+					        count(*) filter (where last_status = 'healthy' and consecutive_healthy = 1)::int as "healthy"
+					   from alert_rule_states where rule_id = $1`,
+					[rule.id],
+				),
+			)
+			assert.deepStrictEqual(stored, { groups: GROUPS, healthy: GROUPS })
+		}).pipe(Effect.provide(makeLayer(slowDb(testDb), stub, { fetch: okFetch })))
+	})
+
+	it.live("retries a state flush that failed on a transient error", () => {
+		const testDb = createTestDb(trackedDbs)
+		const services = ["svc-a", "svc-b", "svc-c"]
+		const stub = makeWarehouseStub({
+			tracesAggregateRows: services.map((groupName) =>
+				tracesRow({ groupName, count: 200, errorRate: 0.5, estimatedSpanCount: 200 }),
+			),
+		})
+		const flushFailures = Ref.makeUnsafe(1)
+		// The flush's first transaction fails like a dropped connection, which
+		// the contention retry inside dbExecute does not cover.
+		const flakyFlushDb: TestDb = {
+			...testDb,
+			layer: Layer.effect(
+				Database,
+				Effect.gen(function* () {
+					const inner = yield* Database
+					return Database.of({
+						execute: (fn) =>
+							Effect.gen(function* () {
+								const span = yield* Effect.currentSpan.pipe(Effect.orElseSucceed(() => null))
+								const fail =
+									span?.name === "AlertsService.flushRuleStates" &&
+									(yield* Ref.modify(flushFailures, (left) => [
+										left > 0,
+										Math.max(0, left - 1),
+									]))
+								if (fail) {
+									return yield* new DatabaseError({
+										message: "Connection terminated unexpectedly",
+										cause: null,
+									})
+								}
+								return yield* inner.execute(fn)
+							}),
+					})
+				}),
+			).pipe(Layer.provide(testDb.layer)),
+		}
+
+		return Effect.gen(function* () {
+			const alerts = yield* AlertsService
+			const orgId = asOrgId("org_state_batch_retry")
+			const userId = asUserId("user_state_batch_retry")
+			const destination = yield* createWebhookDestination(alerts, orgId, userId)
+			const rule = yield* alerts.createRule(
+				orgId,
+				userId,
+				adminRoles,
+				new AlertRuleUpsertRequest({
+					name: "Grouped error rate",
+					severity: "warning",
+					enabled: true,
+					groupBy: ["service.name"],
+					signalType: "error_rate",
+					comparator: "gt",
+					threshold: 5,
+					windowMinutes: 5,
+					minimumSampleCount: 10,
+					destinationIds: [destination.id],
+				}),
+			)
+
+			yield* alerts.runSchedulerTick()
+
+			assert.strictEqual(yield* Ref.get(flushFailures), 0, "the flush failed once")
+			const stored = yield* Effect.promise(() =>
+				queryFirstRow<{ healthy: number }>(
+					testDb,
+					`select count(*) filter (where last_status = 'healthy')::int as "healthy"
+					   from alert_rule_states where rule_id = $1`,
+					[rule.id],
+				),
+			)
+			assert.deepStrictEqual(stored, { healthy: services.length })
+		}).pipe(Effect.provide(makeLayer(flakyFlushDb, stub, { fetch: okFetch })))
+	})
+
+	it.effect("a rule edited before its flush keeps neither the buffered states nor their checks", () => {
+		const testDb = createTestDb(trackedDbs)
+		const services = ["svc-a", "svc-b", "svc-c"]
+		const base = makeWarehouseStub({
+			tracesAggregateRows: services.map((groupName) =>
+				tracesRow({ groupName, count: 200, errorRate: 0.5, estimatedSpanCount: 200 }),
+			),
+		})
+		const ingested: Array<Record<string, unknown>> = []
+		// The rule to disable on the next warehouse query: set once the rule
+		// exists, cleared by the edit so it runs once.
+		const pendingEdit = Ref.makeUnsafe<string | null>(null)
+		// An admin disables the rule while its evaluation is in flight, after the
+		// tick loaded the rule and before the groups' state rows are flushed.
+		const disableRule = Ref.getAndSet(pendingEdit, null).pipe(
+			Effect.flatMap((ruleId) =>
+				ruleId === null
+					? Effect.void
+					: Effect.promise(() =>
+							queryFirstRow(
+								testDb,
+								`update alert_rules set enabled = false, updated_at = updated_at + interval '1 second'
+								  where id = $1 returning id`,
+								[ruleId],
+							),
+						),
+			),
+		)
+		const stub: WarehouseQueryServiceApi = {
+			...base,
+			compiledQuery: (tenant, compiled) =>
+				disableRule.pipe(Effect.andThen(base.compiledQuery(tenant, compiled))),
+			compiledQueryWithCapabilities: (tenant, compile) =>
+				disableRule.pipe(Effect.andThen(base.compiledQueryWithCapabilities(tenant, compile))),
+			ingest: (_tenant, _datasource, rows) =>
+				Effect.sync(() => {
+					ingested.push(...(rows as Array<Record<string, unknown>>))
+				}),
+		}
+
+		return Effect.gen(function* () {
+			yield* TestClock.setTime(DEFAULT_CLOCK_EPOCH_MS)
+			const alerts = yield* AlertsService
+			const orgId = asOrgId("org_state_batch_edit")
+			const userId = asUserId("user_state_batch_edit")
+			const destination = yield* createWebhookDestination(alerts, orgId, userId)
+			const rule = yield* alerts.createRule(
+				orgId,
+				userId,
+				adminRoles,
+				new AlertRuleUpsertRequest({
+					name: "Grouped error rate",
+					severity: "warning",
+					enabled: true,
+					groupBy: ["service.name"],
+					signalType: "error_rate",
+					comparator: "gt",
+					threshold: 5,
+					windowMinutes: 5,
+					minimumSampleCount: 10,
+					destinationIds: [destination.id],
+				}),
+			)
+			yield* Ref.set(pendingEdit, rule.id)
+
+			yield* alerts.runSchedulerTick()
+
+			assert.isNull(yield* Ref.get(pendingEdit), "the edit ran during the tick")
+			const stored = yield* Effect.promise(() =>
+				queryFirstRow<{ healthy: number }>(
+					testDb,
+					`select count(*) filter (where last_status = 'healthy')::int as "healthy"
+					   from alert_rule_states where rule_id = $1`,
+					[rule.id],
+				),
+			)
+			assert.deepStrictEqual(stored, { healthy: 0 })
+			assert.deepStrictEqual(
+				ingested.filter((row) => row.RuleId === rule.id && row.Status === "healthy"),
+				[],
+			)
+		}).pipe(Effect.provide(makeLayer(testDb, stub, { fetch: okFetch })))
+	})
 })

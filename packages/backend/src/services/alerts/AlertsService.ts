@@ -85,6 +85,7 @@ import {
 	Chunk,
 	Duration,
 	Effect,
+	Exit,
 	HashMap,
 	HashSet,
 	Layer,
@@ -191,6 +192,21 @@ interface PreparedIncidentDelivery {
 	readonly payload: Record<string, unknown>
 	readonly scheduledAt: number
 }
+
+/**
+ * One rule's state rows that need no other write this tick, keyed by group,
+ * and the check rows reporting them, held back until those rows commit.
+ */
+interface RuleStateBuffer {
+	readonly rows: HashMap.HashMap<string, AlertRuleStateRow>
+	readonly checks: Chunk.Chunk<AlertChecksRow>
+}
+type RuleStateWrites = Ref.Ref<RuleStateBuffer>
+
+const emptyRuleStateBuffer: RuleStateBuffer = { rows: HashMap.empty(), checks: Chunk.empty() }
+
+// 11 bind parameters per row; keeps one statement far below Postgres' 65,535.
+const RULE_STATE_FLUSH_CHUNK_SIZE = 500
 
 type AlertDestinationStorageError = AlertDestinationDecryptionError | AlertDestinationStoredConfigInvalidError
 
@@ -528,6 +544,7 @@ export interface AlertsServiceApi
 			readonly processedCount: number
 			readonly evaluationFailureCount: number
 			readonly warehouseUnavailableSkipCount: number
+			readonly deferredCount: number
 			readonly deliveryFailureCount: number
 		},
 		| AlertPersistenceError
@@ -649,6 +666,81 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 								}),
 							),
 				)
+
+			/**
+			 * Write a rule's buffered state rows in one claim-fenced transaction.
+			 * Per-group transactions ran back to back and took ~950 ms each at peak,
+			 * so a 30-group rule kept the tick open ~30 s past its deadline.
+			 */
+			const flushRuleStates = Effect.fn("AlertsService.flushRuleStates")(function* (
+				claim: RuleClaim,
+				writes: RuleStateWrites,
+				pendingChecks: Ref.Ref<Chunk.Chunk<AlertChecksRow>>,
+			) {
+				const buffer = yield* Ref.getAndSet(writes, emptyRuleStateBuffer)
+				const rows = Arr.fromIterable(HashMap.values(buffer.rows))
+				yield* Effect.annotateCurrentSpan("maple.alerting.state_rows", rows.length)
+				if (Arr.isReadonlyArrayEmpty(rows)) return
+				yield* writeUnderClaim(claim, (db) =>
+					Effect.forEach(
+						Arr.chunksOf(rows, RULE_STATE_FLUSH_CHUNK_SIZE),
+						(chunk) =>
+							db.run(
+								PG.insertInto(AlertRuleStates)
+									.values(chunk)
+									.onConflictDoUpdate({
+										target: ["orgId", "ruleId", "groupKey"],
+										set: (_, excluded) => ({
+											consecutiveBreaches: excluded.consecutiveBreaches,
+											consecutiveHealthy: excluded.consecutiveHealthy,
+											historyJson: excluded.historyJson,
+											lastStatus: excluded.lastStatus,
+											lastValue: excluded.lastValue,
+											lastSampleCount: excluded.lastSampleCount,
+											lastEvaluatedAt: excluded.lastEvaluatedAt,
+											lastError: excluded.lastError,
+											updatedAt: excluded.updatedAt,
+										}),
+									}),
+							),
+						{ discard: true },
+					),
+				).pipe(
+					// One write now carries every deferred group, so a transient failure
+					// would drop the whole rule's progress. The upsert is idempotent and
+					// re-fenced, so retry once; a lost claim or an edit stays final.
+					Effect.retry({
+						times: 1,
+						while: (error) => !(error instanceof AlertRuleClaimLostError),
+					}),
+				)
+				// Only now do the checks count: a failed flush must not report
+				// evaluations whose state never reached Postgres.
+				yield* Ref.update(pendingChecks, Chunk.appendAll(buffer.checks))
+			})
+
+			// Flushes after the groups even when one fails, so a later group's error
+			// cannot discard the evaluations that already completed.
+			const withRuleStateFlush =
+				(
+					claim: RuleClaim,
+					writes: RuleStateWrites,
+					pendingChecks: Ref.Ref<Chunk.Chunk<AlertChecksRow>>,
+				) =>
+				<A, E, R>(groups: Effect.Effect<A, E, R>) =>
+					Effect.gen(function* () {
+						const exit = yield* Effect.exit(groups)
+						const flush = flushRuleStates(claim, writes, pendingChecks)
+						yield* Exit.isSuccess(exit)
+							? flush
+							: flush.pipe(
+									Effect.ignore({
+										log: "Warn",
+										message: "Failed to flush alert rule states after a failed group",
+									}),
+								)
+						return yield* exit
+					})
 
 			/**
 			 * Services a rule's telemetry-liveness probe should cover. An empty list
@@ -2441,6 +2533,7 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 				issueBudget: Ref.Ref<number>,
 				pushBudget: IncidentPushBudget,
 				prefetch: TickPrefetch,
+				stateWrites: RuleStateWrites,
 			) {
 				// `timestamp` is the tick's claim on the rule. The claim can expire while
 				// this runs (slow notification enrichment, a late warehouse result), so
@@ -2476,14 +2569,17 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 					// nothing downstream reads their freshness (the web client and listRules
 					// consume only lastError + lastEvaluatedAt from this table); they catch up
 					// on every transition/heartbeat write.
-					const upsertState = (fields: {
-						consecutiveBreaches: number
-						consecutiveHealthy: number
-						historyJson: ReadonlyArray<number>
-						lastStatus: string
-						lastValue: number | null
-						lastSampleCount: number
-					}) => {
+					const upsertState = (
+						fields: {
+							consecutiveBreaches: number
+							consecutiveHealthy: number
+							historyJson: ReadonlyArray<number>
+							lastStatus: string
+							lastValue: number | null
+							lastSampleCount: number
+						},
+						deferred: boolean,
+					) => {
 						const unchanged =
 							state != null &&
 							state.consecutiveBreaches === fields.consecutiveBreaches &&
@@ -2496,18 +2592,24 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 							state.lastEvaluatedAt != null &&
 							timestamp - state.lastEvaluatedAt < STATE_HEARTBEAT_MS
 						if (unchanged) return Effect.void
+						const stateRow: AlertRuleStateRow = {
+							orgId: row.orgId,
+							ruleId: row.id,
+							groupKey,
+							...fields,
+							lastEvaluatedAt: timestamp,
+							lastError: null,
+							updatedAt: timestamp,
+						}
+						if (deferred)
+							return Ref.update(stateWrites, (buffer) => ({
+								...buffer,
+								rows: HashMap.set(buffer.rows, groupKey, stateRow),
+							}))
 						return writeUnderClaim(claim, (db) =>
 							db.run(
 								PG.insertInto(AlertRuleStates)
-									.values({
-										orgId: row.orgId,
-										ruleId: row.id,
-										groupKey,
-										...fields,
-										lastEvaluatedAt: timestamp,
-										lastError: null,
-										updatedAt: timestamp,
-									})
+									.values(stateRow)
 									.onConflictDoUpdate({
 										target: ["orgId", "ruleId", "groupKey"],
 										set: {
@@ -2559,14 +2661,20 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 					// Persist the counter/state decision before follow-up adapter work, as
 					// before extraction. A failed flap-history or liveness query must not
 					// discard an evaluation that already completed successfully.
-					yield* upsertState({
-						consecutiveBreaches: lifecycle.state.consecutiveBreaches,
-						consecutiveHealthy: lifecycle.state.consecutiveHealthy,
-						historyJson: lifecycle.state.history,
-						lastStatus: evaluation.status,
-						lastValue: evaluation.value,
-						lastSampleCount: evaluation.sampleCount,
-					})
+					// A group with no incident or hold work only changes its state row,
+					// so that row joins the rule's batched upsert. Any other group still
+					// writes it inline, before its incident write, as before.
+					yield* upsertState(
+						{
+							consecutiveBreaches: lifecycle.state.consecutiveBreaches,
+							consecutiveHealthy: lifecycle.state.consecutiveHealthy,
+							historyJson: lifecycle.state.history,
+							lastStatus: evaluation.status,
+							lastValue: evaluation.value,
+							lastSampleCount: evaluation.sampleCount,
+						},
+						lifecycle.transition === "none" && lifecycle.hold === null,
+					)
 
 					// Ask the persistence adapter for flap history only when the pure core
 					// has decided that a new incident is otherwise ready to open.
@@ -3023,7 +3131,14 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 				// Buffer instead of POSTing per-evaluation; the scheduler tick flushes
 				// all rows once at the end (one POST per orgId). Awaited flush keeps
 				// the Cloudflare Worker isolate alive across the batch write.
-				yield* Ref.update(pendingChecks, Chunk.append(checkRow))
+				// A group whose state row is still buffered reports its check only once
+				// `flushRuleStates` commits that row.
+				const staged = yield* Ref.modify(stateWrites, (buffer) =>
+					HashMap.has(buffer.rows, groupKey)
+						? [true, { ...buffer, checks: Chunk.append(buffer.checks, checkRow) }]
+						: [false, buffer],
+				)
+				if (!staged) yield* Ref.update(pendingChecks, Chunk.append(checkRow))
 			})
 
 			/* -------------------------------------------------------------------------- */
@@ -4040,6 +4155,12 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 						}
 						const ruleStart = yield* now
 						const normalized = yield* normalizeRuleRow(row)
+						const stateWrites: RuleStateWrites = yield* Ref.make(emptyRuleStateBuffer)
+						const flushingStates = withRuleStateFlush(
+							{ ruleId: row.id, claimedAt: timestamp, ruleUpdatedAt: row.updatedAt },
+							stateWrites,
+							pendingChecks,
+						)
 
 						if (normalized.serviceNames.length > 1) {
 							yield* Effect.forEach(yield* perServiceRules(normalized), ({ groupKey, rule }) =>
@@ -4068,9 +4189,10 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 										issueBudget,
 										pushBudget,
 										prefetch,
+										stateWrites,
 									)
 								}),
-							)
+							).pipe(flushingStates)
 
 							yield* resolveOrphanedGroupIncidents(
 								row.orgId,
@@ -4113,9 +4235,10 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 									issueBudget,
 									pushBudget,
 									prefetch,
+									stateWrites,
 								)
 							}),
-						)
+						).pipe(flushingStates)
 
 						const evaluatedGroups = HashSet.fromIterable(Arr.map(eligible, (r) => r.groupKey))
 						yield* resolveOrphanedGroupIncidents(
@@ -4293,7 +4416,9 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 					Stream.runDrain,
 				)
 
-				yield* releaseClaims(Chunk.toReadonlyArray(yield* Ref.get(unstartedClaims)))
+				yield* releaseClaims(Chunk.toReadonlyArray(yield* Ref.get(unstartedClaims))).pipe(
+					Effect.withSpan("AlertsService.releaseClaims"),
+				)
 				const deferred = yield* Ref.get(deferredRules)
 				yield* Effect.annotateCurrentSpan("maple.alerting.rules_deferred", deferred)
 				if (deferred > 0) {
@@ -4328,7 +4453,7 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 					Chunk.toReadonlyArray(yield* Ref.get(selfHealTargets)),
 					Chunk.toReadonlyArray(yield* Ref.get(clearErrorTargets)),
 					tickStart,
-				)
+				).pipe(Effect.withSpan("AlertsService.flushRuleStateHousekeeping"))
 
 				// One card per rule for everything its share held back, in place of
 				// the banners themselves. After the whole rule loop, so a rule that
@@ -4342,7 +4467,7 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 							.notifyIncidentDigest(rule)
 							.pipe(Effect.timeout("20 seconds"), Effect.ignoreCause),
 					{ concurrency: 4, discard: true },
-				)
+				).pipe(Effect.withSpan("AlertsService.notifyIncidentDigests"))
 
 				// Resolve stale incidents for disabled rules
 				const disabledRulesWithOpenIncidents = yield* dbExecute((db) =>
@@ -4380,14 +4505,10 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 				// authoritative state already lives in Postgres above.
 				const accumulatedChecks = yield* Ref.getAndSet(pendingChecks, Chunk.empty())
 				if (accumulatedChecks.length > 0) {
-					const byOrg = new Map<string, AlertChecksRow[]>()
-					for (const check of accumulatedChecks) {
-						const bucket = byOrg.get(check.OrgId)
-						if (bucket) bucket.push(check)
-						else byOrg.set(check.OrgId, [check])
-					}
 					yield* Effect.forEach(
-						Array.from(byOrg.entries()),
+						Object.entries(
+							Arr.groupBy(Chunk.toReadonlyArray(accumulatedChecks), (check) => check.OrgId),
+						),
 						([orgId, checks]) =>
 							// Not metered to Autumn: internal bookkeeping rows, not customer
 							// telemetry.
@@ -4406,7 +4527,7 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 									Effect.ignore,
 								),
 						{ concurrency: ALERT_CHECK_INGEST_CONCURRENCY },
-					)
+					).pipe(Effect.withSpan("AlertsService.ingestAlertChecks"))
 				}
 
 				const evaluatedCount = yield* Ref.get(evaluatedRules)
@@ -4415,6 +4536,7 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 					evaluatedCount,
 					evaluationFailureCount: yield* Ref.get(evaluationFailureCount),
 					warehouseUnavailableSkipCount: unavailableSkipCount,
+					deferredCount: deferred,
 				}
 			})
 
@@ -4426,6 +4548,7 @@ export class AlertsService extends Context.Service<AlertsService, AlertsServiceA
 				const evaluation = yield* Effect.exit(evaluateScheduledRules())
 				const deliveryResult = yield* processQueuedDeliveries()
 				const evaluated = yield* evaluation
+				yield* Effect.annotateCurrentSpan("maple.alerting.rules_deferred", evaluated.deferredCount)
 				yield* Metric.update(AlertingMetrics.tickDurationMs, (yield* now) - tickStart)
 				return {
 					...evaluated,
