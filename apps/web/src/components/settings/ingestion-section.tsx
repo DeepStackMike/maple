@@ -30,14 +30,15 @@ import { SettingsSection, SettingsSections } from "./settings-section"
 import { useAsyncAction } from "@/hooks/use-mutation-action"
 import { toastExit } from "@/lib/error-toast"
 import { RecommendedMappingsSection } from "./recommended-mappings-section"
+import { REPLAY_BLOCK_CLASS } from "@/components/common/replay-privacy"
 
 /** Live ingest-health strip: green once telemetry lands, amber pulse while waiting. */
 function StatusBanner({ connection }: { connection: IngestConnection }) {
 	const connected = connection.status === "connected"
 
 	const [handleSendTest, sending] = useAsyncAction(() => {
-		if (!connection.apiKey) return Promise.resolve()
-		return sendTestEvent(connection.apiKey).then(
+		if (!connection.publicKey) return Promise.resolve()
+		return sendTestEvent(connection.publicKey).then(
 			() => {
 				toastManager.add({
 					title: "Test event sent. Watch for it to land in traces.",
@@ -95,7 +96,7 @@ function StatusBanner({ connection }: { connection: IngestConnection }) {
 					className="shrink-0 gap-2"
 					onClick={() => void handleSendTest()}
 					loading={sending}
-					disabled={!connection.apiKey}
+					disabled={!connection.publicKey}
 				>
 					<PaperPlaneIcon />
 					Send test event
@@ -162,7 +163,11 @@ function CredentialRow({
 						onClick={onCopy}
 						disabled={isDisabled}
 						aria-label={`Copy ${label}`}
-						className="group/value text-muted-foreground hover:text-foreground flex min-w-0 max-w-full cursor-pointer items-center gap-1.5 text-left font-mono text-xs tracking-wide transition-colors"
+						// A revealed key is plain text, which the dashboard's own rrweb recording would capture.
+						className={cn(
+							masked && REPLAY_BLOCK_CLASS,
+							"group/value text-muted-foreground hover:text-foreground flex min-w-0 max-w-full cursor-pointer items-center gap-1.5 text-left font-mono text-xs tracking-wide transition-colors",
+						)}
 					>
 						<span className={hidden ? "truncate" : "min-w-0 break-all"}>
 							{hidden ? maskKey(value) : value}
@@ -189,9 +194,7 @@ function CredentialRow({
 						label={isVisible ? "Hide key" : "Reveal key"}
 						disabled={isDisabled}
 					>
-						<EyeIcon
-							className={isVisible ? "text-foreground" : "text-muted-foreground"}
-						/>
+						<EyeIcon className={isVisible ? "text-foreground" : "text-muted-foreground"} />
 					</IconButton>
 				)}
 				<IconButton variant="outline" onClick={onCopy} label={`Copy ${label}`} disabled={isDisabled}>
@@ -325,7 +328,7 @@ export function IngestionSection() {
 				>
 					<ConnectInstructions
 						framework={framework}
-						apiKey={connection.apiKey}
+						apiKey={connection.privateKey}
 						apiKeyStatus={connection.apiKeyStatus}
 						variant="flush"
 					/>
