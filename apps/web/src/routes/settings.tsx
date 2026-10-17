@@ -11,7 +11,10 @@ import { IngestionSection } from "@/components/settings/ingestion-section"
 import { ApiKeysSection } from "@/components/settings/api-keys-section"
 import { AuditLogSection } from "@/components/settings/audit-log-section"
 import { McpSection } from "@/components/settings/mcp-section"
-import { AiProviderSection } from "@/components/settings/ai-provider-section"
+import { ModelProviderSection } from "@/components/settings/ai-provider-section"
+import { AutoTriageSection } from "@/components/settings/ai-triage-settings-section"
+import { AiEscalationCard } from "@/components/settings/ai-escalation-card"
+import { SettingsSections } from "@/components/settings/settings-section"
 import { AutomationSection } from "@/components/settings/automation-section"
 import { OrgClickHouseSettingsSection } from "@/components/settings/org-clickhouse-settings-section"
 import { GeneralSection } from "@/components/settings/general-section"
@@ -111,10 +114,15 @@ function SettingsPage() {
 					{activeTab === "ingestion" && <IngestionSection />}
 					{activeTab === "keys" && <ApiKeysSection />}
 					{activeTab === "mcp" && <McpSection />}
-					{activeTab === "ai" && <AiProviderSection />}
-					{activeTab === "automation" && (
-						<AutomationSection isAdmin={isAdmin} hasEntitlement={canAccessAi} />
+					{activeTab === "ai" && (
+						<SettingsSections>
+							<ModelProviderSection />
+							{/* The tab is admin-only; orgs outside the auto-triage rollout see a preview. */}
+							<AutoTriageSection available={canAccessAi} />
+							<AiEscalationCard />
+						</SettingsSections>
 					)}
+					{activeTab === "automation" && <AutomationSection isAdmin={isAdmin} />}
 					{activeTab === "billing" && <BillingSection isAdmin={isAdmin} />}
 					{activeTab === "data-platform" && (
 						<OrgClickHouseSettingsSection
