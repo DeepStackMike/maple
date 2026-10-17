@@ -1,8 +1,6 @@
 /**
- * Tag filtering + grouping for the alerts list. Shared by the Rules tab (over
- * alert rules) and the Monitor tab (over incidents joined to their rule's tags),
- * so the two surfaces stay consistent. All functions are generic over the item
- * type via a `getTags` accessor.
+ * Tag grouping for the alerts Rules tab, generic over the item type via a
+ * `getTags` accessor.
  */
 
 /** Stable key for the bucket holding items with no tags. */
