@@ -11,6 +11,7 @@ import {
 	type ProjectScope,
 } from "../lib/project-scope"
 import { logsQueryOptions, type LogFilters } from "./use-local-logs"
+import { windowed } from "../lib/query-cache"
 
 /** Newest logs clustered per refresh. Smaller than the CLI's 10k: chDB serves one query at a time. */
 export const PATTERN_SAMPLE_SIZE = 5_000
@@ -29,7 +30,7 @@ export interface LocalLogPatterns {
  */
 export function useLocalLogPatterns(filters: LogFilters, bounds: TimeBounds, scope: ProjectScope) {
 	return useQuery<LocalLogPatterns>({
-		queryKey: ["local", "log-patterns", filters, projectKey(scope), boundsKey(bounds)],
+		...windowed(["local", "log-patterns", filters, projectKey(scope), boundsKey(bounds)]),
 		staleTime: 30_000,
 		placeholderData: scopedPlaceholder(scope),
 		queryFn: scopedQueryFn(scope, async ({ signal }) => {

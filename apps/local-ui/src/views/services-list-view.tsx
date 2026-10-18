@@ -40,6 +40,7 @@ import {
 	ToolbarStats,
 } from "../components/toolbar"
 import { ErrorState } from "../components/view-states"
+import { failedWithoutData } from "../lib/query"
 
 export function ServicesListView() {
 	const [query, setParams] = useQueryParams()
@@ -142,7 +143,7 @@ export function ServicesListView() {
 						]}
 					/>
 				</div>
-			) : list.isError ? (
+			) : failedWithoutData(list) ? (
 				<ErrorState label="services" error={list.error} onRetry={() => list.refetch()} />
 			) : rows.length === 0 ? (
 				<SignalEmptyState

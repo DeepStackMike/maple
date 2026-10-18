@@ -88,6 +88,7 @@ import {
 	type SessionEventTab,
 	type TraceLink,
 } from "../lib/session-detail"
+import { failedWithoutData } from "../lib/query"
 
 interface SessionDetailViewProps {
 	sessionId: string
@@ -103,7 +104,7 @@ const ERROR_LEAD_MS = 3000
 
 export function SessionDetailView({ sessionId, backLabel, onBack }: SessionDetailViewProps) {
 	const detail = useLocalSessionDetail(sessionId)
-	const { data: session, isPending, isError, error } = detail
+	const { data: session, isPending, error } = detail
 	const transcript = useLocalSessionTranscript(sessionId)
 	const events = useMemo(() => transcript.data ?? [], [transcript.data])
 
@@ -240,7 +241,7 @@ export function SessionDetailView({ sessionId, backLabel, onBack }: SessionDetai
 					<div className="flex h-full items-center justify-center">
 						<Spinner />
 					</div>
-				) : isError ? (
+				) : failedWithoutData(detail) ? (
 					<ErrorState label="session" error={error} onRetry={() => detail.refetch()} />
 				) : !session ? (
 					<div className="flex h-full items-center justify-center text-sm text-muted-foreground">
@@ -406,7 +407,7 @@ export function SessionDetailView({ sessionId, backLabel, onBack }: SessionDetai
 								events={events}
 								startTime={session.startTime}
 								isPending={transcript.isPending}
-								isError={transcript.isError}
+								isError={failedWithoutData(transcript)}
 								error={transcript.error}
 								onJump={baseMs === undefined ? undefined : jumpTo}
 								baseMs={baseMs}

@@ -1,9 +1,10 @@
-import { keepPreviousData, skipToken, useQuery } from "@tanstack/react-query"
+import { skipToken, useQuery } from "@tanstack/react-query"
 import { CH } from "@maple/query-engine"
 import { boundsKey, executeLocalCompiledQuery, localParams } from "@/lib/query"
 import type { ProjectScope } from "../lib/project-scope"
 import type { TimeBounds } from "../lib/time"
 import { useNamespace } from "./use-namespace"
+import { windowed } from "../lib/query-cache"
 
 interface NamespaceServicesData {
 	readonly namespace: string
@@ -26,9 +27,8 @@ interface NamespaceServicesData {
 export function useNamespaceServices(bounds: TimeBounds): ProjectScope {
 	const [namespace] = useNamespace()
 	const query = useQuery<NamespaceServicesData>({
-		queryKey: ["local", "namespace-services", namespace ?? null, boundsKey(bounds)],
+		...windowed(["local", "namespace-services", namespace ?? null, boundsKey(bounds)]),
 		staleTime: 60_000,
-		placeholderData: keepPreviousData,
 		queryFn: namespace
 			? async ({ signal }) => {
 					const rows = await executeLocalCompiledQuery(

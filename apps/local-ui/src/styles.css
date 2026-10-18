@@ -114,3 +114,14 @@
 	color: var(--code-gutter);
 	user-select: none;
 }
+
+/* Stale-data notice: wait a beat before showing, so a fast load never flashes it. */
+@keyframes stale-notice-in {
+	from {
+		opacity: 0;
+	}
+}
+
+.stale-notice {
+	animation: stale-notice-in 150ms ease-out 800ms both;
+}

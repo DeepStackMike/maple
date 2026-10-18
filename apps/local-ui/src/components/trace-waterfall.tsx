@@ -47,7 +47,8 @@ export function TraceAnatomy({ traceId, data }: { traceId: string; data: TraceDe
 	const hasError = useMemo(() => traceHasError(data.spans), [data.spans])
 	return (
 		<TraceAnatomyStrip
-			spans={data.spans}
+			rootSpans={data.rootSpans}
+			spanCount={data.spans.length}
 			totalDurationMs={data.totalDurationMs}
 			traceId={traceId}
 			hasError={hasError}

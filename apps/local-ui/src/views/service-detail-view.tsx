@@ -34,6 +34,7 @@ import { SeriesChart } from "../components/series-chart"
 import { HideHealthChecksToggle, RefreshButton, TimeRangeSelect } from "../components/toolbar"
 import type { GoldenSignalPoint } from "../lib/golden-signals"
 import { EmptyState, ErrorState } from "../components/view-states"
+import { failedWithoutData } from "../lib/query"
 
 const CHART_SERIES_LIMIT = 8
 
@@ -103,7 +104,7 @@ export function ServiceDetailView({ serviceName, backLabel, onBack }: ServiceDet
 					<div className="flex h-full items-center justify-center">
 						<Spinner />
 					</div>
-				) : overview.isError ? (
+				) : failedWithoutData(overview) ? (
 					<ErrorState label="service" error={overview.error} onRetry={() => overview.refetch()} />
 				) : !stats ? (
 					<div className="flex h-full flex-col items-center justify-center gap-3">
@@ -148,7 +149,7 @@ export function ServiceDetailView({ serviceName, backLabel, onBack }: ServiceDet
 							/>
 						</section>
 
-						{goldenSignals.isError ? (
+						{failedWithoutData(goldenSignals) ? (
 							<ErrorState
 								label="service charts"
 								error={goldenSignals.error}
@@ -175,7 +176,7 @@ export function ServiceDetailView({ serviceName, backLabel, onBack }: ServiceDet
 								<div className="flex h-24 items-center justify-center rounded-md border">
 									<Spinner />
 								</div>
-							) : operations.isError ? (
+							) : failedWithoutData(operations) ? (
 								<ErrorState
 									label="operations"
 									error={operations.error}

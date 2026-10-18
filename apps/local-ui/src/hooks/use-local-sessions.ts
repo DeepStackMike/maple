@@ -7,6 +7,7 @@ import { boundsKey, executeLocalCompiledQuery, localParams, noCursor } from "@/l
 import { projectKey, scopedPlaceholder, scopedQueryFn, type ProjectScope } from "../lib/project-scope"
 import { sessionTagsOf, type SessionTag } from "../lib/session-tags"
 import type { TimeBounds } from "../lib/time"
+import { windowed } from "../lib/query-cache"
 
 const PAGE_SIZE = 50
 
@@ -58,7 +59,7 @@ const tagsOrUndefined = (tags: ReadonlyArray<SessionTag> | undefined) =>
  */
 export function useLocalSessions(filters: SessionFilters, bounds: TimeBounds, project: ProjectScope) {
 	return useInfiniteQuery({
-		queryKey: ["local", "sessions", filters, projectKey(project), boundsKey(bounds)],
+		...windowed(["local", "sessions", filters, projectKey(project), boundsKey(bounds)]),
 		initialPageParam: noCursor<SessionCursor>(),
 		placeholderData: scopedPlaceholder(project),
 		queryFn: scopedQueryFn<ReadonlyArray<SessionListRow>, QueryKey, SessionCursor | undefined>(
@@ -134,7 +135,7 @@ const EMPTY_FACETS: SessionFacets = {
 export function useLocalSessionFacets(filters: SessionFilters, bounds: TimeBounds, project: ProjectScope) {
 	const placeholder = scopedPlaceholder(project)
 	return useQuery<SessionFacets>({
-		queryKey: ["local", "session-facets", filters, projectKey(project), boundsKey(bounds)],
+		...windowed(["local", "session-facets", filters, projectKey(project), boundsKey(bounds)]),
 		staleTime: 30_000,
 		queryFn: scopedQueryFn(project, async ({ signal }) => {
 			const compiled = CH.compileUnion(

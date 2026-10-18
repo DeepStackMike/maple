@@ -24,6 +24,7 @@ import {
 	type ConversionWindow,
 } from "../lib/product-analytics"
 import { ErrorState } from "./view-states"
+import { failedWithoutData } from "../lib/query"
 
 interface FunnelPanelProps {
 	names: UseQueryResult<ReadonlyArray<ProductEventName>, Error>
@@ -163,7 +164,7 @@ export function FunnelPanel({
 				<div className="flex h-64 items-center justify-center rounded-md border">
 					<Spinner />
 				</div>
-			) : funnel.isError ? (
+			) : failedWithoutData(funnel) ? (
 				<ErrorState label="funnel" error={funnel.error} onRetry={() => funnel.refetch()} />
 			) : (
 				<div className="space-y-2">

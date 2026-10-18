@@ -38,6 +38,7 @@ import { collectCodeAttributes } from "../lib/code-block"
 
 /** The panel's two tabs, named so a caller can open it on one. */
 export type SpanPanelTab = "details" | "logs"
+import { failedWithoutData } from "../lib/query"
 
 /** Matches the query limit in `useLocalSpanLogs`; a full page means "at least". */
 const LOG_LIMIT = 100
@@ -341,7 +342,7 @@ export function SpanDetailPanel({
 								/>
 							) : (
 								<>
-									{detail.isError && (
+									{failedWithoutData(detail) && (
 										<p className="rounded-md border border-dashed px-2 py-1.5 text-[11px] text-muted-foreground">
 											Couldn't load all attributes. Showing the ones loaded with the
 											trace.
@@ -364,7 +365,11 @@ export function SpanDetailPanel({
 					</TabsContent>
 
 					<TabsContent value="logs" className="mt-0">
-						<SpanLogs logs={logs.data ?? []} isPending={logs.isPending} isError={logs.isError} />
+						<SpanLogs
+							logs={logs.data ?? []}
+							isPending={logs.isPending}
+							isError={failedWithoutData(logs)}
+						/>
 					</TabsContent>
 				</Tabs>
 			</ScrollArea>

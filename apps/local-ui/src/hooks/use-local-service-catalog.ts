@@ -1,5 +1,5 @@
 import { useMemo } from "react"
-import { keepPreviousData, useQuery } from "@tanstack/react-query"
+import { useQuery } from "@tanstack/react-query"
 import { DateTime } from "effect"
 import { CH, coerceServiceOverviewRows } from "@maple/query-engine"
 import { boundsKey, executeLocalCompiledQuery, localParams } from "@/lib/query"
@@ -18,6 +18,7 @@ import {
 	type ServiceVersionSighting,
 } from "../lib/services-list"
 import { bucketSecondsForRange } from "./use-local-metrics"
+import { windowed } from "../lib/query-cache"
 
 export interface ServiceCatalogFilters {
 	/** Exact `deployment.environment` resource attribute. */
@@ -66,8 +67,7 @@ interface CatalogResult {
 
 function useCatalog(env: string | undefined, ns: string | undefined, bounds: TimeBounds) {
 	return useQuery({
-		queryKey: ["local", "services", "catalog", env ?? null, ns ?? null, boundsKey(bounds)],
-		placeholderData: keepPreviousData,
+		...windowed(["local", "services", "catalog", env ?? null, ns ?? null, boundsKey(bounds)]),
 		queryFn: async ({ signal }): Promise<CatalogResult> => {
 			const params = localParams(bounds)
 			const [catalogRows, usageRows] = await Promise.all([
@@ -199,8 +199,7 @@ export function useLocalServiceList(
 ) {
 	const { bounds, anchorMs } = timeWindow
 	return useQuery({
-		queryKey: ["local", "services", "list", range ?? null, boundsKey(bounds)],
-		placeholderData: keepPreviousData,
+		...windowed(["local", "services", "list", range ?? null, boundsKey(bounds)]),
 		queryFn: async ({ signal }): Promise<ServiceListData> => {
 			// One anchor for all four windows — the page's, so the previous window
 			// abuts the current one exactly and only moves on refresh.

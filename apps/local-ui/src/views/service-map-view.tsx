@@ -23,6 +23,7 @@ import { ServiceMapDatabasePanel, ServiceMapServicePanel } from "../components/s
 import { SignalEmptyState } from "../components/signal-empty-state"
 import { RefreshButton, TimeRangeSelect, Toolbar, ToolbarStat, ToolbarStats } from "../components/toolbar"
 import { ErrorState } from "../components/view-states"
+import { failedWithoutData } from "../lib/query"
 
 function buildGraph(data: LocalServiceMapData, durationSeconds: number) {
 	const { nodes, edges } = buildFlowElements({
@@ -133,7 +134,7 @@ export function ServiceMapView() {
 					<ErrorState label="the project's services" error={project.error} />
 				) : map.isPending || project.isPending ? (
 					<ServiceMapLoading />
-				) : map.isError ? (
+				) : failedWithoutData(map) ? (
 					<ErrorState label="the service map" error={map.error} onRetry={() => map.refetch()} />
 				) : graph ? (
 					<ServiceMapFlowCanvas

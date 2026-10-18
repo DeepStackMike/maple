@@ -15,6 +15,7 @@ import {
 	type ProjectScope,
 	type ProjectServices,
 } from "../lib/project-scope"
+import { windowed } from "../lib/query-cache"
 
 export interface ErrorsFilters {
 	/** Exact service name match. */
@@ -47,7 +48,7 @@ function sharedFilters(filters: ErrorsFilters, project: ProjectServices) {
 /** Headline stats for the errors view (error_events × service_usage). */
 export function useLocalErrorsSummary(filters: ErrorsFilters, bounds: TimeBounds, scope: ProjectScope) {
 	return useQuery({
-		queryKey: ["local", "errors", "summary", filters, projectKey(scope), boundsKey(bounds)],
+		...windowed(["local", "errors", "summary", filters, projectKey(scope), boundsKey(bounds)]),
 		placeholderData: scopedPlaceholder(scope),
 		queryFn: scopedQueryFn(scope, async ({ signal }): Promise<CH.ErrorsSummaryOutput | null> => {
 			const shared = sharedFilters(filters, scope.services)
@@ -70,7 +71,7 @@ export type ErrorTypeRow = CH.ErrorsByTypeOutput
 /** Fingerprint-grouped error types, most frequent first. */
 export function useLocalErrorsByType(filters: ErrorsFilters, bounds: TimeBounds, scope: ProjectScope) {
 	return useQuery({
-		queryKey: ["local", "errors", "by-type", filters, projectKey(scope), boundsKey(bounds)],
+		...windowed(["local", "errors", "by-type", filters, projectKey(scope), boundsKey(bounds)]),
 		placeholderData: scopedPlaceholder(scope),
 		queryFn: scopedQueryFn(scope, async ({ signal }): Promise<ReadonlyArray<ErrorTypeRow>> => {
 			const shared = sharedFilters(filters, scope.services)
@@ -138,7 +139,7 @@ export function useLocalErrorVersions(
 	scope: ProjectScope,
 ) {
 	return useQuery({
-		queryKey: [
+		...windowed([
 			"local",
 			"errors",
 			"versions",
@@ -146,7 +147,7 @@ export function useLocalErrorVersions(
 			filters,
 			projectKey(scope),
 			boundsKey(bounds),
-		],
+		]),
 		placeholderData: scopedPlaceholder(scope),
 		queryFn: scopedQueryFn(
 			scope,
@@ -176,7 +177,7 @@ export function useLocalErrorVersions(
  */
 export function useLocalVersionTraffic(filters: ErrorsFilters, bounds: TimeBounds, scope: ProjectScope) {
 	return useQuery({
-		queryKey: [
+		...windowed([
 			"local",
 			"errors",
 			"version-traffic",
@@ -184,7 +185,7 @@ export function useLocalVersionTraffic(filters: ErrorsFilters, bounds: TimeBound
 			filters.env,
 			projectKey(scope),
 			boundsKey(bounds),
-		],
+		]),
 		placeholderData: scopedPlaceholder(scope),
 		queryFn: scopedQueryFn(scope, async ({ signal }): Promise<Array<VersionTraffic>> => {
 			const services = scopeServices(scope.services, filters.service)
@@ -231,7 +232,7 @@ export function useLocalErrorSlices(
 	scope: ProjectScope,
 ) {
 	return useQuery({
-		queryKey: [
+		...windowed([
 			"local",
 			"errors",
 			"version-slices",
@@ -239,7 +240,7 @@ export function useLocalErrorSlices(
 			filters,
 			projectKey(scope),
 			boundsKey(bounds),
-		],
+		]),
 		placeholderData: scopedPlaceholder(scope),
 		queryFn: scopedQueryFn(
 			scope,
@@ -334,7 +335,7 @@ const EMPTY_ERRORS_FACETS: ErrorsFacets = { services: [], environments: [], erro
  */
 export function useLocalErrorsFacets(filters: ErrorsFilters, bounds: TimeBounds, scope: ProjectScope) {
 	return useQuery({
-		queryKey: ["local", "errors", "facets", filters, projectKey(scope), boundsKey(bounds)],
+		...windowed(["local", "errors", "facets", filters, projectKey(scope), boundsKey(bounds)]),
 		placeholderData: scopedPlaceholder(scope),
 		queryFn: scopedQueryFn(scope, async ({ signal }): Promise<ErrorsFacets> => {
 			const project = scope.services
@@ -378,7 +379,7 @@ export function useLocalErrorsFacets(filters: ErrorsFilters, bounds: TimeBounds,
  */
 export function useLocalErrorSampleStack(fingerprintHash: string | undefined, bounds: TimeBounds) {
 	return useQuery({
-		queryKey: ["local", "errors", "sample-stack", fingerprintHash, boundsKey(bounds)],
+		...windowed(["local", "errors", "sample-stack", fingerprintHash, boundsKey(bounds)]),
 		queryFn: fingerprintHash
 			? async ({ signal }): Promise<CH.ErrorSampleStackOutput | null> => {
 					const row = await executeLocalCompiledFirstRow(
@@ -399,7 +400,7 @@ export function useLocalErrorTraces(
 	scope: ProjectScope,
 ) {
 	return useQuery({
-		queryKey: [
+		...windowed([
 			"local",
 			"errors",
 			"traces",
@@ -411,7 +412,7 @@ export function useLocalErrorTraces(
 			filters.version,
 			projectKey(scope),
 			boundsKey(bounds),
-		],
+		]),
 		queryFn: scopedQueryFn(
 			scope,
 			fingerprintHash !== undefined &&
@@ -453,7 +454,7 @@ export function useLocalErrorSessions(
 	scope: ProjectScope,
 ) {
 	return useQuery({
-		queryKey: [
+		...windowed([
 			"local",
 			"errors",
 			"sessions",
@@ -461,7 +462,7 @@ export function useLocalErrorSessions(
 			messageMatch,
 			projectKey(scope),
 			boundsKey(bounds),
-		],
+		]),
 		queryFn: scopedQueryFn(
 			scope,
 			fingerprintHash

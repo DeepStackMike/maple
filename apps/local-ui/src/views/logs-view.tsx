@@ -106,6 +106,7 @@ import {
 	RefreshButton,
 } from "../components/toolbar"
 import { ErrorState, ListSkeleton } from "../components/view-states"
+import { failedWithoutData } from "../lib/query"
 
 const ROW_HEIGHT = 36
 /** Chips shown beside the message; the rest are in the drawer. */
@@ -489,7 +490,7 @@ function LogPatternsMode({
 		since: patterns.dataUpdatedAt,
 		children: patterns.isPending ? (
 			<ListSkeleton variant="table" />
-		) : patterns.isError ? (
+		) : failedWithoutData(patterns) ? (
 			<ErrorState label="log patterns" error={patterns.error} onRetry={() => patterns.refetch()} />
 		) : data === undefined || data.patterns.length === 0 ? (
 			emptyState
@@ -591,7 +592,7 @@ function LogListMode({
 
 	// No stream (loading, error, empty) means no pointer or scroll to release a
 	// hold with, so a hold the stream was keeping is dropped with it.
-	const hasStream = rows.length > 0 && !logs.isPending && !logs.isError
+	const hasStream = rows.length > 0 && !logs.isPending && !failedWithoutData(logs)
 	useLayoutEffect(() => {
 		if (!hasStream) onStreamInspect({ hovering: false, scrolledAway: false })
 	}, [hasStream, onStreamInspect])
@@ -656,7 +657,7 @@ function LogListMode({
 				<div className="min-h-0 flex-1">
 					{logs.isPending ? (
 						<ListSkeleton variant="table" />
-					) : logs.isError ? (
+					) : failedWithoutData(logs) ? (
 						<ErrorState label="logs" error={logs.error} onRetry={() => logs.refetch()} />
 					) : rows.length === 0 ? (
 						emptyState

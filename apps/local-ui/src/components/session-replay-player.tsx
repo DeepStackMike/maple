@@ -8,6 +8,7 @@ import { cn } from "@maple/ui/lib/utils"
 import { formatClock } from "@maple/ui/lib/replay-format"
 import { ErrorState } from "./view-states"
 import { useLocalSessionReplay, type ReplayViewport } from "../hooks/use-local-session-replay"
+import { failedWithoutData } from "../lib/query"
 
 // Session replay for local mode.
 //
@@ -159,7 +160,7 @@ export const SessionReplaySection = forwardRef<ReplayPlayerHandle, SessionReplay
 				</div>
 			)
 		}
-		if (replay.isError) return <ErrorState label="replay" error={replay.error} />
+		if (failedWithoutData(replay)) return <ErrorState label="replay" error={replay.error} />
 		if (replay.data.events.length < 2) {
 			return (
 				<p className="text-sm text-muted-foreground">

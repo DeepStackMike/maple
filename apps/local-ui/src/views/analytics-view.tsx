@@ -45,6 +45,7 @@ import { ProductEventsPanel } from "../components/product-events-panel"
 import { WebAnalyticsPanel, parseUtmDimension } from "../components/web-analytics-panel"
 import { RefreshButton, TimeRangeSelect, Toolbar, ToolbarStat, ToolbarStats } from "../components/toolbar"
 import { EmptyState, ErrorState, ListSkeleton } from "../components/view-states"
+import { failedWithoutData } from "../lib/query"
 
 export function AnalyticsView() {
 	const [query, setParams] = useQueryParams()
@@ -198,7 +199,7 @@ function ProductSection({
 				<ErrorState label="the project's services" error={project.error} />
 			) : names.isPending ? (
 				<ListSkeleton rows={6} />
-			) : names.isError ? (
+			) : failedWithoutData(names) ? (
 				<ErrorState label="product events" error={names.error} onRetry={() => names.refetch()} />
 			) : rows.length === 0 ? (
 				<EmptyState

@@ -44,6 +44,7 @@ import {
 import { VisitorMap } from "./visitor-map"
 import { EmptyState, ErrorState, ListSkeleton } from "./view-states"
 import { useTimeWindow } from "../hooks/use-time-window"
+import { failedWithoutData } from "../lib/query"
 
 /** The three acquisition tags, behind one selector rather than three near-identical cards. */
 const UTM_DIMENSIONS = [
@@ -133,8 +134,8 @@ export function WebAnalyticsPanel({ range, environment, project, utm, onUtmChang
 	// round trip failed rather than rendering a confident 0 next to a populated
 	// session count — the same rule the visitor tile follows for a different
 	// reason.
-	const pageViews = pageviewsTimeseries.isError ? null : totalPageViews(pageviewPoints)
-	const errorSessions = facets.isError ? null : (facets.data?.errorCount ?? 0)
+	const pageViews = failedWithoutData(pageviewsTimeseries) ? null : totalPageViews(pageviewPoints)
+	const errorSessions = failedWithoutData(facets) ? null : (facets.data?.errorCount ?? 0)
 
 	const facet = (facetType: string): BreakdownRow[] => withShares(breakdowns.data?.get(facetType) ?? [])
 
@@ -160,7 +161,7 @@ export function WebAnalyticsPanel({ range, environment, project, utm, onUtmChang
 
 	if (project.error) return <ErrorState label="the project's services" error={project.error} />
 	if (summary.isPending) return <ListSkeleton rows={6} />
-	if (summary.isError) {
+	if (failedWithoutData(summary)) {
 		return <ErrorState label="web analytics" error={summary.error} onRetry={() => summary.refetch()} />
 	}
 
@@ -243,7 +244,7 @@ export function WebAnalyticsPanel({ range, environment, project, utm, onUtmChang
 				{/* Either failure takes the whole chart, not just its own line: a
 				    series drawn flat along the axis under a legend that names it is
 				    read as "none of these", which is not what a failed query means. */}
-				{sessionsTimeseries.isError || pageviewsTimeseries.isError ? (
+				{failedWithoutData(sessionsTimeseries) || failedWithoutData(pageviewsTimeseries) ? (
 					<ErrorState
 						label="the traffic chart"
 						error={sessionsTimeseries.error ?? pageviewsTimeseries.error}
@@ -267,7 +268,7 @@ export function WebAnalyticsPanel({ range, environment, project, utm, onUtmChang
 				)}
 			</Card>
 
-			{breakdowns.isError ? (
+			{failedWithoutData(breakdowns) ? (
 				<ErrorState
 					label="the breakdowns"
 					error={breakdowns.error}
@@ -374,7 +375,7 @@ export function WebAnalyticsPanel({ range, environment, project, utm, onUtmChang
 							title="Regions"
 							rows={regionRows}
 							pending={regions.isPending}
-							error={regions.isError ? regions.error : undefined}
+							error={failedWithoutData(regions) ? regions.error : undefined}
 							onRetry={() => regions.refetch()}
 							empty={`No region data. ${GEO_HEADER_HINT}`}
 						/>
@@ -382,7 +383,7 @@ export function WebAnalyticsPanel({ range, environment, project, utm, onUtmChang
 							title="Cities"
 							rows={cityRows}
 							pending={cities.isPending}
-							error={cities.isError ? cities.error : undefined}
+							error={failedWithoutData(cities) ? cities.error : undefined}
 							onRetry={() => cities.refetch()}
 							empty={`No city data. ${GEO_HEADER_HINT}`}
 						/>

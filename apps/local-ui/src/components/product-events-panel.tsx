@@ -23,6 +23,7 @@ import type { ProjectScope } from "../lib/project-scope"
 import { formatPercent } from "../lib/product-analytics"
 import { formatRelativeTime } from "../lib/time"
 import { ErrorState } from "./view-states"
+import { failedWithoutData } from "../lib/query"
 
 interface ProductEventsPanelProps {
 	names: UseQueryResult<ReadonlyArray<ProductEventName>, Error>
@@ -185,7 +186,7 @@ function EventDetail({
 					<div className="flex h-48 items-center justify-center">
 						<Spinner />
 					</div>
-				) : timeseries.isError ? (
+				) : failedWithoutData(timeseries) ? (
 					<ErrorState
 						label="event timeseries"
 						error={timeseries.error}
@@ -248,7 +249,7 @@ function EventDetail({
 						<code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.9em]">track()</code>{" "}
 						to break it down.
 					</p>
-				) : values.isError ? (
+				) : failedWithoutData(values) ? (
 					<ErrorState
 						label="property values"
 						error={values.error}

@@ -15,6 +15,7 @@ import type { LocalLog } from "../lib/log-shape"
 import { formatUtcTitle } from "../lib/time"
 import { LogTime } from "./log-time"
 import { ErrorState, ListSkeleton } from "./view-states"
+import { failedWithoutData } from "../lib/query"
 
 type ContextScope = "service" | "instance"
 
@@ -67,7 +68,7 @@ export function LogContextPanel({
 			</div>
 			{context.isPending ? (
 				<ListSkeleton rows={8} variant="table" />
-			) : context.isError ? (
+			) : failedWithoutData(context) ? (
 				<ErrorState
 					label="surrounding logs"
 					error={context.error}

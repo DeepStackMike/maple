@@ -58,6 +58,7 @@ import { SignalEmptyState } from "../components/signal-empty-state"
 import { StackTrace } from "../components/stack-trace"
 import { RefreshButton, TimeRangeSelect, Toolbar, ToolbarStats } from "../components/toolbar"
 import { EmptyState, ErrorState, ListSkeleton } from "../components/view-states"
+import { failedWithoutData } from "../lib/query"
 
 /** What a `ServiceVersion` of `''` reads as: the exporter never set one. */
 const UNVERSIONED = "unversioned"
@@ -170,7 +171,7 @@ export function ErrorsView() {
 		</Toolbar>
 	)
 
-	const noDataAtAll = !byType.isPending && !byType.isError && rows.length === 0
+	const noDataAtAll = !byType.isPending && !failedWithoutData(byType) && rows.length === 0
 	const showSignalEmpty = noDataAtAll && !(activeFilterCount === 0 && traces.status === "present")
 
 	return (
@@ -191,7 +192,7 @@ export function ErrorsView() {
 						<ErrorState label="the project's services" error={scope.error} />
 					) : byType.isPending ? (
 						<ListSkeleton variant="card" rows={6} />
-					) : byType.isError ? (
+					) : failedWithoutData(byType) ? (
 						<ErrorState label="errors" error={byType.error} onRetry={() => byType.refetch()} />
 					) : rows.length === 0 ? (
 						<EmptyState
@@ -407,7 +408,7 @@ function ErrorTypeCard({
 							<div className="flex h-16 items-center justify-center">
 								<Spinner className="size-4" />
 							</div>
-						) : traces.isError ? (
+						) : failedWithoutData(traces) ? (
 							<ErrorState
 								label="traces"
 								error={traces.error}

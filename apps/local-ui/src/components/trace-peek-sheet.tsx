@@ -28,6 +28,7 @@ import { stepFor } from "../lib/trace-peek"
 import type { SpanPanelTab } from "./span-detail-panel"
 import { TraceAnatomy, TraceWaterfall, traceRootSpan } from "./trace-waterfall"
 import { ErrorState } from "./view-states"
+import { failedWithoutData } from "../lib/query"
 
 function isTextEntry(target: EventTarget | null): boolean {
 	if (!(target instanceof HTMLElement)) return false
@@ -208,7 +209,7 @@ export function TracePeekBody({
 		)
 	}
 
-	if (trace.isError) {
+	if (failedWithoutData(trace)) {
 		return (
 			<>
 				<PeekHeader title={<span className="font-mono">{traceId.slice(0, 8)}</span>}>

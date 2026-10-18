@@ -2,6 +2,7 @@ import * as React from "react"
 import type { ReactNode } from "react"
 import type { SpanNode } from "../../lib/types"
 import type { ColorByField } from "./color-by"
+import type { SpanEventsBySpanId } from "../../lib/span-event-markers"
 
 /** How many logs one span emitted, and how many of those were error level. */
 export interface SpanLogMarker {
@@ -30,6 +31,8 @@ interface TraceViewContextValue {
 	spanLogMarkers?: ReadonlyMap<string, SpanLogMarker>
 	/** Clicking a marker. Without a handler the marker is inert text, not a button. */
 	onOpenSpanLogs?: (span: SpanNode) => void
+	/** Loaded after the hierarchy; absent until then, and for views that never fetch them. */
+	spanEvents?: SpanEventsBySpanId
 }
 
 const TraceViewContext = React.createContext<TraceViewContextValue | null>(null)
@@ -48,6 +51,7 @@ export function TraceViewProvider({ children, ...value }: TraceViewContextValue 
 			value.setColorBy,
 			value.spanLogMarkers,
 			value.onOpenSpanLogs,
+			value.spanEvents,
 		],
 	)
 	return <TraceViewContext value={ctx}>{children}</TraceViewContext>

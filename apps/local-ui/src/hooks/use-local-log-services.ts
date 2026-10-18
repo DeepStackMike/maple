@@ -13,6 +13,7 @@ import {
 import type { TimeBounds } from "../lib/time"
 import { logAttributeQueryFilters } from "../lib/log-attribute-filters"
 import { attrsKey, type LogFilters } from "./use-local-logs"
+import { windowed } from "../lib/query-cache"
 
 /**
  * Distinct services that emitted logs in the selected window, under every log
@@ -47,7 +48,7 @@ export function compileLocalLogServicesQuery(
 
 export function useLocalLogServices(filters: LogFilters, bounds: TimeBounds, scope: ProjectScope) {
 	return useQuery<ReadonlyArray<FilterOption>>({
-		queryKey: [
+		...windowed([
 			"local",
 			"logs",
 			"services",
@@ -57,7 +58,7 @@ export function useLocalLogServices(filters: LogFilters, bounds: TimeBounds, sco
 			attrsKey(filters.attrs),
 			projectKey(scope),
 			boundsKey(bounds),
-		],
+		]),
 		staleTime: 60_000,
 		placeholderData: scopedPlaceholder(scope),
 		queryFn: scopedQueryFn(scope, async ({ signal }) => {

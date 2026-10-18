@@ -41,6 +41,7 @@ import {
 	type WorldShading,
 } from "../lib/world-map"
 import { ErrorState, ListSkeleton } from "./view-states"
+import { failedWithoutData } from "../lib/query"
 
 /**
  * The frame the outlines are projected into, in the SVG's own units — the map
@@ -129,7 +130,7 @@ export function VisitorMap({ countries, regions, pending }: VisitorMapProps) {
 	}, [])
 
 	if (pending || atlas.isPending) return <ListSkeleton rows={5} />
-	if (atlas.isError) {
+	if (failedWithoutData(atlas)) {
 		return <ErrorState label="the world map" error={atlas.error} onRetry={() => atlas.refetch()} />
 	}
 	if (countries.length === 0) return <Hint>{NO_LOCATION_HINT}</Hint>

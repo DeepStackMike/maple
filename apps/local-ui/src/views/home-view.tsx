@@ -54,6 +54,7 @@ import { useTimeWindow } from "../hooks/use-time-window"
 import { ConnectGuide } from "../components/connect-guide"
 import { RefreshButton, TimeRangeSelect, Toolbar } from "../components/toolbar"
 import { ErrorState, ListSkeleton } from "../components/view-states"
+import { failedWithoutData } from "../lib/query"
 
 /** Rows shown per list block — Home summarizes, the tab it links to enumerates. */
 const SERVICE_ROWS = 8
@@ -138,7 +139,7 @@ export function HomeView() {
 			<div className="min-h-0 flex-1 overflow-auto">
 				{settling ? (
 					<ListSkeleton rows={8} />
-				) : catalog.query.isError ? (
+				) : failedWithoutData(catalog.query) ? (
 					<ErrorState
 						label="the overview"
 						error={catalog.query.error}
@@ -191,7 +192,7 @@ export function HomeView() {
 						</section>
 
 						<Panel title="Throughput and errors" onSeeAll={() => open("/traces")}>
-							{timeseries.isError ? (
+							{failedWithoutData(timeseries) ? (
 								<ErrorState
 									label="the overview chart"
 									error={timeseries.error}
@@ -269,7 +270,7 @@ export function HomeView() {
 
 						<div className="grid gap-6 lg:grid-cols-2">
 							<Panel title="Recent errors" onSeeAll={() => open("/errors")}>
-								{errorsByType.isError ? (
+								{failedWithoutData(errorsByType) ? (
 									<ErrorState
 										label="errors"
 										error={errorsByType.error}
@@ -315,7 +316,7 @@ export function HomeView() {
 							</Panel>
 
 							<Panel title="Recent sessions" onSeeAll={() => open("/sessions")}>
-								{sessions.isError ? (
+								{failedWithoutData(sessions) ? (
 									<ErrorState
 										label="sessions"
 										error={sessions.error}

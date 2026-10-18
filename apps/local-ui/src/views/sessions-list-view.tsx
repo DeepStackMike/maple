@@ -64,6 +64,7 @@ import {
 } from "../components/toolbar"
 import { SignalEmptyState } from "../components/signal-empty-state"
 import { ErrorState, ListSkeleton } from "../components/view-states"
+import { failedWithoutData } from "../lib/query"
 
 /** Re-inject a selected value that the server-side facet branch excluded. */
 function withSelected(options: ReadonlyArray<FilterOption>, selected?: string): FilterOption[] {
@@ -144,7 +145,7 @@ export function SessionsListView() {
 	const scope = useNamespaceServices(timeWindow.bounds)
 	const facets = useLocalSessionFacets(filters, timeWindow.bounds, scope)
 	const list = useLocalSessions(filters, timeWindow.bounds, scope)
-	const { isPending, isError, error, refetch, fetchNextPage, hasNextPage, isFetchingNextPage } = list
+	const { isPending, error, refetch, fetchNextPage, hasNextPage, isFetchingNextPage } = list
 	const sessions = list.data?.pages.flat() ?? []
 
 	const setSingle = (key: string, vals: string[]) => setParams({ [key]: vals.at(-1) ?? null })
@@ -262,7 +263,7 @@ export function SessionsListView() {
 				<ErrorState label="the project's services" error={scope.error} />
 			) : isPending ? (
 				<ListSkeleton variant="card" rows={6} />
-			) : isError ? (
+			) : failedWithoutData(list) ? (
 				<ErrorState label="sessions" error={error} onRetry={() => refetch()} />
 			) : sessions.length === 0 ? (
 				<SignalEmptyState

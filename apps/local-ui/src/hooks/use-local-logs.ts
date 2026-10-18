@@ -23,6 +23,7 @@ import {
 	scopeServices,
 	type ProjectScope,
 } from "../lib/project-scope"
+import { windowed } from "../lib/query-cache"
 
 const PAGE_SIZE = 50
 
@@ -93,7 +94,7 @@ type LogCursor = NonNullable<CH.LogsListOpts["cursorIdentity"]>
 export function useLocalLogs(filters: LogFilters, bounds: TimeBounds, scope: ProjectScope) {
 	const options = logsQueryOptions(filters, scope.services)
 	return useInfiniteQuery({
-		queryKey: ["local", "logs", filters, projectKey(scope), boundsKey(bounds)],
+		...windowed(["local", "logs", filters, projectKey(scope), boundsKey(bounds)]),
 		initialPageParam: noCursor<LogCursor>(),
 		placeholderData: scopedPlaceholder(scope),
 		queryFn: scopedQueryFn<ReadonlyArray<LocalLog>, QueryKey, LogCursor | undefined>(
@@ -156,7 +157,7 @@ export function logHistogramBucketSeconds(bounds: TimeBounds): number {
 export function useLocalLogHistogram(filters: LogFilters, bounds: TimeBounds, scope: ProjectScope) {
 	const bucketSeconds = logHistogramBucketSeconds(bounds)
 	return useQuery<LogHistogram>({
-		queryKey: ["local", "logs", "histogram", filters, projectKey(scope), boundsKey(bounds)],
+		...windowed(["local", "logs", "histogram", filters, projectKey(scope), boundsKey(bounds)]),
 		placeholderData: scopedPlaceholder(scope),
 		queryFn: scopedQueryFn(scope, async ({ signal }) => {
 			const startMs = parseClickHouseDateTime(bounds.startTime)
@@ -187,7 +188,7 @@ export function useLocalLogHistogram(filters: LogFilters, bounds: TimeBounds, sc
  */
 export function useLocalLogSeverities(filters: LogFilters, bounds: TimeBounds, scope: ProjectScope) {
 	return useQuery<ReadonlyArray<FilterOption>>({
-		queryKey: [
+		...windowed([
 			"local",
 			"log-severities",
 			filters.service ?? null,
@@ -196,7 +197,7 @@ export function useLocalLogSeverities(filters: LogFilters, bounds: TimeBounds, s
 			attrsKey(filters.attrs),
 			projectKey(scope),
 			boundsKey(bounds),
-		],
+		]),
 		staleTime: 60_000,
 		placeholderData: scopedPlaceholder(scope),
 		queryFn: scopedQueryFn(scope, async ({ signal }) => {
@@ -238,7 +239,7 @@ export function useLocalLogSeverities(filters: LogFilters, bounds: TimeBounds, s
  */
 export function useLocalLogEnvironments(filters: LogFilters, bounds: TimeBounds, scope: ProjectScope) {
 	return useQuery<ReadonlyArray<FilterOption>>({
-		queryKey: [
+		...windowed([
 			"local",
 			"logs",
 			"environments",
@@ -248,7 +249,7 @@ export function useLocalLogEnvironments(filters: LogFilters, bounds: TimeBounds,
 			attrsKey(filters.attrs),
 			projectKey(scope),
 			boundsKey(bounds),
-		],
+		]),
 		staleTime: 60_000,
 		placeholderData: scopedPlaceholder(scope),
 		queryFn: scopedQueryFn(scope, async ({ signal }) => {

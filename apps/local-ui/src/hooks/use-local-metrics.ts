@@ -12,6 +12,7 @@ import {
 } from "../lib/time"
 import { isCounter, isMetricType } from "../lib/units"
 import { projectKey, scopedPlaceholder, scopedQueryFn, type ProjectScope } from "../lib/project-scope"
+import { windowed } from "../lib/query-cache"
 
 export interface MetricsFilters {
 	/** Exact service name match (applied client-side, so it never re-runs SQL). */
@@ -102,7 +103,7 @@ export function foldCatalogRows(rows: ReadonlyArray<CH.ListMetricsOutput>): Metr
  */
 export function useLocalMetricsList(filters: MetricsFilters, bounds: TimeBounds, scope: ProjectScope) {
 	const query = useQuery({
-		queryKey: [
+		...windowed([
 			"local",
 			"metrics",
 			"list",
@@ -110,7 +111,7 @@ export function useLocalMetricsList(filters: MetricsFilters, bounds: TimeBounds,
 			filters.search ?? null,
 			projectKey(scope),
 			boundsKey(bounds),
-		],
+		]),
 		placeholderData: scopedPlaceholder(scope),
 		queryFn: scopedQueryFn(scope, async ({ signal }): Promise<MetricsListData> => {
 			const compiled = CH.compile(
@@ -171,7 +172,7 @@ const PROJECT_SUMMARY_ROW_LIMIT = 10_000
  */
 export function useLocalMetricsSummary(service: string | undefined, bounds: TimeBounds, scope: ProjectScope) {
 	return useQuery({
-		queryKey: ["local", "metrics", "summary", service ?? null, projectKey(scope), boundsKey(bounds)],
+		...windowed(["local", "metrics", "summary", service ?? null, projectKey(scope), boundsKey(bounds)]),
 		placeholderData: scopedPlaceholder(scope),
 		queryFn: scopedQueryFn(scope, async ({ signal }): Promise<ReadonlyArray<MetricsSummaryRow>> => {
 			if (scope.services !== undefined) {
@@ -254,7 +255,7 @@ export function useLocalMetricsSparklines(
 	}, [entries])
 
 	return useQuery({
-		queryKey: [
+		...windowed([
 			"local",
 			"metrics",
 			"sparklines",
@@ -262,7 +263,7 @@ export function useLocalMetricsSparklines(
 			window.bucketSeconds,
 			projectKey(scope),
 			boundsKey(bounds),
-		],
+		]),
 		placeholderData: scopedPlaceholder(scope),
 		queryFn: scopedQueryFn(
 			scope,

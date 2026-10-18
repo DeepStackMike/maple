@@ -8,6 +8,7 @@ import { TraceFlowView } from "./flow-view"
 import { TraceViewProvider, type SpanLogMarker } from "./trace-view-context"
 import { DEFAULT_COLOR_BY, type ColorByField } from "./color-by"
 import type { SpanNode, Span } from "../../lib/types"
+import type { SpanEventsBySpanId } from "../../lib/span-event-markers"
 
 export type TraceView = "waterfall" | "timeline" | "flow"
 
@@ -34,6 +35,8 @@ interface TraceViewTabsProps {
 	/** Controlled active tab. Omit to let the tabs own it, starting on the timeline. */
 	view?: TraceView
 	onViewChange?: (view: TraceView) => void
+	/** Event markers for the timeline bars. */
+	spanEvents?: SpanEventsBySpanId
 }
 
 export function TraceViewTabs({
@@ -48,6 +51,7 @@ export function TraceViewTabs({
 	onOpenSpanLogs,
 	view,
 	onViewChange,
+	spanEvents,
 }: TraceViewTabsProps) {
 	// _spans is reserved for future Flow view implementation
 	const [colorBy, setColorBy] = React.useState<ColorByField>(DEFAULT_COLOR_BY)
@@ -64,6 +68,7 @@ export function TraceViewTabs({
 			setColorBy={setColorBy}
 			spanLogMarkers={spanLogMarkers}
 			onOpenSpanLogs={onOpenSpanLogs}
+			spanEvents={spanEvents}
 		>
 			<Tabs
 				{...(view === undefined ? { defaultValue: "timeline" } : { value: view })}

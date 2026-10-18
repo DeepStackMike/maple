@@ -335,7 +335,8 @@ What each kind of Worker keeps beside the module:
   generates its entry (`makeEffectVirtualEntry`) and exports only the bridge classes it
   created. A plain module is used verbatim, so the exports in `apps/sandbox/src/worker.ts`
   are what bind, and the declaration lives in `apps/sandbox/alchemy.run.ts`. The container
-  uses the `default` scheduling policy, the only one alchemy can declare; the image is built
+  uses the `default` (fleet) scheduling policy: `durable_object` drops `maxInstances` and the
+  per-stage `instanceType`, and switching needs a new application and DO namespace. The image is built
   from `apps/sandbox/image/Dockerfile`, which copies `sandbox-shim` from the
   `cloudflare/sandbox` tag matching the package version. It has no route and no
   hostname. maple-ai, whose agents run the sandbox tools, reaches it over a `SANDBOX`
@@ -496,6 +497,10 @@ services.
 - `profile.deploys.ingest` alone decides which stages get a fleet: prd **and PR previews**. Dev
   stages run the gateway through `cargo run` under `bun dev`. Do not reintroduce a global
   on/off env flag; say it in `profile.deploys.ingest`, where it is typed and unit-tested.
+- **The account security baseline** (`@maple/infra/security-baseline`) is prd-only because every
+  stage shares the account: `profile.deploys.awsSecurityBaseline` gives US prd the one
+  multi-region CloudTrail trail (S3 + CloudWatch Logs) plus Config and GuardDuty in us-east-1,
+  and EU prd Config and GuardDuty in eu-central-1. Its buckets and log group are retained.
 - **Every workflow that deploys the stack must set `AWS_ACCOUNT_ID`.** Without it alchemy's
   `CI=true` credential path self-deadlocks on an STS lookup with no log line (#378).
 - **The binary is compiled outside the image build** (`build-ingest-binary.yml`, native

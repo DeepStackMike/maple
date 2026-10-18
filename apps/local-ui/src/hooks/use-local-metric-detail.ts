@@ -1,5 +1,5 @@
 import { DateTime } from "effect"
-import { keepPreviousData, skipToken, useQuery } from "@tanstack/react-query"
+import { skipToken, useQuery } from "@tanstack/react-query"
 import { HARD_SERIES_LIMIT } from "@maple/ui/components/plot"
 import { CH } from "@maple/query-engine"
 import { boundsKey, executeLocalCompiledQuery, localParams } from "@/lib/query"
@@ -15,6 +15,7 @@ import {
 	type ProjectScope,
 	type ProjectServices,
 } from "../lib/project-scope"
+import { windowed } from "../lib/query-cache"
 
 /**
  * The header scope a metric's own page runs under: the project (as its
@@ -46,7 +47,7 @@ export function metricScopeFilter(scope: MetricScope): MetricScopeFilter {
  */
 export function useLocalMetricEntry(metricName: string, bounds: TimeBounds, project: ProjectScope) {
 	return useQuery({
-		queryKey: ["local", "metrics", "entry", metricName, projectKey(project), boundsKey(bounds)],
+		...windowed(["local", "metrics", "entry", metricName, projectKey(project), boundsKey(bounds)]),
 		placeholderData: scopedPlaceholder(project),
 		queryFn: scopedQueryFn(project, async ({ signal }): Promise<MetricEntry | null> => {
 			const compiled = CH.compile(
@@ -193,7 +194,7 @@ export function useLocalMetricTimeseries(
 	// ever missing, so the merge only renames; keep upstream's "value" fallback.
 	const missingLabel = options.groupBy === GROUP_BY_SERVICE ? "value" : "(none)"
 	return useQuery({
-		queryKey: [
+		...windowed([
 			"local",
 			"metrics",
 			"timeseries",
@@ -201,11 +202,11 @@ export function useLocalMetricTimeseries(
 			entry?.metricType,
 			entry?.isMonotonic,
 			window.bucketSeconds,
-			boundsKey(bounds),
 			options,
 			projectKey(scope.project),
 			scope.environment ?? null,
-		],
+			boundsKey(bounds),
+		]),
 		placeholderData: scopedPlaceholder(scope.project),
 		queryFn: scopedQueryFn(
 			scope.project,
@@ -333,8 +334,7 @@ export interface MetricAttributeFacet {
 export function useLocalMetricAttributeKeys(entry: MetricEntry | null | undefined, bounds: TimeBounds) {
 	const metricType = entry?.metricType
 	return useQuery({
-		queryKey: ["local", "metrics", "attribute-keys", entry?.metricName, metricType, boundsKey(bounds)],
-		placeholderData: keepPreviousData,
+		...windowed(["local", "metrics", "attribute-keys", entry?.metricName, metricType, boundsKey(bounds)]),
 		queryFn:
 			entry && metricType && isMetricType(metricType)
 				? async ({ signal }): Promise<ReadonlyArray<MetricAttributeFacet>> => {
@@ -359,7 +359,7 @@ export function useLocalMetricAttributeValues(
 ) {
 	const metricType = entry?.metricType
 	return useQuery({
-		queryKey: [
+		...windowed([
 			"local",
 			"metrics",
 			"attribute-values",
@@ -367,8 +367,7 @@ export function useLocalMetricAttributeValues(
 			metricType,
 			attributeKey,
 			boundsKey(bounds),
-		],
-		placeholderData: keepPreviousData,
+		]),
 		queryFn:
 			entry && metricType && isMetricType(metricType) && attributeKey
 				? async ({ signal }): Promise<ReadonlyArray<MetricAttributeFacet>> => {
