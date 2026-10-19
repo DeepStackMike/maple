@@ -37,7 +37,8 @@ import {
 	ProductEvents,
 	SessionReplays,
 	SessionReplayEvents,
-	TraceDetailSpans,
+	Traces,
+	inTraces,
 	orgIdParam,
 	utcSecondsParam,
 } from "../tables"
@@ -1232,14 +1233,9 @@ export function sessionsForTraceQuery(opts: SessionsForTraceOpts) {
 //
 // One row per TraceId, used to draw a single bar per trace on the session
 // replay timeline (the expandable span lanes fetch full spans on demand via
-// spanHierarchyQuery). Reads `trace_detail_spans`, whose sort key
-// (OrgId, TraceId, SpanId) makes `TraceId IN (...)` a cheap prefix lookup
-// WITHIN a part. But the table is PARTITION BY toDate(Timestamp) with a 30-day
-// TTL, so without a Timestamp predicate ClickHouse reads the primary index of
-// every daily partition to find these traces — pure scan fan-out (observed at
-// 7s+ for a handful of matching spans on a high-volume org). The optional
-// startTime/endTime bounds (the session's time window — its correlated traces
-// fired within it) prune to the 1-2 partitions the session spans. The root
+// spanHierarchyQuery). Reads `traces` seeked through `trace_index`; the
+// optional startTime/endTime bounds (the session's window, which its correlated
+// traces fired within) also prune daily partitions. The root
 // span (ParentSpanId = '') supplies the trace's name/service/duration, with a
 // fallback for traces whose root span wasn't ingested.
 
@@ -1269,7 +1265,7 @@ export interface SessionTraceSummaryOutput {
 export function sessionTraceSummariesQuery(opts: SessionTraceSummariesOpts) {
 	const limit = opts.limit ?? 200
 
-	return from(TraceDetailSpans)
+	return from(Traces)
 		.select(($) => {
 			const isRoot = $.ParentSpanId.eq("")
 			// Root span duration is the canonical "trace duration" elsewhere in the
@@ -1297,7 +1293,7 @@ export function sessionTraceSummariesQuery(opts: SessionTraceSummariesOpts) {
 		})
 		.where(($) => [
 			$.OrgId.eq(orgIdParam),
-			$.TraceId.in_(...opts.traceIds),
+			inTraces((id) => id.in_(...opts.traceIds)),
 			CH.when(opts.startTime, (v: DateTime.Utc) => $.Timestamp.gte(v)),
 			CH.when(opts.endTime, (v: DateTime.Utc) => $.Timestamp.lte(v)),
 		])
@@ -1330,11 +1326,10 @@ export function sessionTraceSummariesQuery(opts: SessionTraceSummariesOpts) {
 // `groupUniqArray(TraceId)`: a client that only knows trace ids cannot tell
 // which of a session's forty requests a given transcript row was.
 //
-// Reads `trace_detail_spans` — the same projection `sessionTraceSummariesQuery`
-// uses, carrying every span of every trace (its MV is an unfiltered re-sort of
-// `traces`). There is no index on a map key, so the predicate is a scan either
-// way; the startTime/endTime bounds are what keeps it to the one or two daily
-// partitions the session spans.
+// Reads `traces` directly: the session id is an attribute, not a trace id, so
+// there is no `trace_index` seek to make. There is no index on a map key, so the
+// predicate is a scan either way; the startTime/endTime bounds are what keeps it
+// to the one or two daily partitions the session spans.
 
 export interface SessionSpansOpts {
 	/** Optional session time window — prunes daily partitions. Omit to scan all. */
@@ -1373,7 +1368,7 @@ export interface SessionSpanOutput {
 }
 
 export function sessionSpansQuery(opts: SessionSpansOpts = {}) {
-	return from(TraceDetailSpans)
+	return from(Traces)
 		.select(($) => {
 			const attr = (key: string) => $.SpanAttributes.get(key)
 			return {

@@ -73,7 +73,7 @@ interface SpanDetailPanelProps {
 /**
  * The span exception, read off the attribute map.
  *
- * `spanDetailQuery` reads `trace_detail_spans`, which carries no event columns
+ * `spanDetailQuery` reads `traces` without its event columns
  * — the `exception` span event only survives as the `error_events` row the MV
  * materializes from it. What the panel *does* have is the attribute map, and
  * our own SDKs (and plenty of OTel instrumentations) set `exception.type` and
