@@ -607,7 +607,7 @@ describe("sessionResourceAttributeBreakdownQuery", () => {
 describe("sessionSpansQuery", () => {
 	it("selects spans by the session.id attribute, scoped to the org", () => {
 		const { sql } = compileUnsafe(sessionSpansQuery(), sessionParams)
-		expect(sql).toContain("FROM trace_detail_spans")
+		expect(sql).toContain("FROM traces")
 		expect(sql).toContain("OrgId = 'org_1'")
 		expect(sql).toContain("SpanAttributes['session.id'] = 'sess_1'")
 	})
@@ -632,10 +632,10 @@ describe("sessionSpansQuery", () => {
 	it("coalesces both spellings of the http method and url", () => {
 		const { sql } = compileUnsafe(sessionSpansQuery(), sessionParams)
 		expect(sql).toContain(
-			"coalesce(nullIf(trace_detail_spans.SpanAttributes['http.request.method'], ''), trace_detail_spans.SpanAttributes['http.method']) AS httpMethod",
+			"coalesce(nullIf(traces.SpanAttributes['http.request.method'], ''), traces.SpanAttributes['http.method']) AS httpMethod",
 		)
 		expect(sql).toContain(
-			"coalesce(nullIf(trace_detail_spans.SpanAttributes['url.full'], ''), trace_detail_spans.SpanAttributes['http.url']) AS httpUrl",
+			"coalesce(nullIf(traces.SpanAttributes['url.full'], ''), traces.SpanAttributes['http.url']) AS httpUrl",
 		)
 	})
 
@@ -643,7 +643,7 @@ describe("sessionSpansQuery", () => {
 	// nearest ~256ns, and the catalog sweep rejects an unwrapped 64-bit integer.
 	it("returns the span start as a toString-wrapped nanosecond epoch", () => {
 		const { sql } = compileUnsafe(sessionSpansQuery(), sessionParams)
-		expect(sql).toContain("toString(toUnixTimestamp64Nano(trace_detail_spans.Timestamp)) AS startTimeNs")
+		expect(sql).toContain("toString(toUnixTimestamp64Nano(traces.Timestamp)) AS startTimeNs")
 	})
 
 	it("orders by start time, tie-broken by span id so the page order is stable", () => {
