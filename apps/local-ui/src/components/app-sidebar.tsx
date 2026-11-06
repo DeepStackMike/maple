@@ -33,6 +33,7 @@ import {
 } from "@maple/ui/components/ui/sidebar"
 import { hrefFor } from "../lib/router"
 import { ConnectButton } from "./connect-button"
+import { DeployedVersion } from "./deployed-version"
 import { IngestStatus } from "./ingest-status"
 import { LocalLockup } from "./local-lockup"
 
@@ -132,6 +133,7 @@ export function AppSidebar({
 			</SidebarContent>
 			<SidebarFooter>
 				<IngestStatus />
+				<DeployedVersion />
 				<div className="flex items-center gap-1 group-data-[collapsible=icon]:flex-col">
 					<ConnectButton />
 					<SidebarTrigger className="hidden size-8 md:inline-flex" />

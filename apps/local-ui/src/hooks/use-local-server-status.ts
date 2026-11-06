@@ -27,6 +27,8 @@ export interface LocalServerState {
 	readonly lastIngestAtMs: number | null
 	/** True for a binary without `/local/status`, where the time above is the newest event time. */
 	readonly legacy: boolean
+	/** The server's own version from `/local/status` (`0.3.4`); null until a probe reads it, and for legacy binaries. */
+	readonly version: string | null
 	/** The refusal, for a 4xx/5xx answer. */
 	readonly rejection: { readonly status: number; readonly detail: string } | null
 	/** Epoch ms of this probe; changes every poll so relative labels stay fresh. */
@@ -66,6 +68,7 @@ async function probe({ client, signal }: QueryFunctionContext<typeof STATUS_KEY>
 		misses: 0,
 		lastIngestAtMs: previous?.lastIngestAtMs ?? null,
 		legacy: previous?.legacy ?? false,
+		version: previous?.version ?? null,
 		rejection: null,
 		checkedAtMs: Date.now(),
 		hasConnected: previous?.hasConnected ?? false,
@@ -77,6 +80,7 @@ async function probe({ client, signal }: QueryFunctionContext<typeof STATUS_KEY>
 				reachability: "connected",
 				lastIngestAtMs: result.status.lastIngestAtMs,
 				legacy: false,
+				version: result.status.version,
 				hasConnected: true,
 			}
 		case "Legacy": {

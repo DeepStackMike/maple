@@ -9,6 +9,7 @@ const state = (overrides: Partial<LocalServerState>): LocalServerState => ({
 	misses: 0,
 	lastIngestAtMs: null,
 	legacy: false,
+	version: null,
 	rejection: null,
 	checkedAtMs: NOW,
 	hasConnected: true,
