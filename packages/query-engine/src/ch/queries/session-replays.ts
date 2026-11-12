@@ -19,7 +19,7 @@
 import type { DateTime } from "effect"
 import * as CH from "@maple-dev/effect-orm/expr"
 import { resourceEnvLabel, servicesIn } from "./environment"
-import { excludeInternalSessions } from "./internal-traffic"
+import { internalTrafficCondition, type InternalTrafficMode } from "./internal-traffic"
 import { compileFnCallCond } from "@maple-dev/effect-orm/clickhouse"
 import * as T from "@maple-dev/effect-orm/clickhouse"
 import { inSubquery, param } from "@maple-dev/effect-orm/clickhouse"
@@ -186,10 +186,10 @@ export interface SessionReplaysListOpts {
 	 */
 	environment?: string
 	/**
-	 * Drop the owner's own sessions: any session a version of which the ingest
-	 * sidecar tagged `harbr.traffic=internal` (see internal-traffic.ts).
+	 * Hide the owner's own sessions, or show only them: a session is internal when
+	 * any version of it was tagged `harbr.traffic=internal` (see internal-traffic.ts).
 	 */
-	hideInternal?: boolean
+	internalTraffic?: InternalTrafficMode
 	/** Exact page path (no query/hash) the session navigated to at any point. */
 	pagePath?: string
 	/** Only sessions carrying every one of these tags (see session-tags.ts). */
@@ -341,7 +341,7 @@ function sessionReplaysListBase(opts: SessionReplaysListOpts) {
 			CH.when(opts.serviceName, (v: string) => $.ServiceName.eq(v)),
 			servicesIn($.ServiceName, opts.services),
 			CH.when(opts.environment, (v: string) => resourceEnvLabel($.ResourceAttributes).eq(v)),
-			excludeInternalSessions($.SessionId, opts.hideInternal),
+			internalTrafficCondition($.SessionId, opts.internalTraffic),
 			CH.when(opts.browser, (v: string) => $.BrowserName.eq(v)),
 			CH.when(opts.country, (v: string) => $.Country.eq(v)),
 			CH.when(opts.deviceType, (v: string) => $.DeviceType.eq(v)),
@@ -566,10 +566,10 @@ export interface SessionReplaysFacetsOpts {
 	 */
 	environment?: string
 	/**
-	 * Drop the owner's own sessions: any session a version of which the ingest
-	 * sidecar tagged `harbr.traffic=internal` (see internal-traffic.ts).
+	 * Hide the owner's own sessions, or show only them: a session is internal when
+	 * any version of it was tagged `harbr.traffic=internal` (see internal-traffic.ts).
 	 */
-	hideInternal?: boolean
+	internalTraffic?: InternalTrafficMode
 	/**
 	 * Exact match on the persistent visitor id, mirroring the list query.
 	 *
@@ -605,7 +605,7 @@ export function sessionReplaysFacetsQuery(
 		// No facet branch of its own — the environment is a page-wide scope, so it
 		// narrows every dimension's counts rather than listing itself.
 		CH.when(opts.environment, (v: string) => resourceEnvLabel($.ResourceAttributes).eq(v)),
-		excludeInternalSessions($.SessionId, opts.hideInternal),
+		internalTrafficCondition($.SessionId, opts.internalTraffic),
 		exclude === "browser" ? undefined : CH.when(opts.browser, (v: string) => $.BrowserName.eq(v)),
 		exclude === "country" ? undefined : CH.when(opts.country, (v: string) => $.Country.eq(v)),
 		exclude === "device" ? undefined : CH.when(opts.deviceType, (v: string) => $.DeviceType.eq(v)),
@@ -790,7 +790,7 @@ export function sessionReplaysFacetsQuery(
 				// be repeated here — without it the "Has errors" count would span every
 				// deployment while the facets beside it named one.
 				CH.when(opts.environment, (v: string) => resourceEnvLabel($.ResourceAttributes).eq(v)),
-				excludeInternalSessions($.SessionId, opts.hideInternal),
+				internalTrafficCondition($.SessionId, opts.internalTraffic),
 				CH.when(opts.browser, (v: string) => $.BrowserName.eq(v)),
 				CH.when(opts.country, (v: string) => $.Country.eq(v)),
 				CH.when(opts.deviceType, (v: string) => $.DeviceType.eq(v)),
@@ -894,10 +894,10 @@ export interface SessionResourceAttributeBreakdownOpts {
 	 */
 	readonly environment?: string
 	/**
-	 * Drop the owner's own sessions: any session a version of which the ingest
-	 * sidecar tagged `harbr.traffic=internal` (see internal-traffic.ts).
+	 * Hide the owner's own sessions, or show only them: a session is internal when
+	 * any version of it was tagged `harbr.traffic=internal` (see internal-traffic.ts).
 	 */
-	readonly hideInternal?: boolean
+	readonly internalTraffic?: InternalTrafficMode
 	/** The header's project, as its services; an empty list matches nothing. */
 	readonly services?: readonly string[]
 }
@@ -926,7 +926,7 @@ export function sessionResourceAttributeBreakdownQuery(
 		$.StartTime.gte(param.dateTime("startTime")),
 		$.StartTime.lte(param.dateTime("endTime")),
 		CH.when(opts.environment, (v: string) => resourceEnvLabel($.ResourceAttributes).eq(v)),
-		excludeInternalSessions($.SessionId, opts.hideInternal),
+		internalTrafficCondition($.SessionId, opts.internalTraffic),
 		servicesIn($.ServiceName, opts.services),
 	]
 

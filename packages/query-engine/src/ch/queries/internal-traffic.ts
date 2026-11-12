@@ -11,9 +11,10 @@
 // the address had not been learned yet, or the user not yet identified, while a
 // later one is `internal`. A row-level `!= 'internal'` would therefore keep the
 // early versions and surface the session with stale fields. So the filter is a
-// semi-join instead: drop every session that ANY version marked internal within
-// the window. "Ever internal" is the right reading too: the classifier only ever
-// learns that a session is the owner's, it never learns that one is not.
+// semi-join instead: a session is internal when ANY version marked it so within
+// the window, and `hide` / `only` drop or keep exactly those. "Ever internal"
+// is the right reading too: the classifier only ever learns that a session is
+// the owner's, it never learns that one is not.
 
 import * as CH from "@maple-dev/effect-orm/expr"
 import { from, inSubquery, param } from "@maple-dev/effect-orm/clickhouse"
@@ -37,13 +38,21 @@ function internalSessionsSubquery() {
 }
 
 /**
- * The condition that drops internal sessions, or `undefined` when they are
- * wanted. Matches on `SessionId`, so it applies to any table that carries one:
- * `session_replays`, `session_events`, `product_events`.
+ * Which side of the owner/visitor split a page shows: `hide` drops internal
+ * sessions, `only` keeps nothing else. Absent means both.
  */
-export function excludeInternalSessions(
+export type InternalTrafficMode = "hide" | "only"
+
+/**
+ * The condition for a mode, or `undefined` for all traffic. Matches on
+ * `SessionId`, so it applies to any table that carries one: `session_replays`,
+ * `session_events`, `product_events`.
+ */
+export function internalTrafficCondition(
 	sessionId: CH.Expr<string>,
-	hideInternal: boolean | undefined,
+	mode: InternalTrafficMode | undefined,
 ): CH.Condition | undefined {
-	return hideInternal ? CH.not(inSubquery(sessionId, internalSessionsSubquery())) : undefined
+	if (mode === undefined) return undefined
+	const internal = inSubquery(sessionId, internalSessionsSubquery())
+	return mode === "only" ? internal : CH.not(internal)
 }

@@ -43,8 +43,8 @@ import { ANALYTICS_SECTIONS, resolveAnalyticsSection } from "../lib/web-analytic
 import { FunnelPanel } from "../components/funnel-panel"
 import { ProductEventsPanel } from "../components/product-events-panel"
 import { WebAnalyticsPanel, parseUtmDimension } from "../components/web-analytics-panel"
-import { HideInternalToggle, RefreshButton, TimeRangeSelect, Toolbar, ToolbarStat, ToolbarStats } from "../components/toolbar"
-import { useHideInternal } from "../hooks/use-hide-internal"
+import { InternalTrafficSelect, RefreshButton, TimeRangeSelect, Toolbar, ToolbarStat, ToolbarStats } from "../components/toolbar"
+import { useInternalTraffic } from "../hooks/use-internal-traffic"
 import { EmptyState, ErrorState, ListSkeleton } from "../components/view-states"
 import { failedWithoutData } from "../lib/query"
 
@@ -66,10 +66,10 @@ export function AnalyticsView() {
 
 	// Shared by both sections, and rendered by each so the stats between the
 	// label and these controls can be the section's own.
-	const [hideInternal, setHideInternal] = useHideInternal()
+	const [internalTraffic, setInternalTraffic] = useInternalTraffic()
 	const controls = (
 		<>
-			<HideInternalToggle hidden={hideInternal} onChange={setHideInternal} />
+			<InternalTrafficSelect value={internalTraffic} onChange={setInternalTraffic} />
 			<RefreshButton />
 			<TimeRangeSelect value={range} onChange={(next) => setParams({ range: next })} />
 		</>

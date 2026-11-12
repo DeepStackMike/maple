@@ -15,7 +15,7 @@ import { projectKey, scopedPlaceholder, scopedQueryFn, type ProjectScope } from 
 import { boundsForRange, warehouseString } from "../lib/time"
 import type { OverviewPoint } from "../lib/home-overview"
 import { bucketSecondsForRange } from "./use-local-metrics"
-import { useHideInternal } from "./use-hide-internal"
+import { useInternalTrafficFilter } from "./use-internal-traffic"
 
 /**
  * Org-wide throughput and error rate per bucket, split by service.
@@ -107,14 +107,14 @@ export function useLocalSessionsSummary(
 	environment: string | undefined,
 	project: ProjectScope,
 ) {
-	const [hideInternal] = useHideInternal()
+	const internalTraffic = useInternalTrafficFilter()
 	return useQuery({
-		queryKey: ["local", "home", "sessions-summary", range, environment, hideInternal, projectKey(project)],
+		queryKey: ["local", "home", "sessions-summary", range, environment, internalTraffic, projectKey(project)],
 		placeholderData: scopedPlaceholder(project),
 		queryFn: scopedQueryFn(project, async ({ signal }): Promise<CH.WebAnalyticsSummaryOutput | null> => {
 			const { startTime, endTime } = boundsForRange(range)
 			const row = await executeLocalCompiledFirstRow(
-				CH.compile(CH.webAnalyticsSummaryQuery({ environment, hideInternal, services: project.services }), {
+				CH.compile(CH.webAnalyticsSummaryQuery({ environment, internalTraffic, services: project.services }), {
 					orgId: LOCAL_ORG_ID,
 					startTime,
 					endTime,

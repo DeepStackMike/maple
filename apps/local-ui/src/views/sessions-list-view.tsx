@@ -17,7 +17,7 @@ import { cn } from "@maple/ui/lib/utils"
 import { useLocalSessions, useLocalSessionFacets, type SessionListRow } from "../hooks/use-local-sessions"
 import { useLiveClock } from "../hooks/use-live-clock"
 import { useEnvironment } from "../hooks/use-environment"
-import { useHideInternal } from "../hooks/use-hide-internal"
+import { useInternalTraffic } from "../hooks/use-internal-traffic"
 import { useNamespaceServices } from "../hooks/use-namespace-services"
 import { useRange } from "../hooks/use-range"
 import { useTimeWindow } from "../hooks/use-time-window"
@@ -56,7 +56,7 @@ import {
 } from "@maple/ui/components/filters/filter-sidebar"
 import { PageShell } from "../components/page-shell"
 import {
-	HideInternalToggle,
+	InternalTrafficSelect,
 	Toolbar,
 	ToolbarSearch,
 	ToolbarStat,
@@ -131,7 +131,7 @@ export function SessionsListView() {
 	// it, so a header reading `production` sat above a list showing every
 	// deployment — `unknown` included.
 	const [env] = useEnvironment()
-	const [hideInternal, setHideInternal] = useHideInternal()
+	const [internalTraffic, setInternalTraffic] = useInternalTraffic()
 
 	const filters = {
 		service,
@@ -254,7 +254,7 @@ export function SessionsListView() {
 					<ToolbarStat value={sessions.length} label={hasNextPage ? "sessions+" : "sessions"} />
 				)}
 				<ToolbarStat value={facetData?.live ?? 0} label="live" dot />
-				<HideInternalToggle hidden={hideInternal} onChange={setHideInternal} />
+				<InternalTrafficSelect value={internalTraffic} onChange={setInternalTraffic} />
 				<RefreshButton advance={timeWindow.advance} since={list.dataUpdatedAt} />
 				<TimeRangeSelect value={range} onChange={setRange} />
 			</ToolbarStats>

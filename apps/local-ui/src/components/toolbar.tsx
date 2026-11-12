@@ -6,6 +6,7 @@ import { useCallback, useId, useRef, useState } from "react"
 import { useQueryClient } from "@tanstack/react-query"
 import { Checkbox } from "@maple/ui/components/ui/checkbox"
 import { Label } from "@maple/ui/components/ui/label"
+import { NativeSelect, NativeSelectOption } from "@maple/ui/components/ui/native-select"
 import {
 	RefreshButton as SharedRefreshButton,
 	TimeRangeSelect as SharedTimeRangeSelect,
@@ -21,6 +22,7 @@ import {
 import { CustomRangePanel } from "./custom-range-popover"
 import { cn } from "@maple/ui/lib/utils"
 import { useNewDataSince } from "../hooks/use-local-server-status"
+import { INTERNAL_TRAFFIC_MODES, type InternalTrafficMode } from "../lib/internal-traffic"
 
 export { Toolbar, ToolbarSearch, ToolbarStat, ToolbarStats } from "@maple/ui/components/toolbar"
 
@@ -219,27 +221,36 @@ const HIDE_HEALTH_CHECKS_HINT =
 	"Hides traces whose route looks like a liveness probe — /health, /ready, /live, /ping, /api/telemetry"
 
 /**
- * Hide the owner's own sessions (`harbr.traffic=internal`), as a toolbar
- * checkbox beside the time range for the same reason as "Hide health checks":
- * it is a standing decision about what the page is for, not a facet.
+ * Which sessions a page shows: everyone but the owner (default), everyone, or
+ * only the owner's (`harbr.traffic=internal`). A toolbar control beside the time
+ * range for the same reason as "Hide health checks": it is a standing decision
+ * about what the page is for, not a facet. Three states, so a select rather
+ * than a checkbox; each option names the view it gives.
  */
-export function HideInternalToggle({
-	hidden,
+export function InternalTrafficSelect({
+	value,
 	onChange,
 }: {
-	hidden: boolean
-	onChange: (hidden: boolean) => void
+	value: InternalTrafficMode
+	onChange: (mode: InternalTrafficMode) => void
 }) {
-	const id = useId()
 	return (
-		<span className="flex items-center gap-1.5" title={HIDE_INTERNAL_HINT}>
-			<Checkbox id={id} checked={hidden} onCheckedChange={(val) => onChange(val === true)} />
-			<Label htmlFor={id} className="cursor-pointer whitespace-nowrap text-xs font-normal">
-				Hide internal
-			</Label>
+		<span title={INTERNAL_TRAFFIC_HINT}>
+			<NativeSelect
+				size="sm"
+				aria-label="Internal traffic"
+				value={value}
+				onChange={(e) => onChange(e.target.value as InternalTrafficMode)}
+			>
+				{INTERNAL_TRAFFIC_MODES.map((mode) => (
+					<NativeSelectOption key={mode.key} value={mode.key}>
+						{mode.label}
+					</NativeSelectOption>
+				))}
+			</NativeSelect>
 		</span>
 	)
 }
 
-const HIDE_INTERNAL_HINT =
-	"Hides your own sessions: tagged internal by the ingest sidecar because you were signed in, flagged the device, or browsed from an address one of those used recently"
+const INTERNAL_TRAFFIC_HINT =
+	"Internal sessions are your own: tagged by the ingest sidecar because you were signed in, flagged the device, or browsed from an address one of those used recently"

@@ -8,7 +8,7 @@ import { projectKey, scopedPlaceholder, scopedQueryFn, type ProjectScope } from 
 import { sessionTagsOf, type SessionTag } from "../lib/session-tags"
 import type { TimeBounds } from "../lib/time"
 import { windowed } from "../lib/query-cache"
-import { useHideInternal } from "./use-hide-internal"
+import { useInternalTrafficFilter } from "./use-internal-traffic"
 
 const PAGE_SIZE = 50
 
@@ -59,11 +59,11 @@ const tagsOrUndefined = (tags: ReadonlyArray<SessionTag> | undefined) =>
  * nothing, and an empty project matches nothing in SQL.
  */
 export function useLocalSessions(filters: SessionFilters, bounds: TimeBounds, project: ProjectScope) {
-	// The page-wide "Hide internal" choice, read here so every list (Sessions,
+	// The page-wide internal-traffic choice, read here so every list (Sessions,
 	// Home's recent sessions) honours it without each caller passing it on.
-	const [hideInternal] = useHideInternal()
+	const internalTraffic = useInternalTrafficFilter()
 	return useInfiniteQuery({
-		...windowed(["local", "sessions", filters, hideInternal, projectKey(project), boundsKey(bounds)]),
+		...windowed(["local", "sessions", filters, internalTraffic, projectKey(project), boundsKey(bounds)]),
 		initialPageParam: noCursor<SessionCursor>(),
 		placeholderData: scopedPlaceholder(project),
 		queryFn: scopedQueryFn<ReadonlyArray<SessionListRow>, QueryKey, SessionCursor | undefined>(
@@ -79,7 +79,7 @@ export function useLocalSessions(filters: SessionFilters, bounds: TimeBounds, pr
 						deviceType: filters.device,
 						country: filters.country,
 						environment: filters.env,
-						hideInternal,
+						internalTraffic,
 						hasErrors: filters.errorsOnly,
 						search: filters.search,
 						pagePath: filters.pagePath,
@@ -139,9 +139,9 @@ const EMPTY_FACETS: SessionFacets = {
  */
 export function useLocalSessionFacets(filters: SessionFilters, bounds: TimeBounds, project: ProjectScope) {
 	const placeholder = scopedPlaceholder(project)
-	const [hideInternal] = useHideInternal()
+	const internalTraffic = useInternalTrafficFilter()
 	return useQuery<SessionFacets>({
-		...windowed(["local", "session-facets", filters, hideInternal, projectKey(project), boundsKey(bounds)]),
+		...windowed(["local", "session-facets", filters, internalTraffic, projectKey(project), boundsKey(bounds)]),
 		staleTime: 30_000,
 		queryFn: scopedQueryFn(project, async ({ signal }) => {
 			const compiled = CH.compileUnion(
@@ -154,7 +154,7 @@ export function useLocalSessionFacets(filters: SessionFilters, bounds: TimeBound
 					deviceType: filters.device,
 					country: filters.country,
 					environment: filters.env,
-					hideInternal,
+					internalTraffic,
 					hasErrors: filters.errorsOnly,
 					search: filters.search,
 					pagePath: filters.pagePath,

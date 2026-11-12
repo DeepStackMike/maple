@@ -15,7 +15,7 @@ import type { ColumnAccessor, CHQuery, CHUnionQuery } from "@maple-dev/effect-or
 import { SessionReplays, SessionEvents, ProductEvents, orgIdParam, utcSecondsParam } from "../tables"
 import { isBotCond } from "../user-agent"
 import { resourceEnvLabel, servicesIn } from "./environment"
-import { excludeInternalSessions } from "./internal-traffic"
+import { internalTrafficCondition, type InternalTrafficMode } from "./internal-traffic"
 import type { FacetOutput } from "./query-helpers"
 import { SESSION_LIVE_WINDOW_SECONDS, WEB_ANALYTICS_UNSET } from "@maple/domain/query-engine"
 
@@ -98,12 +98,12 @@ export interface WebAnalyticsFilters {
 	 */
 	readonly environment?: string
 	/**
-	 * Drop the owner's own sessions (`harbr.traffic=internal`, see
+	 * Hide the owner's own sessions or show only them (`harbr.traffic=internal`, see
 	 * internal-traffic.ts). A page-wide scope like `environment`: no `exclude`
 	 * arm, and it reaches `session_events` / `product_events` through the same
 	 * `session_replays` semi-join.
 	 */
-	readonly hideInternal?: boolean
+	readonly internalTraffic?: InternalTrafficMode
 	/**
 	 * Sessions recorded by any of these services — the header's project, as the
 	 * list of services that belong to it (see `namespaceServicesQuery`). Like
@@ -406,7 +406,7 @@ export function replaysWhere(
 		// offers to slice.
 		CH.when(filters.environment, (v: string) => resourceEnvLabel($.ResourceAttributes).eq(v)),
 		servicesIn($.ServiceName, filters.services),
-		excludeInternalSessions($.SessionId, filters.hideInternal),
+		internalTrafficCondition($.SessionId, filters.internalTraffic),
 		trafficCondition($, filters),
 		eventSemiJoin($.SessionId, filters, exclude),
 	]
@@ -433,7 +433,7 @@ export function needsSessionSemiJoin(filters: WebAnalyticsFilters): boolean {
 		filters.environment ||
 		// Same reason as `environment`: the tag lives on `session_replays`, so
 		// page views and product events reach it only through this semi-join.
-		filters.hideInternal ||
+		filters.internalTraffic !== undefined ||
 		// `traffic` is a `session_replays` predicate like the rest: without it here,
 		// filtering to humans would narrow sessions and visitors while page views —
 		// read from the event source — kept counting crawler navigations.
