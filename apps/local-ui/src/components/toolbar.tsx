@@ -217,3 +217,29 @@ export function HideHealthChecksToggle({
 
 const HIDE_HEALTH_CHECKS_HINT =
 	"Hides traces whose route looks like a liveness probe — /health, /ready, /live, /ping, /api/telemetry"
+
+/**
+ * Hide the owner's own sessions (`harbr.traffic=internal`), as a toolbar
+ * checkbox beside the time range for the same reason as "Hide health checks":
+ * it is a standing decision about what the page is for, not a facet.
+ */
+export function HideInternalToggle({
+	hidden,
+	onChange,
+}: {
+	hidden: boolean
+	onChange: (hidden: boolean) => void
+}) {
+	const id = useId()
+	return (
+		<span className="flex items-center gap-1.5" title={HIDE_INTERNAL_HINT}>
+			<Checkbox id={id} checked={hidden} onCheckedChange={(val) => onChange(val === true)} />
+			<Label htmlFor={id} className="cursor-pointer whitespace-nowrap text-xs font-normal">
+				Hide internal
+			</Label>
+		</span>
+	)
+}
+
+const HIDE_INTERNAL_HINT =
+	"Hides your own sessions: tagged internal by the ingest sidecar because you were signed in, flagged the device, or browsed from an address one of those used recently"

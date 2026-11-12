@@ -718,6 +718,45 @@ describe("environment scope", () => {
 	})
 })
 
+// hideInternal
+//
+// The owner's own sessions, tagged `harbr.traffic=internal` by the ingest
+// sidecar. Unlike the environment the tag can change between row versions, so
+// it is a semi-join on every version rather than a row-level predicate.
+
+describe("hideInternal", () => {
+	const TAG = "session_replays.ResourceAttributes['harbr.traffic'] = 'internal'"
+
+	it("drops every session any version of which was internal, before the GROUP BY", () => {
+		const { sql } = compileUnsafe(sessionReplaysListQuery({ hideInternal: true }), { ...baseParams, ...WINDOW })
+		expect(sql).toContain("NOT (session_replays.SessionId IN (SELECT")
+		expect(sql).toContain(TAG)
+		expect(sql.indexOf(TAG)).toBeLessThan(sql.lastIndexOf("GROUP BY sessionId"))
+	})
+
+	it("narrows every facet branch", () => {
+		const { sql } = compileUnionUnsafe(sessionReplaysFacetsQuery({ hideInternal: true }), { ...baseParams, ...WINDOW })
+		const branches = sql.split("UNION ALL").length
+		expect(branches).toBeGreaterThan(1)
+		expect(sql.split(TAG).length - 1).toBe(branches)
+	})
+
+	it("narrows the attribute breakdown", () => {
+		const { sql } = compileUnsafe(
+			sessionResourceAttributeBreakdownQuery({ key: "geo.locality.name", hideInternal: true }),
+			{ ...baseParams, ...WINDOW },
+		)
+		expect(sql).toContain(TAG)
+	})
+
+	it("emits nothing when internal sessions are wanted", () => {
+		for (const hideInternal of [undefined, false]) {
+			const { sql } = compileUnsafe(sessionReplaysListQuery({ hideInternal }), { ...baseParams, ...WINDOW })
+			expect(sql).not.toContain("harbr.traffic")
+		}
+	})
+})
+
 // sessionEnvironmentsQuery
 
 describe("sessionEnvironmentsQuery", () => {

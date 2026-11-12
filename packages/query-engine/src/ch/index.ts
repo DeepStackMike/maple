@@ -28,6 +28,8 @@ export * as tables from "./tables"
 // Exported because the dashboard's header selector puts it in a URL param and
 // in a label, and both have to spell it exactly as the SQL does.
 export { UNKNOWN_ENVIRONMENT, envLabel, resourceEnvLabel } from "./queries/environment"
+// The owner's own sessions, as tagged by the Harbr ingest sidecar.
+export { INTERNAL_TRAFFIC_ATTRIBUTE, INTERNAL_TRAFFIC_VALUE, excludeInternalSessions } from "./queries/internal-traffic"
 
 // Shared row-schema codecs (ClickHouse `FORMAT JSON` 64-bit-int-as-string coercion).
 export { CHNumber } from "./schema"

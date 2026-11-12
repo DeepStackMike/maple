@@ -32,6 +32,7 @@ import { projectKey, scopedPlaceholder, scopedQueryFn, type ProjectScope } from 
 import { boundsForRange, warehouseString } from "../lib/time"
 import { groupFacets, type FacetRow, type PageviewsPoint, type SessionsPoint } from "../lib/web-analytics"
 import { bucketSecondsForRange } from "./use-local-metrics"
+import { useHideInternal } from "./use-hide-internal"
 
 /** Rows per breakdown card. The cards show a handful and the table scrolls; 50 is the builder's own default. */
 const BREAKDOWN_LIMIT = 50
@@ -58,8 +59,9 @@ export function useLocalWebSessionsTimeseries(
 	environment: string | undefined,
 	project: ProjectScope,
 ) {
+	const [hideInternal] = useHideInternal()
 	return useQuery({
-		queryKey: ["local", "web-analytics", "sessions-timeseries", range, environment, projectKey(project)],
+		queryKey: ["local", "web-analytics", "sessions-timeseries", range, environment, hideInternal, projectKey(project)],
 		placeholderData: scopedPlaceholder(project),
 		queryFn: scopedQueryFn(project, async ({ signal }): Promise<ReadonlyArray<SessionsPoint>> => {
 			const { startTime, endTime } = boundsForRange(range)
@@ -69,6 +71,7 @@ export function useLocalWebSessionsTimeseries(
 					CH.webAnalyticsTimeseriesQuery({
 						bucketSeconds,
 						environment,
+						hideInternal,
 						services: project.services,
 					}),
 					{
@@ -90,8 +93,9 @@ export function useLocalWebPageviewsTimeseries(
 	environment: string | undefined,
 	project: ProjectScope,
 ) {
+	const [hideInternal] = useHideInternal()
 	return useQuery({
-		queryKey: ["local", "web-analytics", "pageviews-timeseries", range, environment, projectKey(project)],
+		queryKey: ["local", "web-analytics", "pageviews-timeseries", range, environment, hideInternal, projectKey(project)],
 		placeholderData: scopedPlaceholder(project),
 		queryFn: scopedQueryFn(project, async ({ signal }): Promise<ReadonlyArray<PageviewsPoint>> => {
 			const { startTime, endTime } = boundsForRange(range)
@@ -101,6 +105,7 @@ export function useLocalWebPageviewsTimeseries(
 					CH.webAnalyticsPageviewsTimeseriesQuery({
 						bucketSeconds,
 						environment,
+						hideInternal,
 						services: project.services,
 						...PAGEVIEW_SOURCE,
 					}),
@@ -129,8 +134,9 @@ export function useLocalWebPages(
 	environment: string | undefined,
 	project: ProjectScope,
 ) {
+	const [hideInternal] = useHideInternal()
 	return useQuery({
-		queryKey: ["local", "web-analytics", "pages", range, environment, projectKey(project)],
+		queryKey: ["local", "web-analytics", "pages", range, environment, hideInternal, projectKey(project)],
 		placeholderData: scopedPlaceholder(project),
 		queryFn: scopedQueryFn(
 			project,
@@ -141,6 +147,7 @@ export function useLocalWebPages(
 						CH.webAnalyticsPagesQuery({
 							limit: PAGES_LIMIT,
 							environment,
+							hideInternal,
 							services: project.services,
 							...PAGEVIEW_SOURCE,
 						}),
@@ -171,8 +178,9 @@ export function useLocalWebBreakdowns(
 	environment: string | undefined,
 	project: ProjectScope,
 ) {
+	const [hideInternal] = useHideInternal()
 	return useQuery({
-		queryKey: ["local", "web-analytics", "breakdowns", range, environment, projectKey(project)],
+		queryKey: ["local", "web-analytics", "breakdowns", range, environment, hideInternal, projectKey(project)],
 		placeholderData: scopedPlaceholder(project),
 		queryFn: scopedQueryFn(
 			project,
@@ -183,6 +191,7 @@ export function useLocalWebBreakdowns(
 						CH.webAnalyticsBreakdownsQuery({
 							limitPerDimension: BREAKDOWN_LIMIT,
 							environment,
+							hideInternal,
 							services: project.services,
 						}),
 						{ orgId: LOCAL_ORG_ID, startTime, endTime },
@@ -215,6 +224,7 @@ export function useLocalSessionAttributeBreakdown(
 	environment: string | undefined,
 	project: ProjectScope,
 ) {
+	const [hideInternal] = useHideInternal()
 	return useQuery({
 		queryKey: [
 			"local",
@@ -224,6 +234,7 @@ export function useLocalSessionAttributeBreakdown(
 			attribute.qualifierKey ?? null,
 			range,
 			environment,
+			hideInternal,
 			projectKey(project),
 		],
 		placeholderData: scopedPlaceholder(project),
@@ -237,6 +248,7 @@ export function useLocalSessionAttributeBreakdown(
 							...attribute,
 							limit: BREAKDOWN_LIMIT,
 							environment,
+							hideInternal,
 							services: project.services,
 						}),
 						{ orgId: LOCAL_ORG_ID, startTime, endTime },

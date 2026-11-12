@@ -24,6 +24,7 @@ import { projectKey, scopedPlaceholder, scopedQueryFn, type ProjectScope } from 
 import { boundsForRange, warehouseString } from "../lib/time"
 import { bucketSecondsForRange } from "./use-local-metrics"
 import { isRunnableFunnel } from "../lib/product-analytics"
+import { useHideInternal } from "./use-hide-internal"
 
 /**
  * What a funnel counts in local mode.
@@ -61,15 +62,16 @@ export function useLocalProductEventNames(
 	environment: string | undefined,
 	project: ProjectScope,
 ) {
+	const [hideInternal] = useHideInternal()
 	return useQuery({
-		queryKey: ["local", "product-events", "names", range, environment, projectKey(project)],
+		queryKey: ["local", "product-events", "names", range, environment, hideInternal, projectKey(project)],
 		placeholderData: scopedPlaceholder(project),
 		queryFn: scopedQueryFn(project, async ({ signal }): Promise<ReadonlyArray<ProductEventName>> => {
 			const { startTime, endTime } = boundsForRange(range)
 			const compiled = CH.compile(
 				CH.productEventNamesQuery({
 					limit: 200,
-					filters: { environment, services: project.services },
+					filters: { environment, hideInternal, services: project.services },
 				}),
 				{
 					orgId: LOCAL_ORG_ID,
@@ -96,6 +98,7 @@ export function useLocalProductEventTimeseries(
 	environment: string | undefined,
 	project: ProjectScope,
 ) {
+	const [hideInternal] = useHideInternal()
 	return useQuery({
 		queryKey: [
 			"local",
@@ -104,6 +107,7 @@ export function useLocalProductEventTimeseries(
 			eventName,
 			range,
 			environment,
+			hideInternal,
 			projectKey(project),
 		],
 		enabled: eventName !== null,
@@ -114,7 +118,7 @@ export function useLocalProductEventTimeseries(
 				CH.productEventTimeseriesQuery({
 					eventName: eventName!,
 					bucketSeconds: bucketSecondsForRange(range),
-					filters: { environment, services: project.services },
+					filters: { environment, hideInternal, services: project.services },
 				}),
 				{ orgId: LOCAL_ORG_ID, startTime, endTime },
 			)
@@ -137,6 +141,7 @@ export function useLocalProductEventPropertyKeys(
 	environment: string | undefined,
 	project: ProjectScope,
 ) {
+	const [hideInternal] = useHideInternal()
 	return useQuery({
 		queryKey: [
 			"local",
@@ -145,6 +150,7 @@ export function useLocalProductEventPropertyKeys(
 			eventName,
 			range,
 			environment,
+			hideInternal,
 			projectKey(project),
 		],
 		enabled: eventName !== null,
@@ -156,7 +162,7 @@ export function useLocalProductEventPropertyKeys(
 				const compiled = CH.compile(
 					CH.productEventPropertyKeysQuery({
 						eventName: eventName!,
-						filters: { environment, services: project.services },
+						filters: { environment, hideInternal, services: project.services },
 					}),
 					{ orgId: LOCAL_ORG_ID, startTime, endTime },
 				)
@@ -180,6 +186,7 @@ export function useLocalProductEventPropertyValues(
 	environment: string | undefined,
 	project: ProjectScope,
 ) {
+	const [hideInternal] = useHideInternal()
 	return useQuery({
 		queryKey: [
 			"local",
@@ -189,6 +196,7 @@ export function useLocalProductEventPropertyValues(
 			propertyKey,
 			range,
 			environment,
+			hideInternal,
 			projectKey(project),
 		],
 		enabled: eventName !== null && propertyKey !== null && propertyKey !== "",
@@ -201,7 +209,7 @@ export function useLocalProductEventPropertyValues(
 					CH.productEventPropertyValuesQuery({
 						eventName: eventName!,
 						propertyKey: propertyKey!,
-						filters: { environment, services: project.services },
+						filters: { environment, hideInternal, services: project.services },
 					}),
 					{ orgId: LOCAL_ORG_ID, startTime, endTime },
 				)
@@ -229,6 +237,7 @@ export function useLocalProductEventFunnel(
 	environment: string | undefined,
 	project: ProjectScope,
 ) {
+	const [hideInternal] = useHideInternal()
 	return useQuery({
 		queryKey: [
 			"local",
@@ -238,6 +247,7 @@ export function useLocalProductEventFunnel(
 			windowSeconds,
 			range,
 			environment,
+			hideInternal,
 			projectKey(project),
 		],
 		enabled: isRunnableFunnel(steps),
@@ -250,7 +260,7 @@ export function useLocalProductEventFunnel(
 				steps: steps.map((eventName) => ({ kind: "event" as const, eventName })),
 				keyBy: FUNNEL_KEY_BY,
 				windowSeconds,
-				filters: { environment, services: project.services },
+				filters: { environment, hideInternal, services: project.services },
 			})
 			if (Result.isFailure(funnel)) return Promise.reject(funnel.failure)
 			const compiled = CH.compile(funnel.success, { orgId: LOCAL_ORG_ID, startTime, endTime })

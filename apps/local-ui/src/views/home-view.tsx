@@ -52,7 +52,8 @@ import { formatRelativeTime } from "../lib/time"
 import { useRange } from "../hooks/use-range"
 import { useTimeWindow } from "../hooks/use-time-window"
 import { ConnectGuide } from "../components/connect-guide"
-import { RefreshButton, TimeRangeSelect, Toolbar } from "../components/toolbar"
+import { HideInternalToggle, RefreshButton, TimeRangeSelect, Toolbar } from "../components/toolbar"
+import { useHideInternal } from "../hooks/use-hide-internal"
 import { ErrorState, ListSkeleton } from "../components/view-states"
 import { failedWithoutData } from "../lib/query"
 
@@ -86,6 +87,7 @@ export function HomeView() {
 	const catalog = useLocalServiceCatalog({ ns: namespace, env: environment }, bounds)
 	const errorsSummary = useLocalErrorsSummary({ rootOnly: false, env: environment }, bounds, scope)
 	const errorsByType = useLocalErrorsByType({ rootOnly: false, env: environment }, bounds, scope)
+	const [hideInternal, setHideInternal] = useHideInternal()
 	const sessions = useLocalSessions({ errorsOnly: false, env: environment }, bounds, scope)
 	const sessionsSummary = useLocalSessionsSummary(range, environment, scope)
 	const timeseries = useLocalOverviewTimeseries(range, namespace, environment)
@@ -111,6 +113,8 @@ export function HomeView() {
 		<Toolbar>
 			<span className="text-sm text-muted-foreground">Overview</span>
 			<div className="flex items-center gap-4">
+				{/* Narrows the sessions tile and recent sessions only: spans and errors carry no tag. */}
+				<HideInternalToggle hidden={hideInternal} onChange={setHideInternal} />
 				<RefreshButton advance={timeWindow.advance} />
 				<TimeRangeSelect value={range} onChange={setRange} />
 			</div>
