@@ -8,6 +8,7 @@ import {
 	CircleWarningIcon,
 	FileIcon,
 	GaugeIcon,
+	LaptopIcon,
 	LayersIcon,
 	NetworkNodesIcon,
 	PlayRotateClockwiseIcon,
@@ -61,7 +62,8 @@ interface NavItem {
  * in harbr-apps-maple), so plain links, not hash routes.
  */
 const SERVER_PAGES: ReadonlyArray<{ href: string; label: string; icon: ComponentType<IconProps> }> = [
-	{ href: "/devices", label: "Devices", icon: CircleKeyIcon },
+	{ href: "/keys", label: "Keys", icon: CircleKeyIcon },
+	{ href: "/devices", label: "Devices", icon: LaptopIcon },
 ]
 
 const NAV_GROUPS: ReadonlyArray<{ label: string; items: ReadonlyArray<NavItem> }> = [
