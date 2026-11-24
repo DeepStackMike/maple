@@ -4,6 +4,7 @@
 import type { ComponentType } from "react"
 import {
 	ChartLineIcon,
+	CircleKeyIcon,
 	CircleWarningIcon,
 	FileIcon,
 	GaugeIcon,
@@ -54,6 +55,14 @@ interface NavItem {
 	readonly label: string
 	readonly icon: ComponentType<IconProps>
 }
+
+/**
+ * Harbr fork: pages maple-ui's server serves outside the SPA (`maple-ui/server.ts`
+ * in harbr-apps-maple), so plain links, not hash routes.
+ */
+const SERVER_PAGES: ReadonlyArray<{ href: string; label: string; icon: ComponentType<IconProps> }> = [
+	{ href: "/devices", label: "Devices", icon: CircleKeyIcon },
+]
 
 const NAV_GROUPS: ReadonlyArray<{ label: string; items: ReadonlyArray<NavItem> }> = [
 	{
@@ -130,6 +139,25 @@ export function AppSidebar({
 						</SidebarGroupContent>
 					</SidebarGroup>
 				))}
+				<SidebarGroup>
+					<SidebarGroupLabel className="h-6 text-muted-foreground">Admin</SidebarGroupLabel>
+					<SidebarGroupContent>
+						<SidebarMenu>
+							{SERVER_PAGES.map((page) => (
+								<SidebarMenuItem key={page.href}>
+									<SidebarMenuButton
+										className={ACTIVE_RAIL}
+										render={<a href={page.href} />}
+										tooltip={page.label}
+									>
+										<page.icon size={18} />
+										<span>{page.label}</span>
+									</SidebarMenuButton>
+								</SidebarMenuItem>
+							))}
+						</SidebarMenu>
+					</SidebarGroupContent>
+				</SidebarGroup>
 			</SidebarContent>
 			<SidebarFooter>
 				<IngestStatus />
